@@ -4,7 +4,7 @@ This document is the ownership map for `myelin-accelerator`. Use it to decide
 whether a proposed CUDA / SNN / quantization feature belongs **here** or in a
 higher-level repo (`corinth-canal`, experiment harnesses, model code).
 
-Related issues: [GH #8](https://github.com/rmems/myelin-accelerator/issues/8),
+Related issues: [GH #8](https://github.com/Limen-Neural/myelin-accelerator/issues/8),
 [Linear RM-46](https://linear.app/rpd-34/issue/RM-46).
 
 ---
@@ -12,7 +12,7 @@ Related issues: [GH #8](https://github.com/rmems/myelin-accelerator/issues/8),
 ## One-line mission
 
 **Low-level, reusable GPU compute for neuromorphic / routing / SAT workloads:**
-hand-written CUDA kernels (PTX), safe Rust FFI, device memory helpers, and a
+first-party CUDA sources in `cu/` (compiled to PTX), safe Rust FFI, device memory helpers, and a
 local quality/benchmark harness. Not a research orchestrator.
 
 ---
@@ -74,7 +74,7 @@ paths.
 
 ```text
 myelin-accelerator/
-├── cu/                          # Hand-written CUDA (device code)
+├── cu/                          # First-party CUDA device sources
 │   ├── common.cuh
 │   ├── spiking_network.cu       # Poisson, LIF, STDP, reduce passes
 │   ├── vector_similarity.cu     # Cosine batched + top-k routing

@@ -88,7 +88,7 @@ cargo build --locked --no-default-features
   title  = {Myelin-Accelerator},
   author = {Raul Montoya Cardenas},
   year   = {2026},
-  url    = {https://github.com/rmems/myelin-accelerator}
+  url    = {https://github.com/Limen-Neural/myelin-accelerator}
 }
 ```
 No formal citation required — use freely under the Apache 2.0 or MIT license. A link back to this repo is appreciated but not mandatory.

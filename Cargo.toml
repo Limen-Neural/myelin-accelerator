@@ -5,7 +5,7 @@ edition = "2024"
 description = "CUDA spiking-network kernels + safe Rust FFI wrappers (Tier 1)"
 authors = ["Raul Mc <raulmc@example.com>"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/rmems/myelin-accelerator"
+repository = "https://github.com/Limen-Neural/myelin-accelerator"
 
 [lib]
 name = "myelin_accelerator"

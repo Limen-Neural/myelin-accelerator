@@ -22,7 +22,7 @@ Guidance for Claude (and other AI coding agents) working in this repository.
 ## Project
 
 `myelin-accelerator` is a Rust crate exposing safe FFI wrappers around a set
-of hand-written CUDA kernels (spiking-network simulation, vector similarity
+of first-party CUDA kernels (spiking-network simulation, vector similarity
 search, and a SAT solver), targeting Blackwell / RTX 5080-class GPUs
 (`sm_120`). It builds cleanly with or without a CUDA toolkit present via the
 `cuda` Cargo feature:
