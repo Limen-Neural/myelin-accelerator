@@ -169,7 +169,7 @@ kernels validated end-to-end.”
 These are what CLion/`ctest` run for lint-style checks. They **must not** pull in CUDA:
 
 ```bash
-cd ~/rmems/myelin-accelerator
+cd ~/Limen-Neural/myelin-accelerator
 
 cargo test --locked
 cargo build --locked --no-default-features
@@ -208,7 +208,7 @@ is **13.3** via `/usr/local/cuda`.
 #### Minimal path (proven green on branch `test/cuda-rust`)
 
 ```bash
-cd ~/rmems/myelin-accelerator
+cd ~/Limen-Neural/myelin-accelerator
 
 # 1) Compile real CUDA path (nvcc → embedded PTX)
 cargo build --lib --features cuda
@@ -303,7 +303,7 @@ unblocked.
 
 - A host cron may keep a *different* `~/actions-runner/run.sh` process alive;
   that is not automatically the myelin-accelerator registration. Confirm with
-  `gh api repos/rmems/myelin-accelerator/actions/runners` (expect status
+  `gh api repos/Limen-Neural/myelin-accelerator/actions/runners` (expect status
   `online` when listening).
 
 ## 7. Host baseline (ShipOfTheseus, branch `test/cuda-rust`)
