@@ -1,0 +1,21 @@
+# Qodana for Rust — primary static analysis for this crate.
+# Host packing, FFI, and public API live in Rust; CUDA is feature-gated.
+#
+# Requires QODANA_TOKEN (JetBrains cloud) for full PR reporting.
+# Local:  qodana scan --linter jetbrains/qodana-rust:latest
+
+version: "1.0"
+linter: jetbrains/qodana-rust:2025.1
+
+profile:
+  name: qodana.recommended
+
+exclude:
+  - name: All
+    paths:
+      - target
+      - cmake-build-debug
+      - actions-runner
+      - .swarm-worktrees
+      - .agents
+      - agent

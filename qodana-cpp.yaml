@@ -1,0 +1,31 @@
+# Qodana for C/C++ — secondary scan of first-party CUDA sources under cu/.
+# Not a substitute for nvcc PTX / GPU goldens; host C++ checkers are noisy on
+# device code — scope is limited and uses a generated compile_commands.json.
+#
+# Before scan (CI does this):
+#   bash scripts/gen_compile_commands_cuda.sh
+#
+# Local:
+#   qodana scan --config qodana-cpp.yaml --linter jetbrains/qodana-cpp:latest
+
+version: "1.0"
+linter: jetbrains/qodana-cpp:2025.1
+
+profile:
+  name: qodana.recommended
+
+bootstrap: |
+  bash scripts/gen_compile_commands_cuda.sh
+
+exclude:
+  - name: All
+    paths:
+      - target
+      - cmake-build-debug
+      - src
+      - tests
+      - examples
+      - actions-runner
+      - .swarm-worktrees
+      - .agents
+      - agent

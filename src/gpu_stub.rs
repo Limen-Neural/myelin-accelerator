@@ -181,6 +181,68 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn ternary_gemv(
+        &self,
+        _: &GpuBuffer<u32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: bool,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn ternary_gemv_async(
+        &self,
+        _: &GpuBuffer<u32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: bool,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn ternary_gemm(
+        &self,
+        _: &GpuBuffer<u32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: bool,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn ternary_gemm_async(
+        &self,
+        _: &GpuBuffer<u32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: bool,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
     pub fn synchronize(&self) -> GpuResult<()> {
         Err(GpuError::NoGpu)
     }
@@ -414,6 +476,34 @@ mod tests {
         let mut spikes = GpuBuffer::<u32>::alloc(10).unwrap();
         assert!(matches!(
             acc.poisson_encode_async(&stimuli, &mut spikes, 42)
+                .unwrap_err(),
+            GpuError::NoGpu
+        ));
+    }
+
+    #[test]
+    fn accelerator_ternary_gemv_returns_no_gpu() {
+        let acc = GpuAccelerator::new();
+        let w = GpuBuffer::<u32>::alloc(1).unwrap();
+        let s = GpuBuffer::<f32>::alloc(1).unwrap();
+        let x = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut y = GpuBuffer::<f32>::alloc(1).unwrap();
+        assert!(matches!(
+            acc.ternary_gemv(&w, &s, &x, &mut y, 1, 1, 1, false)
+                .unwrap_err(),
+            GpuError::NoGpu
+        ));
+    }
+
+    #[test]
+    fn accelerator_ternary_gemm_returns_no_gpu() {
+        let acc = GpuAccelerator::new();
+        let w = GpuBuffer::<u32>::alloc(1).unwrap();
+        let s = GpuBuffer::<f32>::alloc(1).unwrap();
+        let b = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut c = GpuBuffer::<f32>::alloc(1).unwrap();
+        assert!(matches!(
+            acc.ternary_gemm(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .unwrap_err(),
             GpuError::NoGpu
         ));

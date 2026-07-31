@@ -13,7 +13,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-# nvtx is only used from src/gpu/kernel.rs under the cuda feature.
+# nvtx ranges under the cuda feature (kernel load + ternary launch wrappers).
 cuda = ["dep:cust", "dep:nvtx"]
 bench = ["dep:serde", "dep:serde_json"]
 

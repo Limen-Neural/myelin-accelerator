@@ -15,6 +15,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  # Match ShipOfTheseus local default (CUDA 13.3.1 / sm_120).
+  MYELIN_CUDA_ARCH: sm_120
 
 jobs:
   # ── Formatting & linting ───────────────────────────────────────────────────
@@ -56,41 +58,120 @@ jobs:
       - name: Cargo build without default features (release)
         run: cargo build --locked --no-default-features --release
 
+      - name: Bench example compile (CPU, no GPU)
+        run: cargo build --locked --example benchmark --features bench
+
+  # ── CUDA PTX compile on GitHub-hosted (toolkit only, no GPU runtime) ─────
+  # Proves nvcc → PTX embed for sm_120 without needing a Blackwell device.
+  # Image tracks local default: CUDA toolkit 13.3.1.
+  cuda-ptx-cloud:
+    name: "CUDA PTX compile [cloud, toolkit 13.3.1]"
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:13.3.1-devel-ubuntu24.04
+    env:
+      CUDA_NVCC: /usr/local/cuda/bin/nvcc
+      MYELIN_CUDA_ARCH: sm_120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust + build deps
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            curl ca-certificates build-essential pkg-config libssl-dev git
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustc" --version
+          "$CUDA_NVCC" --version
+
+      - name: Build (debug, features cuda)
+        run: cargo build --locked --features cuda
+
+      - name: Clippy (features cuda)
+        run: |
+          rustup component add clippy
+          cargo clippy --locked --features cuda -- -D warnings
+
+      - name: Verify PTX non-stub + ternary present
+        shell: bash
+        run: |
+          set -euo pipefail
+          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
+          if [ -z "$ptx_dir" ]; then
+            echo "::error::Could not find PTX output directory"
+            exit 1
+          fi
+          for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
+                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
+            if [ ! -f "$ptx_dir/$f" ]; then
+              echo "::error::Missing PTX file: $f"
+              exit 1
+            fi
+            # Stub PTX is tiny and targets sm_80; real nvcc output is much larger.
+            size="$(wc -c < "$ptx_dir/$f")"
+            if [ "$size" -lt 1000 ]; then
+              echo "::error::PTX file looks like a stub ($f is ${size} bytes)"
+              exit 1
+            fi
+            if ! grep -q '^\.target sm_120' "$ptx_dir/$f"; then
+              echo "::error::PTX file $f does not target sm_120"
+              exit 1
+            fi
+            echo "✓ $f targets sm_120 (${size} bytes)"
+          done
+          for kernel in ternary_gemv ternary_gemm; do
+            if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
+                "$ptx_dir/ternary_gemm_sm_120.ptx"; then
+              echo "✓ ternary_gemm PTX: $kernel"
+            else
+              echo "::error::Missing kernel entry: $kernel"
+              exit 1
+            fi
+          done
+
+      - name: Offline ptxas assemble (sm_120)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
+                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
+            ptxas -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
+            echo "✓ ptxas $f"
+          done
+
+      - name: Upload PTX artifacts (cloud)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ptx-sm_120-cloud-13.3.1
+          path: target/debug/build/myelin-accelerator-*/out/*.ptx
+          retention-days: 14
+
   # ── CUDA build & validation (SELF-HOSTED GPU RUNNER) ─────────────────────
-  # This job targets a self-hosted Actions runner registered to this
-  # repository with the labels [self-hosted, linux, x64, gpu, cuda].
-  # The PR check list will display the job name with the [self-hosted]
-  # prefix; the GitHub Actions UI also tags these jobs with a small
-  # "self-hosted" badge once they're claimed by the runner. Required
-  # label matchers and the runner registration are documented in
-  # ./actions-runner/myelin-accelerator-runner/.runner
-  # (directory is gitignored; see .gitignore).
-  #
-  # The job targets the runner via label selectors; if no runner
-  # matches, the job is cancelled after the runner pool's default
-  # 24h queue timeout. With a runner registered, the full CUDA build
-  # + PTX validation pipeline runs on every PR.
-  #
-  # The build runs in a single check entry (not a matrix) so the PR
-  # check list shows one CUDA build rather than two (debug + release).
-  # Both profiles are built and validated inside one job via a shell
-  # loop; PTX artifacts are uploaded under per-profile names.
+  # Labels: [self-hosted, linux, x64, gpu, cuda]
+  # Local default toolkit: CUDA 13.3.1 via /usr/local/cuda.
   cuda-build:
     name: "CUDA build [self-hosted] (sm_120)"
     runs-on: [self-hosted, linux, x64, gpu, cuda]
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       MYELIN_CUDA_ARCH: sm_120
-      # Do not set MYELIN_PTX_VERSION here: build.rs floors sm_12* to ≥ 9.2 and
-      # otherwise leaves nvcc's .version alone. Forcing an exact rewrite can
-      # downgrade a newer nvcc header and break JIT/ptxas.
+      # Prefer host default tree (13.3.1 on ShipOfTheseus).
+      CUDA_NVCC: /usr/local/cuda/bin/nvcc
+      # Do not set MYELIN_PTX_VERSION: build.rs floors sm_12* to ≥ 9.2.
     steps:
       - name: Confirm self-hosted runner
         run: |
-          echo "::notice title=Self-hosted runner::This job is running on a self-hosted Actions runner, not a GitHub-hosted one. See ./actions-runner/ (gitignored) for the local install."
+          echo "::notice title=Self-hosted runner::Blackwell GPU quality path (not GitHub-hosted)."
           echo "Runner: $(hostname)"
           echo "OS: $(uname -srm)"
-          echo "CUDA: $(nvcc --version 2>/dev/null | tail -1)"
+          "$CUDA_NVCC" --version || nvcc --version
+          nvidia-smi || true
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -100,18 +181,17 @@ jobs:
         with:
           components: clippy
 
-      - name: nvidia-smi (informational, non-blocking)
+      - name: nvidia-smi (informational)
         continue-on-error: true
-        run: |
-          echo "::group::nvidia-smi"
-          nvidia-smi || echo "nvidia-smi failed (driver mismatch is non-fatal; nvcc + cargo build still proceed)"
-          echo "::endgroup::"
+        run: nvidia-smi
 
-      - name: nvcc --version (required for build)
+      - name: nvcc --version (required)
         run: |
-          echo "::group::nvcc"
-          nvcc --version
-          echo "::endgroup::"
+          "$CUDA_NVCC" --version
+          # Soft-check that we are on 13.3.x locally (warn only).
+          if ! "$CUDA_NVCC" --version | grep -q 'release 13\.3'; then
+            echo "::warning::Expected CUDA 13.3.x on this host (got other); continuing."
+          fi
 
       - name: Build (debug)
         run: cargo build --locked --features cuda
@@ -119,11 +199,14 @@ jobs:
       - name: Build (release)
         run: cargo build --locked --features cuda --release
 
-      - name: Clippy with CUDA feature (debug)
+      - name: Clippy with CUDA feature
         run: cargo clippy --locked --features cuda -- -D warnings
 
-      - name: Test (debug, with CUDA feature)
+      - name: Test (debug, CUDA feature, non-ignored)
         run: cargo test --locked --features cuda
+
+      - name: Test GPU goldens (ignored)
+        run: cargo test --locked --features cuda -- --ignored --nocapture
 
       - name: Verify PTX output is non-stub
         shell: bash
@@ -135,16 +218,22 @@ jobs:
               echo "::error::Could not find PTX output directory for profile=$profile"
               exit 1
             fi
-            for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx satsolver_sm_120.ptx; do
+            for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
+                     satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
               if [ ! -f "$ptx_dir/$f" ]; then
                 echo "::error::Missing PTX file ($profile): $f"
+                exit 1
+              fi
+              size="$(wc -c < "$ptx_dir/$f")"
+              if [ "$size" -lt 1000 ]; then
+                echo "::error::PTX looks like stub ($profile $f is ${size} bytes)"
                 exit 1
               fi
               if ! grep -q '^\.target sm_120' "$ptx_dir/$f"; then
                 echo "::error::PTX file ($profile) $f does not target sm_120"
                 exit 1
               fi
-              echo "✓ $profile: $f targets sm_120"
+              echo "✓ $profile: $f targets sm_120 (${size} bytes)"
             done
           done
 
@@ -152,13 +241,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # PTX entry lines look like:
-          #   .entry lif_step(
-          #   .entry lif_step_weighted(
-          # so a substring search for "lif_step" would falsely match
-          # "lif_step_weighted". Use a word-boundary-anchored ERE that
-          # requires the kernel name to be followed by a non-identifier
-          # character (here always "(").
           for profile in debug release; do
             ptx_dir="$(ls -td target/$profile/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
             echo ""
@@ -168,7 +250,8 @@ jobs:
                           reset_membrane stdp_update neuro_bias_logits \
                           membrane_dv_dt_reduce_pass1 routing_entropy_reduce_pass1 \
                           latent_reduce_pass2; do
-              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\(" "$ptx_dir/spiking_network_sm_120.ptx"; then
+              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
+                  "$ptx_dir/spiking_network_sm_120.ptx"; then
                 echo "✓ $profile spiking_network: $kernel"
               else
                 echo "::error::Missing kernel entry: $kernel in $profile spiking_network PTX"
@@ -177,7 +260,8 @@ jobs:
             done
 
             for kernel in cosine_similarity_batched cosine_similarity_top_k; do
-              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\(" "$ptx_dir/vector_similarity_sm_120.ptx"; then
+              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
+                  "$ptx_dir/vector_similarity_sm_120.ptx"; then
                 echo "✓ $profile vector_similarity: $kernel"
               else
                 echo "::error::Missing kernel entry: $kernel in $profile vector_similarity PTX"
@@ -188,10 +272,21 @@ jobs:
             for kernel in satsolver_init satsolver_step satsolver_aux_update \
                           satsolver_check_solution satsolver_extract \
                           satsolver_best_reduce_pass1 satsolver_best_reduce_pass2; do
-              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\(" "$ptx_dir/satsolver_sm_120.ptx"; then
+              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
+                  "$ptx_dir/satsolver_sm_120.ptx"; then
                 echo "✓ $profile satsolver: $kernel"
               else
                 echo "::error::Missing kernel entry: $kernel in $profile satsolver PTX"
+                exit 1
+              fi
+            done
+
+            for kernel in ternary_gemv ternary_gemm; do
+              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
+                  "$ptx_dir/ternary_gemm_sm_120.ptx"; then
+                echo "✓ $profile ternary_gemm: $kernel"
+              else
+                echo "::error::Missing kernel entry: $kernel in $profile ternary_gemm PTX"
                 exit 1
               fi
             done
@@ -199,14 +294,31 @@ jobs:
           echo ""
           echo "All kernel entry points verified for both debug and release."
 
+      - name: Offline ptxas assemble (sm_120)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PTXAS="$(dirname "$CUDA_NVCC")/ptxas"
+          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
+                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
+            "$PTXAS" -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
+            echo "✓ ptxas $f"
+          done
+
+      - name: Short GPU benchmark (bench,cuda)
+        run: |
+          cargo run --locked --example benchmark --profile bench \
+            --features bench,cuda -- --warmup 2 --iterations 10
+
       - name: Upload PTX artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ptx-sm_120
+          name: ptx-sm_120-self-hosted
           path: |
             target/debug/build/myelin-accelerator-*/out/*.ptx
             target/release/build/myelin-accelerator-*/out/*.ptx
           retention-days: 30
 
       - name: CUDA build done
-        run: echo "CUDA build (debug + release, sm_120) passed"
+        run: echo "CUDA build (debug + release + ignored goldens + short bench, sm_120) passed"

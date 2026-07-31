@@ -1,0 +1,82 @@
+# Copyright 2026 Raul Mc
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Qodana static analysis:
+#   - Rust (primary): host API, packing, stubs
+#   - C++ (secondary): cu/*.cu via generated compile_commands.json
+#
+# Requires repository secret QODANA_TOKEN for full cloud reporting.
+# Without the token, the job reports a notice and exits successfully so
+# forks / local clones are not blocked.
+
+name: Qodana
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  qodana-rust:
+    name: Qodana Rust
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Skip if no QODANA_TOKEN
+        id: token
+        run: |
+          if [ -z "${{ secrets.QODANA_TOKEN }}" ]; then
+            echo "::notice::QODANA_TOKEN not set — skipping Qodana Rust upload (add secret to enable)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Qodana Scan (Rust)
+        if: steps.token.outputs.skip != 'true'
+        uses: JetBrains/qodana-action@v2025.1
+        with:
+          args: --config,qodana.yaml
+        env:
+          QODANA_TOKEN: ${{ secrets.QODANA_TOKEN }}
+
+  qodana-cpp:
+    name: Qodana C++ (cu/)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Skip if no QODANA_TOKEN
+        id: token
+        run: |
+          if [ -z "${{ secrets.QODANA_TOKEN }}" ]; then
+            echo "::notice::QODANA_TOKEN not set — skipping Qodana C++ upload."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate compile_commands.json for cu/
+        if: steps.token.outputs.skip != 'true'
+        run: bash scripts/gen_compile_commands_cuda.sh
+
+      - name: Qodana Scan (C++)
+        if: steps.token.outputs.skip != 'true'
+        uses: JetBrains/qodana-action@v2025.1
+        with:
+          args: --config,qodana-cpp.yaml
+        env:
+          QODANA_TOKEN: ${{ secrets.QODANA_TOKEN }}

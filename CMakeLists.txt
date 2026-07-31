@@ -26,7 +26,8 @@ set(CUDA_COMMON_FLAGS
 set(CU_SOURCES
         cu/satsolver.cu
         cu/spiking_network.cu
-        cu/vector_similarity.cu)
+        cu/vector_similarity.cu
+        cu/ternary_gemm.cu)
 set(CU_HEADERS
         cu/common.cuh)
 

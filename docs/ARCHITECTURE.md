@@ -4,8 +4,9 @@ This document is the ownership map for `myelin-accelerator`. Use it to decide
 whether a proposed CUDA / SNN / quantization feature belongs **here** or in a
 higher-level repo (`corinth-canal`, experiment harnesses, model code).
 
-Related issues: [GH #8](https://github.com/Limen-Neural/myelin-accelerator/issues/8),
-[Linear RM-46](https://linear.app/rpd-34/issue/RM-46).
+Related issues: [GH #8](https://github.com/Limen-Neural/myelin-accelerator/issues/8)
+(closed). **Owner:** [Limen-Neural/myelin-accelerator](https://github.com/Limen-Neural/myelin-accelerator)
+only — do not track this crate under personal `rmems/*` remotes or deps.
 
 ---
 
@@ -78,10 +79,11 @@ myelin-accelerator/
 │   ├── common.cuh
 │   ├── spiking_network.cu       # Poisson, LIF, STDP, reduce passes
 │   ├── vector_similarity.cu     # Cosine batched + top-k routing
-│   └── satsolver.cu             # Parallel SAT walkers + reduces
+│   ├── satsolver.cu             # Parallel SAT walkers + reduces
+│   └── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
 ├── src/
 │   ├── lib.rs                   # Crate root; public re-exports
-│   ├── bitpacking.rs            # Host binary/ternary pack/unpack (public)
+│   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
 │   ├── gpu_stub.rs              # CPU-safe stand-ins (no cuda feature)
 │   └── gpu/                     # Real CUDA path (feature = "cuda")
 │       ├── mod.rs               # Internal module tree + re-exports
@@ -93,7 +95,9 @@ myelin-accelerator/
 ├── examples/benchmark.rs        # Optional bench harness (feature = "bench")
 ├── build.rs                     # nvcc → PTX into OUT_DIR
 ├── CMakeLists.txt               # CLion/CTest quality gate (nvcc -ptx)
-└── docs/ARCHITECTURE.md         # This file
+└── docs/
+    ├── ARCHITECTURE.md          # This file
+    └── TERNARY.md               # Ternary encoding, scales, GOZ1, kernels
 ```
 
 ### Cargo features
@@ -135,6 +139,7 @@ These are the **ergonomic** wrappers currently implemented:
 - Lifecycle: `new`, `is_ready`, `kernels`, `synchronize`
 - SAT: `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
 - Spiking: `poisson_encode` / `_async`
+- Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
 
 Additional kernels may be **loaded** in `KernelModule` and still lack a
 dedicated `GpuAccelerator` method. Advanced callers can use
@@ -149,6 +154,7 @@ consumers share.
 | `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `spike_rate`, `reset_membrane`, `stdp_update`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` |
 | `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` |
 | `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass1`, `satsolver_best_reduce_pass2` |
+| `ternary_gemm` | `ternary_gemv`, `ternary_gemm` |
 
 ### Internal (not a stability promise)
 
@@ -198,8 +204,8 @@ When proposing a feature, answer:
 
 Tracked elsewhere but **in-boundary** if they stay low-level:
 
-- Packed ternary device kernels (GH #9 / RM-47) — host packing already present
-- Fused routing / SAAQ kernels (GH #14 / RM-48) — only generic device code + benches
+- Packed ternary device kernels `ternary_gemv` / `ternary_gemm` (GH #9 / [LIM-890](https://linear.app/rpd-34/issue/LIM-890)) — host + device live in `src/bitpacking.rs`, `cu/ternary_gemm.cu`, `docs/TERNARY.md`
+- Fused routing / SAAQ kernels (GH #14 / [LIM-891](https://linear.app/rpd-34/issue/LIM-891)) — only generic device code + benches
 - More `GpuAccelerator` wrappers for already-loaded symbols
 - Wider public surface for bitpacking + device kernel parity docs
 
