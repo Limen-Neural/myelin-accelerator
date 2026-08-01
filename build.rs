@@ -1,4 +1,4 @@
-// Copyright 2026 Raul Mc
+// Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::env;

@@ -1,4 +1,4 @@
-// Copyright 2026 Raul Mc
+// Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::bitpacking::TERNARY_VALUES_PER_WORD;
@@ -394,7 +394,8 @@ impl GpuAccelerator {
             return Ok(());
         }
         if k == 0 {
-            y.upload(&vec![0.0f32; m_u])?;
+            // `expect_len` allows y longer than m; upload must match buffer length.
+            y.upload(&vec![0.0f32; y.len()])?;
             return Ok(());
         }
 
@@ -491,7 +492,8 @@ impl GpuAccelerator {
             return Ok(());
         }
         if k == 0 {
-            c.upload(&vec![0.0f32; m_u.saturating_mul(n_u)])?;
+            // `expect_len` allows c longer than m*n; upload must match buffer length.
+            c.upload(&vec![0.0f32; c.len()])?;
             return Ok(());
         }
 
@@ -510,16 +512,17 @@ impl GpuAccelerator {
         let kernels = self.kernels()?;
         let func = kernels.get_function("ternary_gemm")?;
         let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
-        let total = (m as u64)
-            .checked_mul(n as u64)
-            .ok_or_else(|| GpuError::LaunchFailed("ternary_gemm: M*N overflow".into()))?;
-        if total > u32::MAX as u64 {
+        // m,n are nonnegative i32 after validation; product always fits u64.
+        let total = (m as u64) * (n as u64);
+        let block = 256u32;
+        // Launch uses 1-D grid of u32 block indices over flattened M*N threads.
+        let grid_u64 = total.div_ceil(block as u64);
+        if grid_u64 > u32::MAX as u64 {
             return Err(GpuError::LaunchFailed(format!(
-                "ternary_gemm: M*N too large for 1-D grid ({total})"
+                "ternary_gemm: grid too large for 1-D launch ({grid_u64} blocks, M*N={total})"
             )));
         }
-        let block = 256u32;
-        let grid = Self::ceil_div_u32(total as u32, block);
+        let grid = grid_u64 as u32;
         let skip = if skip_zeros { 1i32 } else { 0i32 };
 
         range_push!("ternary_gemm");

@@ -1,4 +1,4 @@
-// Copyright 2026 Raul Mc
+// Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Reproducible GPU benchmark harness for myelin-accelerator kernels.
@@ -527,13 +527,7 @@ fn bench_ternary_gpu(
     let m = 1024usize;
     let k = 4096usize;
     let group = DEFAULT_GROUP_SIZE;
-    let weights: Vec<i8> = (0..m * k)
-        .map(|i| match i % 3 {
-            0 => 0i8,
-            1 => 1i8,
-            _ => -1i8,
-        })
-        .collect();
+    let weights = ternary_pattern(m * k);
     let packed = pack_ternary_matrix(&weights, m, k);
     let scales = uniform_group_scales(m, k, group, 1.0);
     let x = vec![0.01f32; k];
@@ -584,13 +578,7 @@ fn bench_ternary_gpu(
     let m2 = 256usize;
     let k2 = 1024usize;
     let n2 = 64usize;
-    let weights2: Vec<i8> = (0..m2 * k2)
-        .map(|i| match i % 3 {
-            0 => 0i8,
-            1 => 1i8,
-            _ => -1i8,
-        })
-        .collect();
+    let weights2 = ternary_pattern(m2 * k2);
     let packed2 = pack_ternary_matrix(&weights2, m2, k2);
     let scales2 = uniform_group_scales(m2, k2, group, 1.0);
     let b = vec![0.01f32; k2 * n2];
@@ -621,22 +609,23 @@ fn bench_ternary_gpu(
 
     // Host-side dense f32 reference GEMV wall time (same shape as gemv bench)
     // for a coarse packed-vs-dense latency comparison (not FLOP-fair).
+    // Reuse `y_host` outside the timed loop so allocation is not in the sample.
     let dense_w: Vec<f32> = weights.iter().map(|&t| t as f32).collect();
+    let mut y_host = vec![0.0f32; m];
     results.push(run_benchmark(
         "dense_f32_gemv_1024x4096_host",
         config.warmup,
         config.iterations.min(50),
         || {
-            let mut y = vec![0.0f32; m];
             for mi in 0..m {
                 let mut acc_v = 0.0f32;
                 let row = mi * k;
                 for ki in 0..k {
                     acc_v += dense_w[row + ki] * x[ki];
                 }
-                y[mi] = acc_v;
+                y_host[mi] = acc_v;
             }
-            std::hint::black_box(y);
+            std::hint::black_box(&y_host);
         },
     ));
 

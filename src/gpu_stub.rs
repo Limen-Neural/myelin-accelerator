@@ -1,4 +1,4 @@
-// Copyright 2026 Raul Mc
+// Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::fmt;
@@ -504,6 +504,34 @@ mod tests {
         let mut c = GpuBuffer::<f32>::alloc(1).unwrap();
         assert!(matches!(
             acc.ternary_gemm(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
+                .unwrap_err(),
+            GpuError::NoGpu
+        ));
+    }
+
+    #[test]
+    fn accelerator_ternary_gemv_async_returns_no_gpu() {
+        let acc = GpuAccelerator::new();
+        let w = GpuBuffer::<u32>::alloc(1).unwrap();
+        let s = GpuBuffer::<f32>::alloc(1).unwrap();
+        let x = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut y = GpuBuffer::<f32>::alloc(1).unwrap();
+        assert!(matches!(
+            acc.ternary_gemv_async(&w, &s, &x, &mut y, 1, 1, 1, false)
+                .unwrap_err(),
+            GpuError::NoGpu
+        ));
+    }
+
+    #[test]
+    fn accelerator_ternary_gemm_async_returns_no_gpu() {
+        let acc = GpuAccelerator::new();
+        let w = GpuBuffer::<u32>::alloc(1).unwrap();
+        let s = GpuBuffer::<f32>::alloc(1).unwrap();
+        let b = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut c = GpuBuffer::<f32>::alloc(1).unwrap();
+        assert!(matches!(
+            acc.ternary_gemm_async(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .unwrap_err(),
             GpuError::NoGpu
         ));

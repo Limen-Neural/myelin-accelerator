@@ -1,0 +1,59 @@
+# Copyright 2026 Raul Montoya Cardenas
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Keep Docker context small and free of host credentials / local state.
+# Especially important: actions-runner/ holds registration credentials.
+
+.git
+.gitignore
+.gitattributes
+
+# Self-hosted Actions runner (credentials)
+actions-runner
+**/actions-runner
+
+# Build / IDE / local tooling
+target
+cmake-build-*
+CMakeCache.txt
+CMakeFiles
+compile_commands.json
+.idea
+.vscode
+.cursor
+.clangd
+.junie
+.zed
+.ai
+
+# Agent skill installs and swarm state
+.agents
+agent
+.claude
+.swarm
+.swarm-worktrees
+.opencode
+.kilo
+.mimocode
+.cline
+skills-lock.json
+
+# Local secrets / env
+.env
+.env.*
+*.pem
+*.key
+.credentials
+.credentials_rsaparams
+
+# Profiling / benchmark artifacts
+*.nsys-rep
+*.qdrep
+*.ncu-rep
+*.ptx
+*.cubin
+benchmark_results.csv
+benchmark_results.json
+
+# Docs site noise not needed in image
+**/.DS_Store

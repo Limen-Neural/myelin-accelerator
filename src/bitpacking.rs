@@ -1,4 +1,4 @@
-// Copyright 2026 Raul Mc
+// Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Binary and ternary bitpacking utilities.
@@ -318,6 +318,11 @@ pub fn uniform_group_scales(m: usize, k: usize, group_size: usize, scale: f32) -
 ///
 /// # Panics
 /// Panics if `group_size == 0` or if `weights_f32.len() < m * k`.
+///
+/// Non-finite weights: `NaN` / `±Inf` do not update the running abs-max
+/// (`NaN > x` is false). An all-non-finite (or all-zero) group keeps the
+/// default scale `1.0`. Callers that need strict NaN rejection should scan
+/// inputs before packing.
 pub fn group_scales_from_abs_max(
     weights_f32: &[f32],
     m: usize,
@@ -795,8 +800,8 @@ mod tests {
         for col in 0..n {
             let x: Vec<f32> = (0..4).map(|kk| b[kk * n + col]).collect();
             let y = ternary_gemv_ref(&packed, &scales, &x, 2, 4, 2, false);
-            assert!((c[0 * n + col] - y[0]).abs() < 1e-5);
-            assert!((c[1 * n + col] - y[1]).abs() < 1e-5);
+            assert!((c[col] - y[0]).abs() < 1e-5);
+            assert!((c[n + col] - y[1]).abs() < 1e-5);
         }
     }
 

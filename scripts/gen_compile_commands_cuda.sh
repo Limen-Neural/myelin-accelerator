@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright 2026 Raul Mc
+# Copyright 2026 Raul Montoya Cardenas
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
 # Emit compile_commands.json for cu/*.cu so C++ tooling (Qodana/clangd) can
@@ -11,11 +11,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export ROOT
 
-if [[ -x /usr/local/cuda/bin/nvcc ]]; then
+# Prefer explicit CUDA_HOME / CUDA_PATH; only then fall back to /usr/local/cuda.
+if [[ -n "${CUDA_HOME:-}" ]]; then
+  export CUDA_HOME
+elif [[ -n "${CUDA_PATH:-}" ]]; then
+  export CUDA_HOME="${CUDA_PATH}"
+elif [[ -x /usr/local/cuda/bin/nvcc ]]; then
   export CUDA_HOME
   CUDA_HOME="$(readlink -f /usr/local/cuda 2>/dev/null || echo /usr/local/cuda)"
-elif [[ -n "${CUDA_HOME:-}" ]]; then
-  export CUDA_HOME
 else
   export CUDA_HOME="/usr/local/cuda"
 fi
@@ -30,9 +33,14 @@ root = Path(os.environ["ROOT"])
 cu_dir = root / "cu"
 cuda_home = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda"))
 include_cuda = cuda_home / "include"
-# Prefer a CUDA-capable frontend so Qodana/clangd understand __global__/blockIdx.
-# Fall back to host C++ only if neither clang++ nor nvcc is available.
-clangxx = shutil.which("clang++")
+toolkit_ok = cuda_home.is_dir() and include_cuda.is_dir()
+
+# Prefer a CUDA-capable frontend only when a real toolkit is present so
+# clang++ -x cuda --cuda-path=... can resolve cuda_runtime.h.
+# Fall back to host C++ if neither clang++ (with toolkit) nor nvcc is available.
+clangxx = (
+    shutil.which("clang++") if toolkit_ok else None
+)
 nvcc = shutil.which("nvcc") or (
     str(cuda_home / "bin" / "nvcc") if (cuda_home / "bin" / "nvcc").is_file() else None
 )
@@ -47,14 +55,15 @@ def base_args(rel: str) -> list[str]:
             "cuda",
             f"--cuda-path={cuda_home}",
             f"-I{cu_dir}",
+            f"-I{include_cuda}",
+            # Host-side parse only; do not require a device binary.
+            "--cuda-host-only",
+            "-c",
+            rel,
         ]
-        if include_cuda.is_dir():
-            args.append(f"-I{include_cuda}")
-        # Host-side parse only; do not require a device binary.
-        args.extend(["--cuda-host-only", "-c", rel])
         return args
     if nvcc:
-        args = [
+        return [
             nvcc,
             "-std=c++17",
             "-D__STRICT_ANSI__",
@@ -62,7 +71,6 @@ def base_args(rel: str) -> list[str]:
             "-c",
             rel,
         ]
-        return args
     # Last resort: plain C++ (limited CUDA parse fidelity).
     args = [
         os.environ.get("CXX", "c++"),

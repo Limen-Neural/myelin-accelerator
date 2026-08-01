@@ -1,4 +1,4 @@
-// Copyright 2026 Raul Mc
+// Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // ════════════════════════════════════════════════════════════════════
@@ -45,12 +45,14 @@ void ternary_gemv(
     int group_size,
     int skip_zeros)
 {
-    if (M <= 0 || K <= 0 || group_size <= 0) return;
+    // K == 0 is a valid empty product: write zeros into y (do not early-return).
+    if (M <= 0 || K < 0 || group_size <= 0) return;
     if (packed_w == nullptr || scales == nullptr || x == nullptr || y == nullptr)
         return;
 
     const unsigned int words_k = ternary_words((unsigned int)K);
-    const int n_groups = (K + group_size - 1) / group_size;
+    // Overflow-safe ceil(K / group_size) for positive K (avoids K+group_size-1).
+    const int n_groups = (K > 0) ? (1 + (K - 1) / group_size) : 0;
 
     // Block-strided over output rows.
     for (int m = (int)(blockIdx.x * blockDim.x + threadIdx.x);
@@ -103,7 +105,8 @@ void ternary_gemm(
     int group_size,
     int skip_zeros)
 {
-    if (M <= 0 || K <= 0 || N <= 0 || group_size <= 0) return;
+    // K == 0 is a valid empty product: write zeros into C (do not early-return).
+    if (M <= 0 || K < 0 || N <= 0 || group_size <= 0) return;
     if (packed_w == nullptr || scales == nullptr || B == nullptr || C == nullptr)
         return;
 
@@ -117,7 +120,8 @@ void ternary_gemm(
     const int n = (int)(tid % (int64_t)N);
 
     const unsigned int words_k = ternary_words((unsigned int)K);
-    const int n_groups = (K + group_size - 1) / group_size;
+    // Overflow-safe ceil(K / group_size) for positive K (avoids K+group_size-1).
+    const int n_groups = (K > 0) ? (1 + (K - 1) / group_size) : 0;
 
     const unsigned int* __restrict__ row_w =
         packed_w + (size_t)m * words_k;

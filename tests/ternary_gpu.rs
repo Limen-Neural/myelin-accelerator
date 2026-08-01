@@ -1,4 +1,4 @@
-// Copyright 2026 Raul Mc
+// Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! GPU goldens for packed ternary GEMV/GEMM (requires CUDA + sm_120 driver).

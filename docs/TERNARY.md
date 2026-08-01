@@ -35,7 +35,7 @@ Packed weight matrices are **row-major**:
 
 - Row length in words: `ternary_word_count(k)`
 - Total words: `packed_words_for_matrix(m, k) = m * ternary_word_count(k)`
-- Use [`pack_ternary_matrix`] (not flat `pack_ternary` on `m*k`) so rows do not
+- Use `pack_ternary_matrix` (not flat `pack_ternary` on `m*k`) so rows do not
   share a word when `k` is not a multiple of 16.
 
 ---

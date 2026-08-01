@@ -1,4 +1,4 @@
-# Copyright 2026 Raul Mc
+# Copyright 2026 Raul Montoya Cardenas
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
 # Reproducible CUDA 13.3.1 toolkit build for myelin-accelerator.

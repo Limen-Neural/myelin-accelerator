@@ -3,7 +3,7 @@ name = "myelin-accelerator"
 version = "0.1.0"
 edition = "2024"
 description = "CUDA spiking-network kernels + safe Rust FFI wrappers (Tier 1)"
-authors = ["Raul Mc <raulmc@example.com>"]
+authors = ["Raul Montoya Cardenas <montoyaraul34@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Limen-Neural/myelin-accelerator"
 
