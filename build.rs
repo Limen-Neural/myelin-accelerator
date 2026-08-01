@@ -1,4 +1,4 @@
-// Copyright 2026 Raul Mc
+// Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::env;
@@ -19,6 +19,7 @@ const KERNELS: &[(&str, &str)] = &[
     ("spiking_network.cu", "spiking_network_sm_120.ptx"),
     ("vector_similarity.cu", "vector_similarity_sm_120.ptx"),
     ("satsolver.cu", "satsolver_sm_120.ptx"),
+    ("ternary_gemm.cu", "ternary_gemm_sm_120.ptx"),
 ];
 
 fn main() {

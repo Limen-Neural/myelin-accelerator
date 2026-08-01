@@ -13,20 +13,22 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 - `SAT path`: `atomicMin` is gone from the hot reduction path.
 - `Routing path`: `cosine_similarity_top_k` now uses warp-participating top-k reduction instead of a single-thread selection tail.
 - `Rust FFI`: kernel symbols are loaded through `src/gpu/kernel.rs`; the codebase stays ABI-consistent with the CUDA side.
-- Host **binary/ternary bitpacking** lives in `src/bitpacking.rs` (device ternary GEMV/GEMM is tracked separately).
+- Host **binary/ternary bitpacking** + group scales + CPU ref matmul: `src/bitpacking.rs`.
+- Device **ternary GEMV/GEMM** (group-scaled, optional zero-skip): `cu/ternary_gemm.cu` — see [docs/TERNARY.md](docs/TERNARY.md).
 
 ## Module map
 
 | Path | Role | Public? |
 |------|------|---------|
 | `src/lib.rs` | Crate root re-exports | yes |
-| `src/bitpacking.rs` | Host binary/ternary pack/unpack | yes (`bitpacking`) |
+| `src/bitpacking.rs` | Host binary/ternary pack/unpack, scales, ref GEMV/GEMM | yes (`bitpacking`) |
 | `src/gpu/` | CUDA context, PTX load, buffers, launches | via re-exports when `cuda` |
 | `src/gpu_stub.rs` | CPU-safe stand-ins without toolkit | used when `cuda` off |
-| `cu/*.cu` | Device kernels (spiking, similarity, SAT) | via PTX + wrappers |
+| `cu/*.cu` | Device kernels (spiking, similarity, SAT, ternary) | via PTX + wrappers |
 | `examples/benchmark.rs` | Latency / GPU info harness | feature `bench` (+ `cuda` for GPU) |
 | `build.rs` / `CMakeLists.txt` | `nvcc -ptx` quality path | build-only |
 | `docs/ARCHITECTURE.md` | Ownership + API boundary | docs |
+| `docs/TERNARY.md` | Ternary encoding, scales, GOZ1 interop, kernels | docs |
 
 ### Features
 
@@ -58,9 +60,9 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 
 ```toml
 [dependencies]
-myelin-accelerator = "0.1.0"
+myelin-accelerator = "0.2.0"
 # Optional GPU:
-# myelin-accelerator = { version = "0.1.0", features = ["cuda"] }
+# myelin-accelerator = { version = "0.2.0", features = ["cuda"] }
 ```
 
 ```rust

@@ -1,4 +1,4 @@
-// Copyright 2026 Raul Mc
+// Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Reproducible GPU benchmark harness for myelin-accelerator kernels.
@@ -502,6 +502,130 @@ fn bench_gpu_kernels(config: &Config) -> Vec<BenchmarkResult> {
                 n_walkers as i32,
             )
             .unwrap();
+        },
+    ));
+
+    // Packed ternary GEMV / GEMM (group-scaled)
+    results.extend(bench_ternary_gpu(&acc, config));
+
+    results
+}
+
+#[cfg(feature = "cuda")]
+fn bench_ternary_gpu(
+    acc: &myelin_accelerator::GpuAccelerator,
+    config: &Config,
+) -> Vec<BenchmarkResult> {
+    use myelin_accelerator::GpuBuffer;
+    use myelin_accelerator::bitpacking::{
+        DEFAULT_GROUP_SIZE, pack_ternary_matrix, uniform_group_scales,
+    };
+
+    let mut results = Vec::new();
+
+    // Mid-size GEMV: M=1024, K=4096 (embedding-ish strip; not full vocab)
+    let m = 1024usize;
+    let k = 4096usize;
+    let group = DEFAULT_GROUP_SIZE;
+    let weights = ternary_pattern(m * k);
+    let packed = pack_ternary_matrix(&weights, m, k);
+    let scales = uniform_group_scales(m, k, group, 1.0);
+    let x = vec![0.01f32; k];
+    let d_w = GpuBuffer::from_slice(&packed).unwrap();
+    let d_s = GpuBuffer::from_slice(&scales).unwrap();
+    let d_x = GpuBuffer::from_slice(&x).unwrap();
+    let mut d_y = GpuBuffer::<f32>::alloc(m).unwrap();
+
+    results.push(run_benchmark(
+        "ternary_gemv_1024x4096",
+        config.warmup,
+        config.iterations,
+        || {
+            acc.ternary_gemv(
+                &d_w,
+                &d_s,
+                &d_x,
+                &mut d_y,
+                m as i32,
+                k as i32,
+                group as i32,
+                false,
+            )
+            .unwrap();
+        },
+    ));
+
+    results.push(run_benchmark(
+        "ternary_gemv_1024x4096_skip_zeros",
+        config.warmup,
+        config.iterations,
+        || {
+            acc.ternary_gemv(
+                &d_w,
+                &d_s,
+                &d_x,
+                &mut d_y,
+                m as i32,
+                k as i32,
+                group as i32,
+                true,
+            )
+            .unwrap();
+        },
+    ));
+
+    // Smaller GEMM tile for latency (M=256, K=1024, N=64)
+    let m2 = 256usize;
+    let k2 = 1024usize;
+    let n2 = 64usize;
+    let weights2 = ternary_pattern(m2 * k2);
+    let packed2 = pack_ternary_matrix(&weights2, m2, k2);
+    let scales2 = uniform_group_scales(m2, k2, group, 1.0);
+    let b = vec![0.01f32; k2 * n2];
+    let d_w2 = GpuBuffer::from_slice(&packed2).unwrap();
+    let d_s2 = GpuBuffer::from_slice(&scales2).unwrap();
+    let d_b = GpuBuffer::from_slice(&b).unwrap();
+    let mut d_c = GpuBuffer::<f32>::alloc(m2 * n2).unwrap();
+
+    results.push(run_benchmark(
+        "ternary_gemm_256x1024x64",
+        config.warmup,
+        config.iterations,
+        || {
+            acc.ternary_gemm(
+                &d_w2,
+                &d_s2,
+                &d_b,
+                &mut d_c,
+                m2 as i32,
+                k2 as i32,
+                n2 as i32,
+                group as i32,
+                false,
+            )
+            .unwrap();
+        },
+    ));
+
+    // Host-side dense f32 reference GEMV wall time (same shape as gemv bench)
+    // for a coarse packed-vs-dense latency comparison (not FLOP-fair).
+    // Reuse `y_host` outside the timed loop so allocation is not in the sample.
+    let dense_w: Vec<f32> = weights.iter().map(|&t| t as f32).collect();
+    let mut y_host = vec![0.0f32; m];
+    results.push(run_benchmark(
+        "dense_f32_gemv_1024x4096_host",
+        config.warmup,
+        config.iterations.min(50),
+        || {
+            for mi in 0..m {
+                let mut acc_v = 0.0f32;
+                let row = mi * k;
+                for ki in 0..k {
+                    acc_v += dense_w[row + ki] * x[ki];
+                }
+                y_host[mi] = acc_v;
+            }
+            std::hint::black_box(&y_host);
         },
     ));
 

@@ -275,16 +275,20 @@ ctest --test-dir cmake-build-debug --output-on-failure
 
 ### Cloud CI vs local
 
+Toolkit pin for containerized jobs: **CUDA 13.3.1** (`nvidia/cuda:13.3.1-devel-ubuntu24.04`),
+matching ShipOfTheseus `/usr/local/cuda` → `cuda-13.3`.
+
 | Job | Runner | GPU runtime? |
 |-----|--------|--------------|
 | Lint / CPU checks | GitHub-hosted `ubuntu-latest` | No — stub / no-default-features |
-| `CUDA build [self-hosted] (sm_120)` | Labels `self-hosted,linux,x64,gpu,cuda` | Compile + clippy + `cargo test --features cuda` + PTX file checks — **only if a runner is online** |
-| Local quality gate above | Developer workstation | Full runtime (ignored tests, bench, optional Nsight) |
+| `CUDA PTX compile [cloud, toolkit 13.3.1]` | `ubuntu-latest` + CUDA **13.3.1** container | **Compile only** — `cargo build/clippy --features cuda`, PTX non-stub + `ternary_gemm`, offline `ptxas -arch=sm_120` |
+| `CUDA build [self-hosted] (sm_120)` | Labels `self-hosted,linux,x64,gpu,cuda` | Full: build/clippy/test + **`--ignored` goldens** + PTX symbols (incl. ternary) + ptxas + short `bench,cuda` |
+| `Docker CUDA 13.3.1` | GitHub-hosted | Image build (`Dockerfile`) — compile path inside 13.3.1 devel image |
+| `Qodana` | GitHub-hosted | Rust (primary) + C++ `cu/` (secondary); needs `QODANA_TOKEN` |
+| Local quality gate above | Developer workstation | Full runtime (same as self-hosted, optional Nsight) |
 
-CI’s cuda job **does not** pass `-- --ignored`, so `test_load_kernels` is not a
-cloud gate unless someone adds that step on the self-hosted job. Prefer
-keeping heavy runtime gates local so PRs from machines without GPUs stay
-unblocked.
+**Branch protection (recommended):** require lint, CPU checks, and cloud PTX compile.
+Make self-hosted required only when the runner is reliably online; otherwise PRs queue.
 
 ### Self-hosted runner notes (this repo)
 

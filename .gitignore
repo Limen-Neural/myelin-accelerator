@@ -54,6 +54,11 @@ actions-runner/
 .kilo/
 .mimocode/
 .cline/
+# Local `npx skills add` installs (project-scoped CUDA/kernel skills)
+/.agents/
+/agent/
+.claude/skills/
+/skills-lock.json
 
 # OpenCode swarm runtime and worktree lanes
 .swarm/

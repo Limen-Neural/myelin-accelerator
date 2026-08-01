@@ -1,4 +1,4 @@
-// Copyright 2026 Raul Mc
+// Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // ════════════════════════════════════════════════════════════════════
@@ -27,6 +27,8 @@ static VECTOR_SIMILARITY_PTX: &str =
     include_str!(concat!(env!("OUT_DIR"), "/vector_similarity_sm_120.ptx"));
 
 static SATSOLVER_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/satsolver_sm_120.ptx"));
+
+static TERNARY_GEMM_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/ternary_gemm_sm_120.ptx"));
 
 // ── KernelModule ─────────────────────────────────────────────────────────────
 
@@ -91,6 +93,13 @@ impl KernelModule {
                 "satsolver_best_reduce_pass1",
                 "satsolver_best_reduce_pass2",
             ],
+        )?;
+        Self::load_and_map(
+            &mut modules,
+            &mut func_map,
+            TERNARY_GEMM_PTX,
+            "ternary_gemm",
+            &["ternary_gemv", "ternary_gemm"],
         )?;
 
         Ok(Self { modules, func_map })
@@ -166,5 +175,7 @@ mod tests {
         assert!(kernels.get_function("cosine_similarity_batched").is_ok());
         assert!(kernels.get_function("lif_step").is_ok());
         assert!(kernels.get_function("satsolver_step").is_ok());
+        assert!(kernels.get_function("ternary_gemv").is_ok());
+        assert!(kernels.get_function("ternary_gemm").is_ok());
     }
 }

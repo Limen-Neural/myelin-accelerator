@@ -1,4 +1,4 @@
-// Copyright 2026 Raul Mc
+// Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // ════════════════════════════════════════════════════════════════════
@@ -63,5 +63,27 @@ impl<T: cust::memory::DeviceCopy + Default + Clone> GpuBuffer<T> {
     /// Raw device pointer (for kernel launches via `cust`).
     pub fn as_device_ptr(&self) -> cust::memory::DevicePointer<T> {
         self.inner.as_device_ptr()
+    }
+}
+
+impl GpuBuffer<f32> {
+    /// Zero the first `count` elements on device; leaves any tail untouched.
+    ///
+    /// Uses a device memset (no host-sized staging buffer), so empty-K GEMM/GEMV
+    /// zero-fills stay bounded in host memory for large `M*N`.
+    pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
+        if count > self.len {
+            return Err(GpuError::MemoryError(format!(
+                "zero_prefix: count {count} > device len {}",
+                self.len
+            )));
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        let mut prefix = self.inner.index(0..count);
+        prefix
+            .set_zero()
+            .map_err(|e| GpuError::MemoryError(format!("zero_prefix: {e:?}")))
     }
 }

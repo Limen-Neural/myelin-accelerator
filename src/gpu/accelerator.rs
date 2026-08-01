@@ -1,12 +1,14 @@
-// Copyright 2026 Raul Mc
+// Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::bitpacking::TERNARY_VALUES_PER_WORD;
 use crate::gpu::context::GpuContext;
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::kernel::KernelModule;
 use crate::gpu::memory::GpuBuffer;
 use cust::launch;
 use cust::stream::{Stream, StreamFlags};
+use nvtx::{range_pop, range_push};
 use std::cell::RefCell;
 use tracing::warn;
 
@@ -334,6 +336,211 @@ impl GpuAccelerator {
             ))
             .map_err(|e| GpuError::LaunchFailed(format!("poisson_encode launch: {e:?}")))?;
         }
+
+        Ok(())
+    }
+
+    /// Group-scaled ternary GEMV: `y = scale(W) @ x`.
+    ///
+    /// `packed_w` is row-major `M × ternary_word_count(K)` words.
+    /// `scales` is `M × groups_per_row(K, group_size)` f32.
+    /// When `skip_zeros` is true, zero trits are skipped on device.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ternary_gemv(
+        &self,
+        packed_w: &GpuBuffer<u32>,
+        scales: &GpuBuffer<f32>,
+        x: &GpuBuffer<f32>,
+        y: &mut GpuBuffer<f32>,
+        m: i32,
+        k: i32,
+        group_size: i32,
+        skip_zeros: bool,
+    ) -> GpuResult<()> {
+        self.ternary_gemv_async(packed_w, scales, x, y, m, k, group_size, skip_zeros)?;
+        self.synchronize()
+    }
+
+    /// Async variant of [`Self::ternary_gemv`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn ternary_gemv_async(
+        &self,
+        packed_w: &GpuBuffer<u32>,
+        scales: &GpuBuffer<f32>,
+        x: &GpuBuffer<f32>,
+        y: &mut GpuBuffer<f32>,
+        m: i32,
+        k: i32,
+        group_size: i32,
+        skip_zeros: bool,
+    ) -> GpuResult<()> {
+        if m < 0 || k < 0 {
+            return Err(GpuError::LaunchFailed(format!(
+                "ternary_gemv: m and k must be >= 0, got m={m} k={k}"
+            )));
+        }
+        if group_size <= 0 {
+            return Err(GpuError::LaunchFailed(format!(
+                "ternary_gemv: group_size must be > 0, got {group_size}"
+            )));
+        }
+
+        let m_u = m as usize;
+        let k_u = k as usize;
+        Self::expect_len("y", y.len(), m_u)?;
+
+        // Match host-ref: empty product is the zero vector (not "leave y untouched").
+        if m == 0 {
+            return Ok(());
+        }
+        if k == 0 {
+            // Device memset — no host-sized staging buffer; preserve pooled tail.
+            y.zero_prefix(m_u)?;
+            return Ok(());
+        }
+
+        let group_u = group_size as usize;
+        let words_per_row = k_u.div_ceil(TERNARY_VALUES_PER_WORD);
+        let n_groups = k_u.div_ceil(group_u);
+
+        Self::expect_len(
+            "packed_w",
+            packed_w.len(),
+            m_u.saturating_mul(words_per_row),
+        )?;
+        Self::expect_len("scales", scales.len(), m_u.saturating_mul(n_groups))?;
+        Self::expect_len("x", x.len(), k_u)?;
+
+        let kernels = self.kernels()?;
+        let func = kernels.get_function("ternary_gemv")?;
+        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        let block = 256u32;
+        let grid = Self::ceil_div_u32(m as u32, block);
+        let skip = if skip_zeros { 1i32 } else { 0i32 };
+
+        range_push!("ternary_gemv");
+        let launch_result = unsafe {
+            launch!(func<<<grid, block, 0, stream>>>(
+                packed_w.as_device_ptr(),
+                scales.as_device_ptr(),
+                x.as_device_ptr(),
+                y.as_device_ptr(),
+                m,
+                k,
+                group_size,
+                skip,
+            ))
+        };
+        range_pop!();
+        launch_result.map_err(|e| GpuError::LaunchFailed(format!("ternary_gemv launch: {e:?}")))?;
+
+        Ok(())
+    }
+
+    /// Group-scaled ternary GEMM: `C = scale(W) @ B`.
+    ///
+    /// `B` is `K × N` row-major f32; `C` is `M × N` row-major f32.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ternary_gemm(
+        &self,
+        packed_w: &GpuBuffer<u32>,
+        scales: &GpuBuffer<f32>,
+        b: &GpuBuffer<f32>,
+        c: &mut GpuBuffer<f32>,
+        m: i32,
+        k: i32,
+        n: i32,
+        group_size: i32,
+        skip_zeros: bool,
+    ) -> GpuResult<()> {
+        self.ternary_gemm_async(packed_w, scales, b, c, m, k, n, group_size, skip_zeros)?;
+        self.synchronize()
+    }
+
+    /// Async variant of [`Self::ternary_gemm`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn ternary_gemm_async(
+        &self,
+        packed_w: &GpuBuffer<u32>,
+        scales: &GpuBuffer<f32>,
+        b: &GpuBuffer<f32>,
+        c: &mut GpuBuffer<f32>,
+        m: i32,
+        k: i32,
+        n: i32,
+        group_size: i32,
+        skip_zeros: bool,
+    ) -> GpuResult<()> {
+        if m < 0 || k < 0 || n < 0 {
+            return Err(GpuError::LaunchFailed(format!(
+                "ternary_gemm: m, k, n must be >= 0, got m={m} k={k} n={n}"
+            )));
+        }
+        if group_size <= 0 {
+            return Err(GpuError::LaunchFailed(format!(
+                "ternary_gemm: group_size must be > 0, got {group_size}"
+            )));
+        }
+
+        let m_u = m as usize;
+        let k_u = k as usize;
+        let n_u = n as usize;
+        Self::expect_len("c", c.len(), m_u.saturating_mul(n_u))?;
+
+        // Match host-ref: empty product zeros C (not "leave C untouched").
+        if m == 0 || n == 0 {
+            return Ok(());
+        }
+        if k == 0 {
+            // Device memset — no host-sized staging buffer; preserve pooled tail.
+            c.zero_prefix(m_u.saturating_mul(n_u))?;
+            return Ok(());
+        }
+
+        let group_u = group_size as usize;
+        let words_per_row = k_u.div_ceil(TERNARY_VALUES_PER_WORD);
+        let n_groups = k_u.div_ceil(group_u);
+
+        Self::expect_len(
+            "packed_w",
+            packed_w.len(),
+            m_u.saturating_mul(words_per_row),
+        )?;
+        Self::expect_len("scales", scales.len(), m_u.saturating_mul(n_groups))?;
+        Self::expect_len("b", b.len(), k_u.saturating_mul(n_u))?;
+
+        let kernels = self.kernels()?;
+        let func = kernels.get_function("ternary_gemm")?;
+        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        // m,n are nonnegative i32 after validation; product always fits u64.
+        let total = (m as u64) * (n as u64);
+        let block = 256u32;
+        // Launch uses 1-D grid of u32 block indices over flattened M*N threads.
+        let grid_u64 = total.div_ceil(block as u64);
+        if grid_u64 > u32::MAX as u64 {
+            return Err(GpuError::LaunchFailed(format!(
+                "ternary_gemm: grid too large for 1-D launch ({grid_u64} blocks, M*N={total})"
+            )));
+        }
+        let grid = grid_u64 as u32;
+        let skip = if skip_zeros { 1i32 } else { 0i32 };
+
+        range_push!("ternary_gemm");
+        let launch_result = unsafe {
+            launch!(func<<<grid, block, 0, stream>>>(
+                packed_w.as_device_ptr(),
+                scales.as_device_ptr(),
+                b.as_device_ptr(),
+                c.as_device_ptr(),
+                m,
+                k,
+                n,
+                group_size,
+                skip,
+            ))
+        };
+        range_pop!();
+        launch_result.map_err(|e| GpuError::LaunchFailed(format!("ternary_gemm launch: {e:?}")))?;
 
         Ok(())
     }
