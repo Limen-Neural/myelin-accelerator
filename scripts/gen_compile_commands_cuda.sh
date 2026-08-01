@@ -25,26 +25,41 @@ is_cuda_home() {
   [[ -d "${home}/include" && -f "${home}/include/cuda_runtime.h" ]]
 }
 
+# Echo absolute path of a directory that exists (for compile_commands portability).
+abs_dir() {
+  local d="$1"
+  (cd "${d}" && pwd -P) 2>/dev/null || (cd "${d}" && pwd)
+}
+
 resolve_cuda_home() {
-  if [[ -n "${CUDA_NVCC:-}" && -x "${CUDA_NVCC}" ]]; then
+  local nvcc_path=""
+  if [[ -n "${CUDA_NVCC:-}" ]]; then
+    if [[ -x "${CUDA_NVCC}" ]]; then
+      nvcc_path="${CUDA_NVCC}"
+    else
+      # Bare PATH name (e.g. ccache-nvcc) — resolve like which(1).
+      nvcc_path="$(command -v "${CUDA_NVCC}" 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -n "${nvcc_path}" && -x "${nvcc_path}" ]]; then
     local bin_dir home
-    bin_dir="$(cd "$(dirname "${CUDA_NVCC}")" && pwd)"
+    bin_dir="$(cd "$(dirname "${nvcc_path}")" && pwd)"
     home="$(cd "${bin_dir}/.." && pwd)"
     if is_cuda_home "${home}"; then
-      echo "${home}"
+      abs_dir "${home}"
       return
     fi
   fi
   if [[ -n "${CUDA_HOME:-}" ]] && is_cuda_home "${CUDA_HOME}"; then
-    echo "${CUDA_HOME}"
+    abs_dir "${CUDA_HOME}"
     return
   fi
   if [[ -n "${CUDA_PATH:-}" ]] && is_cuda_home "${CUDA_PATH}"; then
-    echo "${CUDA_PATH}"
+    abs_dir "${CUDA_PATH}"
     return
   fi
   if is_cuda_home /usr/local/cuda; then
-    readlink -f /usr/local/cuda 2>/dev/null || echo /usr/local/cuda
+    abs_dir /usr/local/cuda
     return
   fi
   echo /usr/local/cuda
@@ -83,17 +98,25 @@ toolkit_ok = cuda_home.is_dir() and runtime_h.is_file()
 def executable_path(p: Path | str | None) -> str | None:
     """Absolute path if p exists and is executable.
 
-    Uses abspath (not resolve/realpath) so basename-dispatched wrappers
-    such as ccache's clang++/nvcc symlinks keep their entry-point name.
+    Bare names (no directory separator) are resolved via PATH (shutil.which)
+    so CUDA_NVCC=ccache-nvcc works. Uses absolute() not resolve() so
+    basename-dispatched wrappers keep their entry-point name.
     """
     if not p:
         return None
-    path = Path(p)
+    raw = str(p)
+    # Single-component PATH lookup (e.g. "nvcc", "ccache-nvcc").
+    if os.sep not in raw and (os.altsep is None or os.altsep not in raw):
+        found = shutil.which(raw)
+        if not found:
+            return None
+        path = Path(found)
+    else:
+        path = Path(raw)
     if not path.is_file():
         return None
     if not os.access(path, os.X_OK):
         return None
-    # absolute() does not follow the final symlink target.
     return str(path.absolute())
 
 
@@ -104,8 +127,7 @@ if env_nvcc := os.environ.get("CUDA_NVCC"):
 if nvcc is None:
     nvcc = executable_path(cuda_home / "bin" / "nvcc")
 if nvcc is None:
-    which = shutil.which("nvcc")
-    nvcc = executable_path(which) if which else None
+    nvcc = executable_path("nvcc")
 
 # Prefer a CUDA-capable frontend only when a real toolkit is present so
 # clang++ -x cuda --cuda-path=... can resolve cuda_runtime.h.
