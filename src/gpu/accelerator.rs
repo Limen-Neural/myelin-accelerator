@@ -394,8 +394,8 @@ impl GpuAccelerator {
             return Ok(());
         }
         if k == 0 {
-            // Zero only the logical prefix; preserve any pooled buffer tail.
-            y.upload_prefix(&vec![0.0f32; m_u])?;
+            // Device memset — no host-sized staging buffer; preserve pooled tail.
+            y.zero_prefix(m_u)?;
             return Ok(());
         }
 
@@ -492,8 +492,8 @@ impl GpuAccelerator {
             return Ok(());
         }
         if k == 0 {
-            // Zero only the logical m*n prefix; preserve any pooled buffer tail.
-            c.upload_prefix(&vec![0.0f32; m_u.saturating_mul(n_u)])?;
+            // Device memset — no host-sized staging buffer; preserve pooled tail.
+            c.zero_prefix(m_u.saturating_mul(n_u))?;
             return Ok(());
         }
 

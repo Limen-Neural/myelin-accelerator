@@ -320,3 +320,63 @@ fn ternary_gemv_empty_k_zeros_output() {
         "empty K must zero y, got {got:?}"
     );
 }
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn ternary_gemv_empty_k_preserves_pooled_tail() {
+    let acc = GpuAccelerator::new();
+    assert!(acc.is_ready());
+
+    let m = 4usize;
+    let packed = GpuBuffer::<u32>::alloc(0).unwrap();
+    let scales = GpuBuffer::<f32>::alloc(0).unwrap();
+    let x = GpuBuffer::<f32>::alloc(0).unwrap();
+    // Oversized pooled buffer: first m are logical output, tail must stay.
+    let mut host = vec![7.0f32; m + 3];
+    for (i, slot) in host.iter_mut().enumerate().skip(m) {
+        *slot = 100.0 + i as f32;
+    }
+    let mut y = GpuBuffer::from_slice(&host).unwrap();
+
+    acc.ternary_gemv(&packed, &scales, &x, &mut y, m as i32, 0, 1, false)
+        .expect("empty-K gemv pooled");
+
+    let got = y.to_vec().unwrap();
+    assert!(
+        got[..m].iter().all(|&v| v == 0.0),
+        "prefix must zero, got {:?}",
+        &got[..m]
+    );
+    assert_eq!(&got[m..], &host[m..], "pooled tail must be preserved");
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn ternary_gemm_empty_k_preserves_pooled_tail() {
+    let acc = GpuAccelerator::new();
+    assert!(acc.is_ready());
+
+    let m = 3usize;
+    let n = 2usize;
+    let logical = m * n;
+    let packed = GpuBuffer::<u32>::alloc(0).unwrap();
+    let scales = GpuBuffer::<f32>::alloc(0).unwrap();
+    let b = GpuBuffer::<f32>::alloc(0).unwrap();
+    let mut host = vec![9.0f32; logical + 2];
+    host[logical] = 42.0;
+    host[logical + 1] = 43.0;
+    let mut c = GpuBuffer::from_slice(&host).unwrap();
+
+    acc.ternary_gemm(
+        &packed, &scales, &b, &mut c, m as i32, 0, n as i32, 1, false,
+    )
+    .expect("empty-K gemm pooled");
+
+    let got = c.to_vec().unwrap();
+    assert!(
+        got[..logical].iter().all(|&v| v == 0.0),
+        "prefix must zero, got {:?}",
+        &got[..logical]
+    );
+    assert_eq!(&got[logical..], &[42.0, 43.0]);
+}

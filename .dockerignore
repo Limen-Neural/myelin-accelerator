@@ -1,10 +1,13 @@
 # Copyright 2026 Raul Montoya Cardenas
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
-# Default-deny Docker build context. Only paths needed for
+# Default-deny Docker build context for:
 #   cargo build/clippy --locked --features cuda
-# are re-included. Prevents host credentials (actions-runner, .env, keys)
-# and unrelated trees from being sent via `COPY . .`.
+# and documented:
+#   docker run --gpus all … cargo test --locked --features cuda [-- --ignored]
+#
+# Prevents host credentials (actions-runner, .env, keys) and build junk
+# from being sent via `COPY . .`.
 
 # Deny everything first
 *
@@ -17,13 +20,29 @@
 !src/**
 !cu
 !cu/**
+!tests
+!tests/**
+
+# Declared [[example]] in Cargo.toml — required for cargo parse / bench example
+!examples
+!examples/**
 
 # Optional docs/license (harmless; useful for image inspection)
 !LICENSE-MIT
 !LICENSE-APACHE
 !README.md
 
-# Declared [[example]] in Cargo.toml — required for cargo parse
-!examples
-!examples/**
+# ── Re-deny after recursive allows (order matters in .dockerignore) ──────────
+# Secrets that might sit under allowlisted trees
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/.credentials
+**/.credentials_rsaparams
 
+# Generated device artifacts under cu/ (sources only)
+cu/**/*.ptx
+cu/**/*.cubin
+**/*.ptx
+**/*.cubin

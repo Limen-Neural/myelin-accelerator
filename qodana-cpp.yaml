@@ -5,6 +5,8 @@
 # Before scan (CI does this):
 #   bash scripts/gen_compile_commands_cuda.sh
 #
+# Linter short name pairs with JetBrains/qodana-action SHA-pinned to v2026.2.0
+# in .github/workflows/qodana.yml (upgrade by bumping the action pin).
 # Local:
 #   qodana scan --config qodana-cpp.yaml --linter qodana-cpp
 

@@ -77,6 +77,8 @@ jobs:
   # Image tracks local default: CUDA toolkit 13.3.1.
   cuda-ptx-cloud:
     name: "CUDA PTX compile [cloud, toolkit 13.3.1]"
+    # CPU-safe gates first (AGENTS.md / CLAUDE.md).
+    needs: [lint, cpu-checks]
     runs-on: ubuntu-latest
     container:
       image: nvidia/cuda:13.3.1-devel-ubuntu24.04@sha256:03c372fd9c65fe7739279f8c65473b315dc61efaaffab03e1e65bc7be7aee61e

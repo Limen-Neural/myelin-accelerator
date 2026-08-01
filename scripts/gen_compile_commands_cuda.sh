@@ -7,9 +7,9 @@
 # (C++17 + STRICT_ANSI). This is NOT a device compile — only host-side analysis.
 #
 # Toolkit resolution (aligned with build.rs find_nvcc):
-#   1. CUDA_NVCC (explicit nvcc path) → parent/../ as home when possible
-#   2. CUDA_HOME if it is a real directory with include/
-#   3. CUDA_PATH if it is a real directory with include/
+#   1. CUDA_NVCC (executable) → parent/../ as home when cuda_runtime.h exists
+#   2. CUDA_HOME if include/cuda_runtime.h exists
+#   3. CUDA_PATH if include/cuda_runtime.h exists
 #   4. /usr/local/cuda when present
 #   5. else /usr/local/cuda (may be missing; frontend falls back to host C++)
 
@@ -18,28 +18,34 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export ROOT
 
+is_cuda_home() {
+  local home="$1"
+  [[ -d "${home}/include" && -f "${home}/include/cuda_runtime.h" ]]
+}
+
 resolve_cuda_home() {
   if [[ -n "${CUDA_NVCC:-}" && -x "${CUDA_NVCC}" ]]; then
-    # CUDA_NVCC=/path/to/bin/nvcc → /path/to
     local bin_dir home
     bin_dir="$(cd "$(dirname "${CUDA_NVCC}")" && pwd)"
     home="$(cd "${bin_dir}/.." && pwd)"
-    if [[ -d "${home}/include" ]]; then
+    if is_cuda_home "${home}"; then
       echo "${home}"
       return
     fi
   fi
-  if [[ -n "${CUDA_HOME:-}" && -d "${CUDA_HOME}/include" ]]; then
+  if [[ -n "${CUDA_HOME:-}" ]] && is_cuda_home "${CUDA_HOME}"; then
     echo "${CUDA_HOME}"
     return
   fi
-  if [[ -n "${CUDA_PATH:-}" && -d "${CUDA_PATH}/include" ]]; then
+  if [[ -n "${CUDA_PATH:-}" ]] && is_cuda_home "${CUDA_PATH}"; then
     echo "${CUDA_PATH}"
     return
   fi
-  if [[ -x /usr/local/cuda/bin/nvcc || -d /usr/local/cuda/include ]]; then
-    readlink -f /usr/local/cuda 2>/dev/null || echo /usr/local/cuda
-    return
+  if is_cuda_home /usr/local/cuda || [[ -x /usr/local/cuda/bin/nvcc ]]; then
+    if is_cuda_home /usr/local/cuda; then
+      readlink -f /usr/local/cuda 2>/dev/null || echo /usr/local/cuda
+      return
+    fi
   fi
   echo /usr/local/cuda
 }
@@ -57,21 +63,36 @@ root = Path(os.environ["ROOT"])
 cu_dir = root / "cu"
 cuda_home = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda"))
 include_cuda = cuda_home / "include"
-toolkit_ok = cuda_home.is_dir() and include_cuda.is_dir()
+runtime_h = include_cuda / "cuda_runtime.h"
+toolkit_ok = cuda_home.is_dir() and runtime_h.is_file()
+
+
+def executable_path(p: Path | str | None) -> str | None:
+    """Return absolute path if p exists and is executable; else None."""
+    if not p:
+        return None
+    path = Path(p)
+    if not path.is_file():
+        return None
+    if not os.access(path, os.X_OK):
+        return None
+    return str(path.resolve())
+
 
 # Prefer toolkit-local nvcc over PATH so CUDA_HOME/CUDA_NVCC overrides win.
-nvcc_home = cuda_home / "bin" / "nvcc"
 nvcc = None
-if os.environ.get("CUDA_NVCC") and Path(os.environ["CUDA_NVCC"]).is_file():
-    nvcc = os.environ["CUDA_NVCC"]
-elif nvcc_home.is_file():
-    nvcc = str(nvcc_home)
-else:
-    nvcc = shutil.which("nvcc")
+if env_nvcc := os.environ.get("CUDA_NVCC"):
+    nvcc = executable_path(env_nvcc)
+if nvcc is None:
+    nvcc = executable_path(cuda_home / "bin" / "nvcc")
+if nvcc is None:
+    which = shutil.which("nvcc")
+    nvcc = executable_path(which) if which else None
 
 # Prefer a CUDA-capable frontend only when a real toolkit is present so
 # clang++ -x cuda --cuda-path=... can resolve cuda_runtime.h.
-clangxx = shutil.which("clang++") if toolkit_ok else None
+clang_which = shutil.which("clang++") if toolkit_ok else None
+clangxx = executable_path(clang_which) if clang_which else None
 
 
 def base_args(rel: str) -> list[str]:
@@ -99,8 +120,11 @@ def base_args(rel: str) -> list[str]:
             rel,
         ]
     # Last resort: plain C++ (limited CUDA parse fidelity).
+    cxx = executable_path(shutil.which(os.environ.get("CXX", "c++")) or "c++") or os.environ.get(
+        "CXX", "c++"
+    )
     args = [
-        os.environ.get("CXX", "c++"),
+        cxx,
         "-std=c++17",
         "-D__STRICT_ANSI__",
         "-D__CUDACC__",
