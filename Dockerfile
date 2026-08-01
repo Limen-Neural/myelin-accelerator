@@ -11,7 +11,7 @@
 #   docker run --rm --gpus all myelin-accelerator:cuda13.3 \
 #     cargo test --locked --features cuda -- --ignored
 
-FROM nvidia/cuda:13.3.1-devel-ubuntu24.04
+FROM nvidia/cuda:13.3.1-devel-ubuntu24.04@sha256:03c372fd9c65fe7739279f8c65473b315dc61efaaffab03e1e65bc7be7aee61e
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_TERM_COLOR=always \

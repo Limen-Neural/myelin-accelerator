@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -25,10 +29,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
         with:
           components: rustfmt, clippy
 
@@ -44,10 +50,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
 
       - name: Cargo test
         run: cargo test --locked
@@ -68,13 +76,15 @@ jobs:
     name: "CUDA PTX compile [cloud, toolkit 13.3.1]"
     runs-on: ubuntu-latest
     container:
-      image: nvidia/cuda:13.3.1-devel-ubuntu24.04
+      image: nvidia/cuda:13.3.1-devel-ubuntu24.04@sha256:03c372fd9c65fe7739279f8c65473b315dc61efaaffab03e1e65bc7be7aee61e
     env:
       CUDA_NVCC: /usr/local/cuda/bin/nvcc
       MYELIN_CUDA_ARCH: sm_120
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust + build deps
         shell: bash
@@ -153,7 +163,7 @@ jobs:
           done
 
       - name: Upload PTX artifacts (cloud)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: ptx-sm_120-cloud-13.3.1
           path: target/debug/build/myelin-accelerator-*/out/*.ptx
@@ -181,10 +191,12 @@ jobs:
           nvidia-smi || true
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
         with:
           components: clippy
 
@@ -319,7 +331,7 @@ jobs:
             --features bench,cuda -- --warmup 2 --iterations 10
 
       - name: Upload PTX artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: ptx-sm_120-self-hosted
           path: |
