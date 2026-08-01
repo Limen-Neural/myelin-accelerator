@@ -23,19 +23,49 @@ fi
 python3 <<'PY'
 import json
 import os
+import shutil
 from pathlib import Path
 
 root = Path(os.environ["ROOT"])
 cu_dir = root / "cu"
 cuda_home = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda"))
 include_cuda = cuda_home / "include"
-cxx = os.environ.get("CXX", "c++")
+# Prefer a CUDA-capable frontend so Qodana/clangd understand __global__/blockIdx.
+# Fall back to host C++ only if neither clang++ nor nvcc is available.
+clangxx = shutil.which("clang++")
+nvcc = shutil.which("nvcc") or (
+    str(cuda_home / "bin" / "nvcc") if (cuda_home / "bin" / "nvcc").is_file() else None
+)
 
-entries = []
-for src in sorted(cu_dir.glob("*.cu")):
-    rel = f"cu/{src.name}"
+
+def base_args(rel: str) -> list[str]:
+    if clangxx:
+        args = [
+            clangxx,
+            "-std=c++17",
+            "-x",
+            "cuda",
+            f"--cuda-path={cuda_home}",
+            f"-I{cu_dir}",
+        ]
+        if include_cuda.is_dir():
+            args.append(f"-I{include_cuda}")
+        # Host-side parse only; do not require a device binary.
+        args.extend(["--cuda-host-only", "-c", rel])
+        return args
+    if nvcc:
+        args = [
+            nvcc,
+            "-std=c++17",
+            "-D__STRICT_ANSI__",
+            f"-I{cu_dir}",
+            "-c",
+            rel,
+        ]
+        return args
+    # Last resort: plain C++ (limited CUDA parse fidelity).
     args = [
-        cxx,
+        os.environ.get("CXX", "c++"),
         "-std=c++17",
         "-D__STRICT_ANSI__",
         "-D__CUDACC__",
@@ -46,15 +76,22 @@ for src in sorted(cu_dir.glob("*.cu")):
     if include_cuda.is_dir():
         args.append(f"-I{include_cuda}")
     args.extend(["-c", rel])
+    return args
+
+
+entries = []
+for src in sorted(cu_dir.glob("*.cu")):
+    rel = f"cu/{src.name}"
     entries.append(
         {
             "directory": str(root),
             "file": rel,
-            "arguments": args,
+            "arguments": base_args(rel),
         }
     )
 
 out = root / "compile_commands.json"
 out.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
-print(f"Wrote {out} ({len(entries)} translation units; CUDA_HOME={cuda_home})")
+frontend = "clang++ -x cuda" if clangxx else ("nvcc" if nvcc else "c++ fallback")
+print(f"Wrote {out} ({len(entries)} TUs; CUDA_HOME={cuda_home}; frontend={frontend})")
 PY
