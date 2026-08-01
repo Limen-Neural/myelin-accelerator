@@ -6,6 +6,8 @@
 # parse kernel sources. Flags mirror build.rs / CMakeLists.txt host path
 # (C++17 + STRICT_ANSI). This is NOT a device compile — only host-side analysis.
 #
+# Requires Python 3.10+ (union syntax); prefer latest stable (3.14.x).
+#
 # Toolkit resolution (aligned with build.rs find_nvcc):
 #   1. CUDA_NVCC (executable) → parent/../ as home when cuda_runtime.h exists
 #   2. CUDA_HOME if include/cuda_runtime.h exists
@@ -41,11 +43,9 @@ resolve_cuda_home() {
     echo "${CUDA_PATH}"
     return
   fi
-  if is_cuda_home /usr/local/cuda || [[ -x /usr/local/cuda/bin/nvcc ]]; then
-    if is_cuda_home /usr/local/cuda; then
-      readlink -f /usr/local/cuda 2>/dev/null || echo /usr/local/cuda
-      return
-    fi
+  if is_cuda_home /usr/local/cuda; then
+    readlink -f /usr/local/cuda 2>/dev/null || echo /usr/local/cuda
+    return
   fi
   echo /usr/local/cuda
 }
@@ -54,10 +54,23 @@ export CUDA_HOME
 CUDA_HOME="$(resolve_cuda_home)"
 
 python3 <<'PY'
+"""Generate compile_commands.json for cu/*.cu (host analysis only).
+
+Requires Python 3.10+ (PEP 604 unions). Prefer latest stable (3.14.x).
+"""
+from __future__ import annotations
+
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
+
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        f"gen_compile_commands_cuda.sh needs Python >= 3.10 (got {sys.version_info.major}.{sys.version_info.minor}); "
+        "use latest stable Python (3.14.x preferred)."
+    )
 
 root = Path(os.environ["ROOT"])
 cu_dir = root / "cu"
@@ -68,7 +81,11 @@ toolkit_ok = cuda_home.is_dir() and runtime_h.is_file()
 
 
 def executable_path(p: Path | str | None) -> str | None:
-    """Return absolute path if p exists and is executable; else None."""
+    """Absolute path if p exists and is executable.
+
+    Uses abspath (not resolve/realpath) so basename-dispatched wrappers
+    such as ccache's clang++/nvcc symlinks keep their entry-point name.
+    """
     if not p:
         return None
     path = Path(p)
@@ -76,11 +93,12 @@ def executable_path(p: Path | str | None) -> str | None:
         return None
     if not os.access(path, os.X_OK):
         return None
-    return str(path.resolve())
+    # absolute() does not follow the final symlink target.
+    return str(path.absolute())
 
 
 # Prefer toolkit-local nvcc over PATH so CUDA_HOME/CUDA_NVCC overrides win.
-nvcc = None
+nvcc: str | None = None
 if env_nvcc := os.environ.get("CUDA_NVCC"):
     nvcc = executable_path(env_nvcc)
 if nvcc is None:
@@ -93,6 +111,21 @@ if nvcc is None:
 # clang++ -x cuda --cuda-path=... can resolve cuda_runtime.h.
 clang_which = shutil.which("clang++") if toolkit_ok else None
 clangxx = executable_path(clang_which) if clang_which else None
+
+
+def resolve_cxx() -> str:
+    """Host C++ frontend: validated CXX override, else PATH c++, else 'c++'."""
+    cxx_env = os.environ.get("CXX", "").strip()
+    if cxx_env:
+        resolved = executable_path(cxx_env) or executable_path(shutil.which(cxx_env))
+        if resolved:
+            return resolved
+    which_cxx = shutil.which("c++")
+    if which_cxx:
+        resolved = executable_path(which_cxx)
+        if resolved:
+            return resolved
+    return "c++"
 
 
 def base_args(rel: str) -> list[str]:
@@ -120,11 +153,8 @@ def base_args(rel: str) -> list[str]:
             rel,
         ]
     # Last resort: plain C++ (limited CUDA parse fidelity).
-    cxx = executable_path(shutil.which(os.environ.get("CXX", "c++")) or "c++") or os.environ.get(
-        "CXX", "c++"
-    )
     args = [
-        cxx,
+        resolve_cxx(),
         "-std=c++17",
         "-D__STRICT_ANSI__",
         "-D__CUDACC__",
@@ -152,5 +182,8 @@ for src in sorted(cu_dir.glob("*.cu")):
 out = root / "compile_commands.json"
 out.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
 frontend = "clang++ -x cuda" if clangxx else ("nvcc" if nvcc else "c++ fallback")
-print(f"Wrote {out} ({len(entries)} TUs; CUDA_HOME={cuda_home}; frontend={frontend})")
+print(
+    f"Wrote {out} ({len(entries)} TUs; CUDA_HOME={cuda_home}; "
+    f"frontend={frontend}; python={sys.version_info.major}.{sys.version_info.minor})"
+)
 PY

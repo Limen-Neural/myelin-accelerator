@@ -87,35 +87,6 @@ impl<T: Default + Clone> GpuBuffer<T> {
         self.data.clone_from_slice(data);
         Ok(())
     }
-    /// Upload into the first `data.len()` elements; leaves any tail untouched.
-    pub fn upload_prefix(&mut self, data: &[T]) -> GpuResult<()> {
-        if data.len() > self.data.len() {
-            return Err(GpuError::MemoryError(format!(
-                "upload_prefix: host len {} > buffer len {}",
-                data.len(),
-                self.data.len()
-            )));
-        }
-        self.data[..data.len()].clone_from_slice(data);
-        Ok(())
-    }
-
-    /// Zero the first `count` elements; leaves any tail untouched (host stub).
-    pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()>
-    where
-        T: Default + Copy,
-    {
-        if count > self.data.len() {
-            return Err(GpuError::MemoryError(format!(
-                "zero_prefix: count {count} > buffer len {}",
-                self.data.len()
-            )));
-        }
-        for slot in &mut self.data[..count] {
-            *slot = T::default();
-        }
-        Ok(())
-    }
     pub fn len(&self) -> usize {
         self.data.len()
     }
@@ -124,6 +95,25 @@ impl<T: Default + Clone> GpuBuffer<T> {
     }
     pub fn as_device_ptr(&self) -> *const T {
         self.data.as_ptr()
+    }
+}
+
+impl GpuBuffer<f32> {
+    /// Zero the first `count` elements; leaves any tail untouched (host stub).
+    ///
+    /// Matches the CUDA `GpuBuffer<f32>::zero_prefix` surface so callers do not
+    /// depend on feature-specific method resolution.
+    pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
+        if count > self.data.len() {
+            return Err(GpuError::MemoryError(format!(
+                "zero_prefix: count {count} > buffer len {}",
+                self.data.len()
+            )));
+        }
+        for slot in &mut self.data[..count] {
+            *slot = 0.0;
+        }
+        Ok(())
     }
 }
 
@@ -429,28 +419,21 @@ mod tests {
     }
 
     #[test]
-    fn buffer_upload_prefix_preserves_tail() {
-        let mut buf = GpuBuffer::<i32>::from_slice(&[1, 2, 3, 4]).unwrap();
-        buf.upload_prefix(&[9, 8]).unwrap();
-        assert_eq!(buf.to_vec().unwrap(), vec![9, 8, 3, 4]);
-    }
-
-    #[test]
-    fn buffer_upload_prefix_rejects_oversize() {
-        let mut buf = GpuBuffer::<i32>::from_slice(&[1, 2, 3, 4]).unwrap();
-        let err = buf.upload_prefix(&[9, 8, 7, 6, 5]).unwrap_err();
-        match err {
-            GpuError::MemoryError(msg) => assert!(msg.contains("upload_prefix")),
-            other => panic!("expected MemoryError, got {other}"),
-        }
-        assert_eq!(buf.to_vec().unwrap(), vec![1, 2, 3, 4]);
-    }
-
-    #[test]
     fn buffer_zero_prefix_preserves_tail() {
         let mut buf = GpuBuffer::<f32>::from_slice(&[1.0, 2.0, 3.0, 4.0]).unwrap();
         buf.zero_prefix(2).unwrap();
         assert_eq!(buf.to_vec().unwrap(), vec![0.0, 0.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn buffer_zero_prefix_rejects_oversize() {
+        let mut buf = GpuBuffer::<f32>::from_slice(&[1.0, 2.0]).unwrap();
+        let err = buf.zero_prefix(3).unwrap_err();
+        match err {
+            GpuError::MemoryError(msg) => assert!(msg.contains("zero_prefix")),
+            other => panic!("expected MemoryError, got {other}"),
+        }
+        assert_eq!(buf.to_vec().unwrap(), vec![1.0, 2.0]);
     }
 
     #[test]
