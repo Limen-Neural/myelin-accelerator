@@ -77,6 +77,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust + build deps
+        shell: bash
         run: |
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
@@ -86,14 +87,20 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --default-toolchain stable --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/rustc" --version
+          source "$HOME/.cargo/env"
+          rustc --version
           "$CUDA_NVCC" --version
 
       - name: Build (debug, features cuda)
-        run: cargo build --locked --features cuda
+        shell: bash
+        run: |
+          source "$HOME/.cargo/env"
+          cargo build --locked --features cuda
 
       - name: Clippy (features cuda)
+        shell: bash
         run: |
+          source "$HOME/.cargo/env"
           rustup component add clippy
           cargo clippy --locked --features cuda -- -D warnings
 
