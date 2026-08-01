@@ -9,7 +9,7 @@
 #   qodana scan --config qodana-cpp.yaml --linter jetbrains/qodana-cpp:latest
 
 version: "1.0"
-linter: jetbrains/qodana-cpp:2025.1
+linter: jetbrains/qodana-cpp:latest
 
 profile:
   name: qodana.recommended

@@ -22,3 +22,8 @@
 !LICENSE-MIT
 !LICENSE-APACHE
 !README.md
+
+# Declared [[example]] in Cargo.toml — required for cargo parse
+!examples
+!examples/**
+

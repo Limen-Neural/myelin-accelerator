@@ -754,7 +754,11 @@ mod tests {
         let s = group_scales_from_abs_max(&w, 1, 4, 2);
         assert_eq!(s.len(), 2);
         assert!((s[0] - 2.0).abs() < 1e-6, "s0={}", s[0]);
-        assert!((s[1] - 1.0).abs() < 1e-6, "all-non-finite → 1.0, s1={}", s[1]);
+        assert!(
+            (s[1] - 1.0).abs() < 1e-6,
+            "all-non-finite → 1.0, s1={}",
+            s[1]
+        );
         assert!(s.iter().all(|v| v.is_finite()));
     }
 

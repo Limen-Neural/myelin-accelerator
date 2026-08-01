@@ -5,7 +5,7 @@
 # Local:  qodana scan --linter jetbrains/qodana-rust:latest
 
 version: "1.0"
-linter: jetbrains/qodana-rust:2025.1
+linter: jetbrains/qodana-rust:latest
 
 profile:
   name: qodana.recommended
