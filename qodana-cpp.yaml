@@ -14,8 +14,14 @@ linter: qodana-cpp
 profile:
   name: qodana.recommended
 
+# Only first-party device sources (host Rust lives under qodana.yaml).
+onlyDirectory: cu
+
 bootstrap: |
   bash scripts/gen_compile_commands_cuda.sh
+
+# Host CI has no CUDA toolkit; avoid hard quality-gate failure on configure noise.
+disableSanityInspections: true
 
 exclude:
   - name: All
