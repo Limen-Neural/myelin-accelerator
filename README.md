@@ -60,9 +60,9 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 
 ```toml
 [dependencies]
-myelin-accelerator = "0.1.0"
+myelin-accelerator = "0.2.0"
 # Optional GPU:
-# myelin-accelerator = { version = "0.1.0", features = ["cuda"] }
+# myelin-accelerator = { version = "0.2.0", features = ["cuda"] }
 ```
 
 ```rust
