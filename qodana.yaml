@@ -2,10 +2,11 @@
 # Host packing, FFI, and public API live in Rust; CUDA is feature-gated.
 #
 # Requires QODANA_TOKEN (JetBrains cloud) for full PR reporting.
-# Local:  qodana scan --linter jetbrains/qodana-rust:latest
+# Linter short name pairs with JetBrains/qodana-action (latest release).
+# Local:  qodana scan --linter qodana-rust
 
 version: "1.0"
-linter: jetbrains/qodana-rust:latest
+linter: qodana-rust
 
 profile:
   name: qodana.recommended

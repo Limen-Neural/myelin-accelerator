@@ -6,10 +6,10 @@
 #   bash scripts/gen_compile_commands_cuda.sh
 #
 # Local:
-#   qodana scan --config qodana-cpp.yaml --linter jetbrains/qodana-cpp:latest
+#   qodana scan --config qodana-cpp.yaml --linter qodana-cpp
 
 version: "1.0"
-linter: jetbrains/qodana-cpp:latest
+linter: qodana-cpp
 
 profile:
   name: qodana.recommended
