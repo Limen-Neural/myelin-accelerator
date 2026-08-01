@@ -394,8 +394,8 @@ impl GpuAccelerator {
             return Ok(());
         }
         if k == 0 {
-            // `expect_len` allows y longer than m; upload must match buffer length.
-            y.upload(&vec![0.0f32; y.len()])?;
+            // Zero only the logical prefix; preserve any pooled buffer tail.
+            y.upload_prefix(&vec![0.0f32; m_u])?;
             return Ok(());
         }
 
@@ -492,8 +492,8 @@ impl GpuAccelerator {
             return Ok(());
         }
         if k == 0 {
-            // `expect_len` allows c longer than m*n; upload must match buffer length.
-            c.upload(&vec![0.0f32; c.len()])?;
+            // Zero only the logical m*n prefix; preserve any pooled buffer tail.
+            c.upload_prefix(&vec![0.0f32; m_u.saturating_mul(n_u)])?;
             return Ok(());
         }
 

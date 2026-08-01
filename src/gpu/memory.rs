@@ -50,6 +50,30 @@ impl<T: cust::memory::DeviceCopy + Default + Clone> GpuBuffer<T> {
             .map_err(|e| GpuError::MemoryError(format!("upload: {e:?}")))
     }
 
+    /// Upload into the first `data.len()` elements; leaves any tail untouched.
+    ///
+    /// Used for empty-product zero-fills when the device buffer may be larger
+    /// than the logical output (pooled buffers).
+    pub fn upload_prefix(&mut self, data: &[T]) -> GpuResult<()> {
+        if data.len() > self.len {
+            return Err(GpuError::MemoryError(format!(
+                "upload_prefix: host len {} > device len {}",
+                data.len(),
+                self.len
+            )));
+        }
+        if data.is_empty() {
+            return Ok(());
+        }
+        if data.len() == self.len {
+            return self.upload(data);
+        }
+        let mut prefix = self.inner.index(0..data.len());
+        prefix
+            .copy_from(data)
+            .map_err(|e| GpuError::MemoryError(format!("upload_prefix: {e:?}")))
+    }
+
     /// Number of elements.
     pub fn len(&self) -> usize {
         self.len

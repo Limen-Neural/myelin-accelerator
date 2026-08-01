@@ -319,9 +319,9 @@ pub fn uniform_group_scales(m: usize, k: usize, group_size: usize, scale: f32) -
 /// # Panics
 /// Panics if `group_size == 0` or if `weights_f32.len() < m * k`.
 ///
-/// Non-finite weights: `NaN` / `±Inf` do not update the running abs-max
-/// (`NaN > x` is false). An all-non-finite (or all-zero) group keeps the
-/// default scale `1.0`. Callers that need strict NaN rejection should scan
+/// Non-finite weights: only finite values update the running abs-max
+/// (`NaN` / `±Inf` are ignored). An all-non-finite (or all-zero) group keeps
+/// the default scale `1.0`. Callers that need strict rejection should scan
 /// inputs before packing.
 pub fn group_scales_from_abs_max(
     weights_f32: &[f32],
@@ -346,7 +346,8 @@ pub fn group_scales_from_abs_max(
             let mut max_abs = 0.0f32;
             for kk in start..end {
                 let a = weights_f32[row_base + kk].abs();
-                if a > max_abs {
+                // Skip NaN and Inf so they cannot poison the scale.
+                if a.is_finite() && a > max_abs {
                     max_abs = a;
                 }
             }
@@ -744,6 +745,17 @@ mod tests {
         assert_eq!(s.len(), 2);
         assert!((s[0] - 3.0).abs() < 1e-6);
         assert!((s[1] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn group_scales_ignore_non_finite() {
+        // NaN/Inf must not set infinite scales; finite peers still win.
+        let w = vec![f32::NAN, 2.0, f32::INFINITY, f32::NEG_INFINITY];
+        let s = group_scales_from_abs_max(&w, 1, 4, 2);
+        assert_eq!(s.len(), 2);
+        assert!((s[0] - 2.0).abs() < 1e-6, "s0={}", s[0]);
+        assert!((s[1] - 1.0).abs() < 1e-6, "all-non-finite → 1.0, s1={}", s[1]);
+        assert!(s.iter().all(|v| v.is_finite()));
     }
 
     // ── Host reference matmul ───────────────────────────────────────────────

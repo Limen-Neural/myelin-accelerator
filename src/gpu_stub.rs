@@ -87,6 +87,18 @@ impl<T: Default + Clone> GpuBuffer<T> {
         self.data.clone_from_slice(data);
         Ok(())
     }
+    /// Upload into the first `data.len()` elements; leaves any tail untouched.
+    pub fn upload_prefix(&mut self, data: &[T]) -> GpuResult<()> {
+        if data.len() > self.data.len() {
+            return Err(GpuError::MemoryError(format!(
+                "upload_prefix: host len {} > buffer len {}",
+                data.len(),
+                self.data.len()
+            )));
+        }
+        self.data[..data.len()].clone_from_slice(data);
+        Ok(())
+    }
     pub fn len(&self) -> usize {
         self.data.len()
     }
@@ -397,6 +409,13 @@ mod tests {
             }
             other => panic!("expected MemoryError, got: {other}"),
         }
+    }
+
+    #[test]
+    fn buffer_upload_prefix_preserves_tail() {
+        let mut buf = GpuBuffer::<i32>::from_slice(&[1, 2, 3, 4]).unwrap();
+        buf.upload_prefix(&[9, 8]).unwrap();
+        assert_eq!(buf.to_vec().unwrap(), vec![9, 8, 3, 4]);
     }
 
     #[test]
