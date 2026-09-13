@@ -2,7 +2,7 @@
 # Copyright 2026 Raul Montoya Cardenas
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
-# Emit compile_commands.json for cu/*.cu so C++ tooling (Qodana/clangd) can
+# Emit compile_commands.json for cu/*.cu so C++ tooling (clangd) can
 # parse kernel sources. Flags mirror build.rs / CMakeLists.txt host path
 # (C++17 + STRICT_ANSI). This is NOT a device compile — only host-side analysis.
 #
