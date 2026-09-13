@@ -284,7 +284,6 @@ matching ShipOfTheseus `/usr/local/cuda` → `cuda-13.3`.
 | `CUDA PTX compile [cloud, toolkit 13.3.1]` | `ubuntu-latest` + CUDA **13.3.1** container | **Compile only** — `cargo build/clippy --features cuda`, PTX non-stub + `ternary_gemm`, offline `ptxas -arch=sm_120` |
 | `CUDA build [self-hosted] (sm_120)` | Labels `self-hosted,linux,x64,gpu,cuda` | Full: build/clippy/test + **`--ignored` goldens** + PTX symbols (incl. ternary) + ptxas + short `bench,cuda` |
 | `Docker CUDA 13.3.1` | GitHub-hosted | Image build (`Dockerfile`) — compile path inside 13.3.1 devel image |
-| `Qodana` | GitHub-hosted | Rust (primary) + C++ `cu/` (secondary); needs `QODANA_TOKEN` |
 | Local quality gate above | Developer workstation | Full runtime (same as self-hosted, optional Nsight) |
 
 **Branch protection (recommended):** require lint, CPU checks, and cloud PTX compile.
