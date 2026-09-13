@@ -285,11 +285,10 @@ pub fn packed_u32_from_le_bytes(bytes: &[u8]) -> Vec<u32> {
     }
     let word_count = bytes.len().div_ceil(4);
     let mut out = Vec::with_capacity(word_count);
-    let mut chunks = bytes.chunks_exact(4);
-    for chunk in chunks.by_ref() {
-        out.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    let (chunks, rem) = bytes.as_chunks::<4>();
+    for &chunk in chunks {
+        out.push(u32::from_le_bytes(chunk));
     }
-    let rem = chunks.remainder();
     if !rem.is_empty() {
         let mut last = [0u8; 4];
         last[..rem.len()].copy_from_slice(rem);
