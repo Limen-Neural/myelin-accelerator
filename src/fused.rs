@@ -20,9 +20,10 @@ pub const MAX_FUSED_TOP_K: usize = 8;
 const SAAQ_SENTINEL: f32 = f32::NEG_INFINITY;
 
 /// Blackwell SM occupancy constants used for the analytical model.
-/// These are the published sm_90-class SM limits that sm_120 inherits for
-/// occupancy math (2048 threads, 65536 32-bit registers, 32 blocks).
-pub const SM120_MAX_THREADS_PER_SM: u32 = 2048;
+/// Compute capability 12.0 (GeForce Blackwell / sm_120): 48 resident warps
+/// = 1536 threads, 65536 32-bit registers, 32 blocks per SM
+/// (NVIDIA Blackwell Tuning Guide / CUDA programming guide).
+pub const SM120_MAX_THREADS_PER_SM: u32 = 1536;
 pub const SM120_REGS_PER_SM: u32 = 65536;
 pub const SM120_MAX_BLOCKS_PER_SM: u32 = 32;
 
@@ -163,7 +164,11 @@ pub fn fused_routing_saaq(input: &RoutingSaaqInput<'_>) -> FusedRoutingSaaqResul
     assert_eq!(input.scores.len(), n_nodes.saturating_mul(n_routes));
     assert_eq!(input.membrane.len(), n_nodes);
     assert_eq!(input.adaptation.len(), n_nodes);
-    let k = top_k.min(MAX_FUSED_TOP_K);
+    assert!(
+        top_k > 0 && top_k <= MAX_FUSED_TOP_K,
+        "top_k must be in 1..=MAX_FUSED_TOP_K ({MAX_FUSED_TOP_K}), got {top_k}"
+    );
+    let k = top_k;
     let mut top_k_indices_out = vec![-1i32; n_nodes.saturating_mul(top_k)];
     let mut entropy_sum = 0.0f32;
     let mut entropy_max = 0.0f32;
@@ -197,7 +202,7 @@ pub fn fused_routing_saaq(input: &RoutingSaaqInput<'_>) -> FusedRoutingSaaqResul
 }
 
 fn n_blocks(n_nodes: usize) -> usize {
-    n_nodes.div_ceil(FUSED_BLOCK_SIZE).max(1)
+    n_nodes.div_ceil(FUSED_BLOCK_SIZE)
 }
 
 /// Unfused traffic: softmax write + entropy re-read + SAAQ two-pass.
@@ -208,8 +213,21 @@ fn n_blocks(n_nodes: usize) -> usize {
 /// 3. `latent_reduce_pass2` reduces entropy partials
 /// 4. `saaq_find_best_walker` reads membrane+adaptation, writes partials
 /// 5. `saaq_reduce_partials_f16` writes the 4-byte walker
-/// 6. host top-k would re-read the matrix; counted as a sixth launch
+/// 6. host top-k re-reads the matrix (counted as a sixth pipeline stage, not a CUDA launch)
 pub fn traffic_unfused(n_nodes: usize, n_routes: usize, top_k: usize) -> TrafficReport {
+    if n_nodes == 0 {
+        return TrafficReport {
+            path: "unfused",
+            n_nodes,
+            n_routes,
+            top_k,
+            n_blocks: 0,
+            bytes_read: 0,
+            bytes_written: 0,
+            launches: 0,
+            materializes_routing_matrix: true,
+        };
+    }
     let n_blocks = n_blocks(n_nodes);
     let matrix = (n_nodes as u64)
         .saturating_mul(n_routes as u64)
@@ -248,8 +266,23 @@ pub fn traffic_unfused(n_nodes: usize, n_routes: usize, top_k: usize) -> Traffic
     }
 }
 
-/// Fused traffic: one pass over scores + activity, no probability matrix.
+/// Fused traffic: one logical pass over unique score + activity buffers.
+/// Softmax still walks each row three times in registers/L1; those reloads
+/// are not counted as extra DRAM traffic.
 pub fn traffic_fused(n_nodes: usize, n_routes: usize, top_k: usize) -> TrafficReport {
+    if n_nodes == 0 {
+        return TrafficReport {
+            path: "fused",
+            n_nodes,
+            n_routes,
+            top_k,
+            n_blocks: 0,
+            bytes_read: 0,
+            bytes_written: 0,
+            launches: 0,
+            materializes_routing_matrix: false,
+        };
+    }
     let n_blocks = n_blocks(n_nodes);
     let scores = (n_nodes as u64)
         .saturating_mul(n_routes as u64)
@@ -326,7 +359,7 @@ pub fn occupancy_estimates(n_nodes: usize) -> Vec<OccupancyEstimate> {
             blocks: 1,
             estimated_registers_per_thread: 24,
             theoretical_occupancy: theoretical_occupancy(256, 24, 1),
-            notes: "one block: occupancy 12.5% — fusion here does not help occupancy",
+            notes: "one block: occupancy 256/1536 ≈ 16.7% — fusion here does not help occupancy",
         },
     ]
 }
@@ -411,6 +444,33 @@ mod tests {
         }
         let h = entropy_row(&p);
         assert!((h - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn empty_traffic_is_zero_blocks_and_launches() {
+        let u = traffic_unfused(0, 16, 4);
+        let f = traffic_fused(0, 16, 4);
+        assert_eq!(u.n_blocks, 0);
+        assert_eq!(f.n_blocks, 0);
+        assert_eq!(u.bytes_total(), 0);
+        assert_eq!(f.bytes_total(), 0);
+        assert_eq!(u.launches, 0);
+        assert_eq!(f.launches, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "top_k must be in 1..=MAX_FUSED_TOP_K")]
+    fn fused_rejects_top_k_above_cap() {
+        let _ = fused_routing_saaq(&RoutingSaaqInput {
+            scores: &[0.0, 1.0],
+            membrane: &[0.0],
+            adaptation: &[0.0],
+            n_nodes: 1,
+            n_routes: 2,
+            top_k: MAX_FUSED_TOP_K + 1,
+            adaptation_scale: GIF_ADAPTATION_SCALE,
+            scores_are_logits: true,
+        });
     }
 
     #[test]
@@ -537,7 +597,7 @@ mod tests {
     fn saaq_fused_occupancy_is_one_block() {
         let occ = occupancy_estimates(2048);
         let fused = occ.iter().find(|o| o.path == "saaq_select_fused").unwrap();
-        assert!((fused.theoretical_occupancy - 0.125).abs() < 1e-6);
+        assert!((fused.theoretical_occupancy - (256.0 / 1536.0)).abs() < 1e-6);
         let unfused = occ
             .iter()
             .find(|o| o.path == "saaq_find_best_walker")

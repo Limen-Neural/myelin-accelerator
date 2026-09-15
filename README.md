@@ -28,6 +28,7 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 | `cu/*.cu` | Device kernels (spiking, similarity, SAT, ternary) | via PTX + wrappers |
 | `examples/benchmark.rs` | Latency / GPU info harness | feature `bench` (+ `cuda` for GPU) |
 | `build.rs` / `CMakeLists.txt` | `nvcc -ptx` quality path | build-only |
+| `src/fused.rs` | Host fused routing / SAAQ API and VRAM traffic model | yes (`fused`) |
 | `docs/ARCHITECTURE.md` | Ownership + API boundary | docs |
 | `docs/TERNARY.md` | Ternary encoding, scales, GOZ1 interop, kernels | docs |
 | `docs/FUSED_ROUTING_SAAQ.md` | Fused routing / SAAQ kernels + VRAM traffic model | docs |

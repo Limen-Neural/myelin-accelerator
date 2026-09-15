@@ -28,7 +28,7 @@ porting remains [GH #27](https://github.com/Limen-Neural/myelin-accelerator/issu
 | Can routing and SAAQ selection be fused into a single pass? | **Yes.** `routing_saaq_fused_pass1` softmaxes each node row, inserts top-k, and scores SAAQ in the same loop. |
 | Can entropy be accumulated during routing? | **Yes.** Shannon entropy is reduced in-register per node, then warp/block-reduced to on-device partials. |
 | Can telemetry stay on-device until final reduction? | **Yes.** Pass 2 writes 12 bytes (`entropy_sum`, `entropy_max`, `best_walker`). The probability matrix is never stored. |
-| Does fusion help latency / bandwidth / occupancy on Blackwell? | **Bandwidth: yes** (see table). **SAAQ-only occupancy: no** (one-block fused argmax is 12.5% theoretical occupancy). **Latency:** GPU numbers need an RTX 5080; host and analytical bytes are below. |
+| Does fusion help latency / bandwidth / occupancy on Blackwell? | **Bandwidth: yes** (see table). **SAAQ-only occupancy: no** (one-block fused argmax is ~16.7% theoretical occupancy on sm_120). **Latency:** GPU numbers need an RTX 5080; host and analytical bytes are below. |
 
 ---
 
@@ -45,24 +45,28 @@ Unfused (matches the corinth-canal tick tail, minus GIF itself):
 
 Fused:
 
-1. `routing_saaq_fused_pass1` — read scores + activity once; write top-k + small partials
+1. `routing_saaq_fused_pass1` — one logical read of scores + activity; write top-k + small partials
 2. `fused_telemetry_reduce_pass2` — 12-byte telemetry
 
 VRAM traffic is counted in `src/fused.rs` (`traffic_unfused` / `traffic_fused`).
-Those functions are the source of the committed JSON/CSV.
+Those functions are the source of the committed JSON/CSV. Byte counts are
+**unique-buffer** estimates (one DRAM-class pass over each array), not
+loop-carried L1/register reloads. Softmax still walks each logit row three
+times in registers. Unfused `launches: 6` is five kernels plus a host top-k
+stage that re-reads the probability matrix.
 
 ### Where fusion helps
 
 - **Skipping the routing matrix.** For a 256×4096 MoE-style grid the unfused path
   writes and re-reads a 4 MiB probability matrix. Fusion drops that entirely.
-- **Launch count.** 6 launches → 2 for the combined routing+SAAQ path.
+- **Launch count.** 6 pipeline stages → 2 kernel launches for the combined routing+SAAQ path.
 - **Entropy during softmax.** No second pass over `p log p`.
 
 ### Where fusion does not help
 
 - **SAAQ pass1 + pass2 alone.** Partials are 8 floats/uints per block (64 bytes
   at 8 blocks). Fusing them into `saaq_select_fused` (<<<1, 256>>>) saves a
-  launch but **cuts occupancy to one block** (~12.5% of an SM). Prefer the
+  launch but **cuts occupancy to one block** (~16.7% of an sm_120 SM). Prefer the
   two-pass SAAQ kernels when the grid is already 8×256 for 2048 neurons.
   Unfused pass2 (`saaq_reduce_partials_f16`) grid-strides like
   `fused_telemetry_reduce_pass2`, so counts above 8192 (more than 32 blocks)
@@ -97,7 +101,7 @@ question is VRAM bytes and kernel launches; GPU latency needs
 
 ### Occupancy model
 
-`occupancy_estimates` uses sm_120-class SM limits (2048 threads, 65536 registers,
+`occupancy_estimates` uses sm_120 SM limits (1536 threads, 65536 registers,
 32 blocks) and **estimated** register counts, not Nsight Compute. On an RTX
 5080, re-measure with:
 
@@ -127,12 +131,12 @@ three scalar buffers:
 ```rust
 acc.routing_saaq_fused(
     &scores, &membrane, &adaptation,
-    &mut top_k, &mut entropy_sum, &mut entropy_max, &mut best_walker,
-    n_nodes, n_routes, top_k, 0.22, true,
+    &mut top_k_indices, &mut entropy_sum, &mut entropy_max, &mut best_walker,
+    n_nodes, n_routes, top_k_count, 0.22, true,
 )?;
 ```
 
-`top_k` must be in `1..=MAX_FUSED_TOP_K` (8). `scores_are_logits = true` runs
+`top_k_count` must be in `1..=MAX_FUSED_TOP_K` (8). `scores_are_logits = true` runs
 a stable softmax; `false` treats rows as already-normalized probabilities.
 
 ---
