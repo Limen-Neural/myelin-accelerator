@@ -27,7 +27,8 @@ set(CU_SOURCES
         cu/satsolver.cu
         cu/spiking_network.cu
         cu/vector_similarity.cu
-        cu/ternary_gemm.cu)
+        cu/ternary_gemm.cu
+        cu/fused_routing_saaq.cu)
 set(CU_HEADERS
         cu/common.cuh)
 

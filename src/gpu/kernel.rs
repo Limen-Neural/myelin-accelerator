@@ -30,6 +30,9 @@ static SATSOLVER_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/satsolver_s
 
 static TERNARY_GEMM_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/ternary_gemm_sm_120.ptx"));
 
+static FUSED_ROUTING_SAAQ_PTX: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/fused_routing_saaq_sm_120.ptx"));
+
 // ── KernelModule ─────────────────────────────────────────────────────────────
 
 /// Manages compiled PTX modules and kernel function handles.
@@ -70,6 +73,20 @@ impl KernelModule {
                 "membrane_dv_dt_reduce_pass1",
                 "routing_entropy_reduce_pass1",
                 "latent_reduce_pass2",
+                "saaq_find_best_walker",
+                "saaq_reduce_partials_f16",
+            ],
+        )?;
+        Self::load_and_map(
+            &mut modules,
+            &mut func_map,
+            FUSED_ROUTING_SAAQ_PTX,
+            "fused_routing_saaq",
+            &[
+                "routing_softmax",
+                "saaq_select_fused",
+                "routing_saaq_fused_pass1",
+                "fused_telemetry_reduce_pass2",
             ],
         )?;
         Self::load_and_map(
@@ -177,5 +194,7 @@ mod tests {
         assert!(kernels.get_function("satsolver_step").is_ok());
         assert!(kernels.get_function("ternary_gemv").is_ok());
         assert!(kernels.get_function("ternary_gemm").is_ok());
+        assert!(kernels.get_function("saaq_find_best_walker").is_ok());
+        assert!(kernels.get_function("routing_saaq_fused_pass1").is_ok());
     }
 }
