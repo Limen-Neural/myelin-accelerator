@@ -13,7 +13,7 @@ only — do not track this crate under personal `rmems/*` remotes or deps.
 ## One-line mission
 
 **Low-level, reusable GPU compute for neuromorphic / routing / SAT workloads:**
-first-party CUDA sources in `cu/` (compiled to PTX), safe Rust FFI, device memory helpers, and a
+first-party CUDA sources in `cu/` (compiled to fatbin + PTX), safe Rust FFI, device memory helpers, and a
 local quality/benchmark harness. Not a research orchestrator.
 
 ---
@@ -23,7 +23,7 @@ local quality/benchmark harness. Not a research orchestrator.
 | Area | Examples |
 |------|----------|
 | CUDA kernels | `cu/*.cu`, shared headers (`cu/common.cuh`), `sm_120`-tuned reductions |
-| PTX build path | `build.rs` (`nvcc -ptx`), CMake `cuda_kernels` target, embedded PTX |
+| PTX / fatbin build path | `build.rs` (`nvcc -ptx` sidecar + `-fatbin` SASS with PTX fallback), CMake `cuda_kernels` target, embedded images |
 | Safe GPU FFI | `GpuContext`, `KernelModule`, `GpuBuffer`, launch wrappers |
 | Feature gates | `cuda` (cust + nvtx), `bench` (serde JSON/CSV harness) |
 | CPU-safe stub | `src/gpu_stub.rs` when `cuda` is off (CI / sandboxes) |
@@ -77,21 +77,25 @@ paths.
 myelin-accelerator/
 ├── cu/                          # First-party CUDA device sources
 │   ├── common.cuh
-│   ├── spiking_network.cu       # Poisson, LIF, STDP, reduce passes
+│   ├── spiking_network.cu       # Poisson, LIF, GIF, SAAQ, STDP, reduce passes
+│   ├── myelin_shim.cu / .h      # C-ABI runtime launches for f16 GIF + SAAQ
 │   ├── vector_similarity.cu     # Cosine batched + top-k routing
 │   ├── satsolver.cu             # Parallel SAT walkers + reduces
 │   └── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
 ├── src/
 │   ├── lib.rs                   # Crate root; public re-exports
 │   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
+│   ├── gif.rs                   # GIF/SAAQ constants + CPU reference kernels
+│   ├── launch_hook.rs           # Consumer-installed launch-failure callback
 │   ├── gpu_stub.rs              # CPU-safe stand-ins (no cuda feature)
 │   └── gpu/                     # Real CUDA path (feature = "cuda")
 │       ├── mod.rs               # Internal module tree + re-exports
 │       ├── context.rs           # Device / primary context
-│       ├── kernel.rs            # PTX embed + Module/Function map
+│       ├── kernel.rs            # Fatbin embed + PTX fallback + Function map
+│       ├── ffi.rs               # C ABI wrappers for myelin_shim
 │       ├── memory.rs            # GpuBuffer
 │       ├── error.rs             # GpuError / GpuResult
-│       └── accelerator.rs       # High-level launch wrappers
+│       └── accelerator.rs       # High-level launch wrappers + TemporalState
 ├── examples/benchmark.rs        # Optional bench harness (feature = "bench")
 ├── build.rs                     # nvcc → PTX into OUT_DIR
 ├── CMakeLists.txt               # CLion/CTest quality gate (nvcc -ptx)
@@ -121,9 +125,12 @@ Re-exported from `src/lib.rs` (names available with or without `cuda` via stub):
 | `GpuAccelerator` | Primary entry: construct, readiness, kernel launches |
 | `GpuContext` | Context init / presence |
 | `GpuBuffer` | Device buffer helper |
-| `KernelModule` | Loaded PTX modules + `get_function` |
+| `KernelModule` | Loaded fatbin/PTX modules + `get_function` |
 | `GpuError` | Error type re-exported at the crate root |
+| `SnapshotChannels` | 4-channel input to `project_snapshot_current` |
+| `set_launch_failure_hook` | Consumer-installed launch-failure reporter (no `sentry` dep) |
 | `bitpacking` module | Host packing APIs (`pack_ternary`, `pack_binary`, …) |
+| `gif` module | GIF/SAAQ constants and CPU reference kernels |
 
 `GpuResult<T>` (`type` alias for `Result<T, GpuError>`) is **not** re-exported
 from the crate root today. Use `Result<_, myelin_accelerator::GpuError>` at the
@@ -139,6 +146,7 @@ These are the **ergonomic** wrappers currently implemented:
 - Lifecycle: `new`, `is_ready`, `kernels`, `synchronize`
 - SAT: `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
 - Spiking: `poisson_encode` / `_async`
+- GIF / SAAQ temporal: `ensure_temporal_state`, `gif_step_weighted_tick`, `project_snapshot_current`, `reset_temporal_state`, `load_synapse_weights_named`, `load_synapse_weights_f16_registered`, `synapse_signature`, `temporal_spikes_to_vec`, `temporal_membrane_to_vec`, `temporal_adaptation_to_vec`, `upload_temporal_input_spikes`, `saaq_find_best_walker`
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
 
 Additional kernels may be **loaded** in `KernelModule` and still lack a
@@ -151,7 +159,7 @@ consumers share.
 
 | PTX module | Symbols |
 |------------|---------|
-| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `spike_rate`, `reset_membrane`, `stdp_update`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` |
+| `spiking_network` | `poisson_encode`, `project_snapshot_current`, `lif_step`, `lif_step_weighted`, `gif_step_weighted`, `gif_step_weighted_f16`, `spike_rate`, `reset_membrane`, `stdp_update`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2`, `saaq_find_best_walker`, `saaq_reduce_partials_f16` |
 | `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` |
 | `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass1`, `satsolver_best_reduce_pass2` |
 | `ternary_gemm` | `ternary_gemv`, `ternary_gemm` |

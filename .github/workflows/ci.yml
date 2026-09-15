@@ -146,10 +146,33 @@ jobs:
             fi
             echo "✓ $f targets sm_120 (${size} bytes)"
           done
+          for f in spiking_network_sm_120.fatbin vector_similarity_sm_120.fatbin \
+                   satsolver_sm_120.fatbin ternary_gemm_sm_120.fatbin; do
+            if [ ! -f "$ptx_dir/$f" ]; then
+              echo "::error::Missing fatbin file: $f"
+              exit 1
+            fi
+            size="$(wc -c < "$ptx_dir/$f")"
+            if [ "$size" -lt 1000 ]; then
+              echo "::error::fatbin looks empty/stub ($f is ${size} bytes)"
+              exit 1
+            fi
+            echo "✓ $f (${size} bytes)"
+          done
           for kernel in ternary_gemv ternary_gemm; do
             if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
                 "$ptx_dir/ternary_gemm_sm_120.ptx"; then
               echo "✓ ternary_gemm PTX: $kernel"
+            else
+              echo "::error::Missing kernel entry: $kernel"
+              exit 1
+            fi
+          done
+          for kernel in project_snapshot_current gif_step_weighted gif_step_weighted_f16 \
+                        saaq_find_best_walker saaq_reduce_partials_f16; do
+            if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
+                "$ptx_dir/spiking_network_sm_120.ptx"; then
+              echo "✓ spiking_network PTX: $kernel"
             else
               echo "::error::Missing kernel entry: $kernel"
               exit 1
@@ -171,7 +194,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: ptx-sm_120-cloud-13.3.1
-          path: target/debug/build/myelin-accelerator-*/out/*.ptx
+          path: |
+            target/debug/build/myelin-accelerator-*/out/*.ptx
+            target/debug/build/myelin-accelerator-*/out/*.fatbin
           retention-days: 14
 
   # ── CUDA build & validation (SELF-HOSTED GPU RUNNER) ─────────────────────
@@ -260,6 +285,19 @@ jobs:
               fi
               echo "✓ $profile: $f targets sm_120 (${size} bytes)"
             done
+            for f in spiking_network_sm_120.fatbin vector_similarity_sm_120.fatbin \
+                     satsolver_sm_120.fatbin ternary_gemm_sm_120.fatbin; do
+              if [ ! -f "$ptx_dir/$f" ]; then
+                echo "::error::Missing fatbin file ($profile): $f"
+                exit 1
+              fi
+              size="$(wc -c < "$ptx_dir/$f")"
+              if [ "$size" -lt 1000 ]; then
+                echo "::error::fatbin looks empty/stub ($profile $f is ${size} bytes)"
+                exit 1
+              fi
+              echo "✓ $profile: $f (${size} bytes)"
+            done
           done
 
       - name: Validate PTX kernel symbols
@@ -271,10 +309,11 @@ jobs:
             echo ""
             echo "Checking kernel entry points in $profile PTX files..."
 
-            for kernel in poisson_encode lif_step lif_step_weighted spike_rate \
+            for kernel in poisson_encode project_snapshot_current lif_step lif_step_weighted \
+                          gif_step_weighted gif_step_weighted_f16 spike_rate \
                           reset_membrane stdp_update neuro_bias_logits \
                           membrane_dv_dt_reduce_pass1 routing_entropy_reduce_pass1 \
-                          latent_reduce_pass2; do
+                          latent_reduce_pass2 saaq_find_best_walker saaq_reduce_partials_f16; do
               if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
                   "$ptx_dir/spiking_network_sm_120.ptx"; then
                 echo "✓ $profile spiking_network: $kernel"
@@ -342,7 +381,9 @@ jobs:
           name: ptx-sm_120-self-hosted
           path: |
             target/debug/build/myelin-accelerator-*/out/*.ptx
+            target/debug/build/myelin-accelerator-*/out/*.fatbin
             target/release/build/myelin-accelerator-*/out/*.ptx
+            target/release/build/myelin-accelerator-*/out/*.fatbin
           retention-days: 30
 
       - name: CUDA build done
