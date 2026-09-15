@@ -126,6 +126,7 @@ Re-exported from `src/lib.rs` (names available with or without `cuda` via stub):
 | `KernelModule` | Loaded PTX modules + `get_function` |
 | `GpuError` | Error type re-exported at the crate root |
 | `bitpacking` module | Host packing APIs (`pack_ternary`, `pack_binary`, …) |
+| `fused` module | Host fused routing / SAAQ reference + VRAM traffic model |
 
 `GpuResult<T>` (`type` alias for `Result<T, GpuError>`) is **not** re-exported
 from the crate root today. Use `Result<_, myelin_accelerator::GpuError>` at the
