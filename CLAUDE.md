@@ -75,6 +75,8 @@ CUDA_NVCC=/usr/local/cuda/bin/nvcc \
   cargo run --example benchmark --profile bench --features bench,cuda
 ```
 
+Manifests, opt-in regression budgets, and baseline refresh: `docs/BENCHMARKS.md`.
+
 ### Local CUDA GPU quality gate (preferred over cloud)
 
 Full GPU proof is **local / self-hosted** (Blackwell + driver). Cloud runners

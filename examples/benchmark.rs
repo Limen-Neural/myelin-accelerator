@@ -3,6 +3,8 @@
 
 //! Reproducible GPU benchmark harness for myelin-accelerator kernels.
 //!
+//! Recording, comparing, and refreshing baselines: [docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
+//!
 //! # Usage
 //!
 //! ```bash
@@ -12,8 +14,12 @@
 //! # GPU kernel benchmarks
 //! cargo run --example benchmark --features bench,cuda
 //!
-//! # Compare against a baseline
-//! cargo run --example benchmark --features bench -- --baseline results.json
+//! # Informational compare (does not fail the process)
+//! cargo run --example benchmark --features bench -- --baseline path/to/baseline.manifest.json
+//!
+//! # Opt-in hardware budget enforcement (or MYELIN_BENCH_ENFORCE_BUDGET=1)
+//! cargo run --example benchmark --features bench -- \
+//!   --baseline path/to/baseline.manifest.json --enforce-budget
 //!
 //! # Custom iteration counts
 //! cargo run --example benchmark --features bench -- --warmup 20 --iterations 200
@@ -21,9 +27,11 @@
 //!
 //! # Output
 //!
-//! Emits `benchmark_results.json` and `benchmark_results.csv` in the current
-//! directory. Results include latency percentiles (p50, p95, p99), throughput,
-//! and GPU info when available.
+//! Emits `benchmark_results.json`, `benchmark_results.csv`, and
+//! `benchmark_results.manifest.json` in the current directory. The manifest is
+//! versioned, redacted, and parseable even when optional device fields are
+//! missing. Legacy JSON/CSV fields (percentiles, throughput, GPU info) are
+//! unchanged.
 //!
 //! # Nsight Profiling
 //!
@@ -39,6 +47,13 @@
 //! nsys profile -o timeline cargo run --example benchmark --features bench,cuda
 //! ```
 
+use myelin_accelerator::bench::{
+    BenchmarkManifest, ComparisonCase, DeviceIdentity, ManifestCase, RedactionContext,
+    RegressionBudget, RegressionClass, SampleSource, SampleStats, compare_one, comparison_report,
+    enforce_budget_requested, probe_power_clock, redact_and_canonicalize, write_canonical_manifest,
+};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 // ── CLI argument parsing (minimal, no clap dependency) ──────────────────────
@@ -48,6 +63,8 @@ struct Config {
     iterations: usize,
     baseline: Option<String>,
     output_prefix: String,
+    enforce_budget: bool,
+    budget: RegressionBudget,
 }
 
 impl Config {
@@ -83,6 +100,21 @@ impl Config {
                 "--output" | "-o" => {
                     raw.output_prefix = Some(consume_string(args, &mut i, "--output")?);
                 }
+                "--enforce-budget" => {
+                    raw.enforce_budget = true;
+                }
+                "--budget-relative" => {
+                    raw.budget_relative = Some(consume_f64(args, &mut i, "--budget-relative")?);
+                }
+                "--budget-abs-us" => {
+                    raw.budget_abs_us = Some(consume_f64(args, &mut i, "--budget-abs-us")?);
+                }
+                "--min-samples" => {
+                    raw.min_samples = Some(consume_usize(args, &mut i, "--min-samples")?);
+                }
+                "--noisy-dispersion" => {
+                    raw.noisy_dispersion = Some(consume_f64(args, &mut i, "--noisy-dispersion")?);
+                }
                 "--help" | "-h" => {
                     print_help();
                     std::process::exit(0);
@@ -102,6 +134,35 @@ impl Config {
             eprintln!("--iterations must be > 0");
             std::process::exit(1);
         }
+        let mut budget = RegressionBudget::default();
+        if let Some(relative) = raw.budget_relative {
+            if relative < 0.0 {
+                eprintln!("--budget-relative must be >= 0");
+                std::process::exit(1);
+            }
+            budget.relative = relative;
+        }
+        if let Some(abs_us) = raw.budget_abs_us {
+            if abs_us < 0.0 {
+                eprintln!("--budget-abs-us must be >= 0");
+                std::process::exit(1);
+            }
+            budget.min_absolute_us = abs_us;
+        }
+        if let Some(min_samples) = raw.min_samples {
+            if min_samples == 0 {
+                eprintln!("--min-samples must be > 0");
+                std::process::exit(1);
+            }
+            budget.min_samples = min_samples;
+        }
+        if let Some(noisy) = raw.noisy_dispersion {
+            if noisy < 0.0 {
+                eprintln!("--noisy-dispersion must be >= 0");
+                std::process::exit(1);
+            }
+            budget.noisy_relative_dispersion = noisy;
+        }
         Config {
             warmup: raw.warmup.unwrap_or(10),
             iterations: raw.iterations.unwrap_or(100),
@@ -109,6 +170,8 @@ impl Config {
             output_prefix: raw
                 .output_prefix
                 .unwrap_or_else(|| "benchmark_results".to_string()),
+            enforce_budget: raw.enforce_budget || enforce_budget_requested(),
+            budget,
         }
     }
 }
@@ -119,6 +182,11 @@ struct RawConfig {
     iterations: Option<usize>,
     baseline: Option<String>,
     output_prefix: Option<String>,
+    enforce_budget: bool,
+    budget_relative: Option<f64>,
+    budget_abs_us: Option<f64>,
+    min_samples: Option<usize>,
+    noisy_dispersion: Option<f64>,
 }
 
 fn consume_string(args: &[String], i: &mut usize, flag: &str) -> Option<String> {
@@ -141,15 +209,47 @@ fn consume_usize(args: &[String], i: &mut usize, flag: &str) -> Option<usize> {
     }
 }
 
+fn consume_f64(args: &[String], i: &mut usize, flag: &str) -> Option<f64> {
+    let raw = consume_string(args, i, flag)?;
+    match raw.parse() {
+        Ok(n) => Some(n),
+        Err(_) => {
+            eprintln!("{flag} requires a number, got \"{raw}\"");
+            None
+        }
+    }
+}
+
 fn print_help() {
+    let budget = RegressionBudget::default();
     println!("Usage: benchmark [OPTIONS]");
     println!();
     println!("Options:");
-    println!("  --warmup <N>        Warmup iterations (default: 10)");
-    println!("  --iterations <N>    Timed iterations (default: 100)");
-    println!("  --baseline <FILE>   Compare against a previous JSON result");
-    println!("  --output <PREFIX>   Output file prefix (default: benchmark_results)");
-    println!("  -h, --help          Show this help");
+    println!("  --warmup <N>             Warmup iterations (default: 10)");
+    println!("  --iterations <N>         Timed iterations (default: 100)");
+    println!("  --baseline <FILE>        Compare against a previous JSON or manifest");
+    println!("  --output <PREFIX>        Output file prefix (default: benchmark_results)");
+    println!("  --enforce-budget         Exit 1 on Fail (also MYELIN_BENCH_ENFORCE_BUDGET=1)");
+    println!(
+        "  --budget-relative <F>    Relative median budget (default: {})",
+        budget.relative
+    );
+    println!(
+        "  --budget-abs-us <F>      Min absolute median delta µs (default: {})",
+        budget.min_absolute_us
+    );
+    println!(
+        "  --min-samples <N>        Min samples per side (default: {})",
+        budget.min_samples
+    );
+    println!(
+        "  --noisy-dispersion <F>   Relative MAD above this is noisy (default: {})",
+        budget.noisy_relative_dispersion
+    );
+    println!("  -h, --help               Show this help");
+    println!();
+    println!("Baseline files are read-only. Refresh by copying a new manifest into git.");
+    println!("See docs/BENCHMARKS.md.");
 }
 
 // ── Benchmark result types ──────────────────────────────────────────────────
@@ -193,12 +293,43 @@ struct RunConfig {
 
 // ── Benchmark runner ────────────────────────────────────────────────────────
 
+struct Capture {
+    result: BenchmarkResult,
+    case: ManifestCase,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture<F: FnMut()>(
+    name: &str,
+    kernel_variant: &str,
+    dims: &[(&str, i64)],
+    seed: Option<u64>,
+    warmup: usize,
+    iterations: usize,
+    f: F,
+) -> Capture {
+    let (result, samples_us) = run_benchmark(name, warmup, iterations, f);
+    let input_dimensions: BTreeMap<String, i64> =
+        dims.iter().map(|(k, v)| ((*k).to_string(), *v)).collect();
+    Capture {
+        result,
+        case: ManifestCase::from_samples(
+            name,
+            kernel_variant,
+            input_dimensions,
+            seed,
+            warmup,
+            samples_us,
+        ),
+    }
+}
+
 fn run_benchmark<F: FnMut()>(
     name: &str,
     warmup: usize,
     iterations: usize,
     mut f: F,
-) -> BenchmarkResult {
+) -> (BenchmarkResult, Vec<f64>) {
     // Contract: at least one timed iteration. The CLI validator
     // (Config::validate) already rejects --iterations 0 with a clean
     // exit, but the function may be reused programmatically.
@@ -240,18 +371,23 @@ fn run_benchmark<F: FnMut()>(
         f64::INFINITY
     };
 
-    BenchmarkResult {
-        name: name.to_string(),
-        iterations,
-        total_duration_us: total_us,
-        mean_us,
-        p50_us,
-        p95_us,
-        p99_us,
-        min_us,
-        max_us,
-        throughput_ops_per_sec: throughput,
-    }
+    let samples_us: Vec<f64> = durations.iter().map(|d| d.as_secs_f64() * 1e6).collect();
+
+    (
+        BenchmarkResult {
+            name: name.to_string(),
+            iterations,
+            total_duration_us: total_us,
+            mean_us,
+            p50_us,
+            p95_us,
+            p99_us,
+            min_us,
+            max_us,
+            throughput_ops_per_sec: throughput,
+        },
+        samples_us,
+    )
 }
 
 // ── GPU info collection ─────────────────────────────────────────────────────
@@ -332,7 +468,7 @@ fn collect_gpu_info() -> Option<GpuInfo> {
 
 // ── Bitpacking benchmarks ───────────────────────────────────────────────────
 
-fn bench_bitpacking(config: &Config) -> Vec<BenchmarkResult> {
+fn bench_bitpacking(config: &Config) -> Vec<Capture> {
     let mut results = Vec::new();
     results.extend(bench_binary_pack(config));
     results.extend(bench_binary_unpack(config));
@@ -341,23 +477,29 @@ fn bench_bitpacking(config: &Config) -> Vec<BenchmarkResult> {
     results
 }
 
-fn bench_binary_pack(config: &Config) -> Vec<BenchmarkResult> {
+fn bench_binary_pack(config: &Config) -> Vec<Capture> {
     use myelin_accelerator::bitpacking::pack_binary;
 
     let small: Vec<bool> = (0..256).map(|i| i % 3 == 0).collect();
     let large: Vec<bool> = (0..65536).map(|i| i % 5 < 2).collect();
 
     vec![
-        run_benchmark(
+        capture(
             "bitpack_binary_pack_256",
+            "host-bitpack",
+            &[("n", 256)],
+            None,
             config.warmup,
             config.iterations,
             || {
                 let _ = pack_binary(&small);
             },
         ),
-        run_benchmark(
+        capture(
             "bitpack_binary_pack_65536",
+            "host-bitpack",
+            &[("n", 65536)],
+            None,
             config.warmup,
             config.iterations,
             || {
@@ -367,7 +509,7 @@ fn bench_binary_pack(config: &Config) -> Vec<BenchmarkResult> {
     ]
 }
 
-fn bench_binary_unpack(config: &Config) -> Vec<BenchmarkResult> {
+fn bench_binary_unpack(config: &Config) -> Vec<Capture> {
     use myelin_accelerator::bitpacking::{pack_binary, unpack_binary};
 
     let small_src: Vec<bool> = (0..256).map(|i| i % 3 == 0).collect();
@@ -376,16 +518,22 @@ fn bench_binary_unpack(config: &Config) -> Vec<BenchmarkResult> {
     let large = pack_binary(&large_src);
 
     vec![
-        run_benchmark(
+        capture(
             "bitpack_binary_unpack_256",
+            "host-bitpack",
+            &[("n", 256)],
+            None,
             config.warmup,
             config.iterations,
             || {
                 let _ = unpack_binary(&small, Some(256));
             },
         ),
-        run_benchmark(
+        capture(
             "bitpack_binary_unpack_65536",
+            "host-bitpack",
+            &[("n", 65536)],
+            None,
             config.warmup,
             config.iterations,
             || {
@@ -395,23 +543,29 @@ fn bench_binary_unpack(config: &Config) -> Vec<BenchmarkResult> {
     ]
 }
 
-fn bench_ternary_pack(config: &Config) -> Vec<BenchmarkResult> {
+fn bench_ternary_pack(config: &Config) -> Vec<Capture> {
     use myelin_accelerator::bitpacking::pack_ternary;
 
     let small: Vec<i8> = ternary_pattern(256);
     let large: Vec<i8> = ternary_pattern(65536);
 
     vec![
-        run_benchmark(
+        capture(
             "bitpack_ternary_pack_256",
+            "host-bitpack",
+            &[("n", 256)],
+            None,
             config.warmup,
             config.iterations,
             || {
                 let _ = pack_ternary(&small);
             },
         ),
-        run_benchmark(
+        capture(
             "bitpack_ternary_pack_65536",
+            "host-bitpack",
+            &[("n", 65536)],
+            None,
             config.warmup,
             config.iterations,
             || {
@@ -421,23 +575,29 @@ fn bench_ternary_pack(config: &Config) -> Vec<BenchmarkResult> {
     ]
 }
 
-fn bench_ternary_unpack(config: &Config) -> Vec<BenchmarkResult> {
+fn bench_ternary_unpack(config: &Config) -> Vec<Capture> {
     use myelin_accelerator::bitpacking::{pack_ternary, unpack_ternary};
 
     let small = pack_ternary(&ternary_pattern(256));
     let large = pack_ternary(&ternary_pattern(65536));
 
     vec![
-        run_benchmark(
+        capture(
             "bitpack_ternary_unpack_256",
+            "host-bitpack",
+            &[("n", 256)],
+            None,
             config.warmup,
             config.iterations,
             || {
                 let _ = unpack_ternary(&small, Some(256));
             },
         ),
-        run_benchmark(
+        capture(
             "bitpack_ternary_unpack_65536",
+            "host-bitpack",
+            &[("n", 65536)],
+            None,
             config.warmup,
             config.iterations,
             || {
@@ -460,7 +620,7 @@ fn ternary_pattern(n: usize) -> Vec<i8> {
 // ── GPU kernel benchmarks (requires cuda feature) ───────────────────────────
 
 #[cfg(feature = "cuda")]
-fn bench_gpu_kernels(config: &Config) -> Vec<BenchmarkResult> {
+fn bench_gpu_kernels(config: &Config) -> Vec<Capture> {
     use myelin_accelerator::{GpuAccelerator, GpuBuffer};
 
     let mut results = Vec::new();
@@ -474,8 +634,11 @@ fn bench_gpu_kernels(config: &Config) -> Vec<BenchmarkResult> {
     let n = 4096;
     let stimuli = GpuBuffer::from_slice(&vec![0.5f32; n]).unwrap();
     let mut spikes = GpuBuffer::<u32>::alloc(n).unwrap();
-    results.push(run_benchmark(
+    results.push(capture(
         "poisson_encode_4096",
+        "poisson-encode",
+        &[("n", n as i64)],
+        Some(42),
         config.warmup,
         config.iterations,
         || {
@@ -489,8 +652,11 @@ fn bench_gpu_kernels(config: &Config) -> Vec<BenchmarkResult> {
     let assignment = GpuBuffer::from_slice(&vec![0u8; n_vars * n_walkers]).unwrap();
     let best_walker = GpuBuffer::from_slice(&[0i32]).unwrap();
     let mut output = GpuBuffer::<u8>::alloc(n_vars).unwrap();
-    results.push(run_benchmark(
+    results.push(capture(
         "satsolver_extract_1024x256",
+        "satsolver-extract",
+        &[("n_vars", n_vars as i64), ("n_walkers", n_walkers as i64)],
+        None,
         config.warmup,
         config.iterations,
         || {
@@ -512,10 +678,7 @@ fn bench_gpu_kernels(config: &Config) -> Vec<BenchmarkResult> {
 }
 
 #[cfg(feature = "cuda")]
-fn bench_ternary_gpu(
-    acc: &myelin_accelerator::GpuAccelerator,
-    config: &Config,
-) -> Vec<BenchmarkResult> {
+fn bench_ternary_gpu(acc: &myelin_accelerator::GpuAccelerator, config: &Config) -> Vec<Capture> {
     use myelin_accelerator::GpuBuffer;
     use myelin_accelerator::bitpacking::{
         DEFAULT_GROUP_SIZE, pack_ternary_matrix, uniform_group_scales,
@@ -536,8 +699,11 @@ fn bench_ternary_gpu(
     let d_x = GpuBuffer::from_slice(&x).unwrap();
     let mut d_y = GpuBuffer::<f32>::alloc(m).unwrap();
 
-    results.push(run_benchmark(
+    results.push(capture(
         "ternary_gemv_1024x4096",
+        "ternary-gemv",
+        &[("m", m as i64), ("k", k as i64), ("group", group as i64)],
+        None,
         config.warmup,
         config.iterations,
         || {
@@ -555,8 +721,16 @@ fn bench_ternary_gpu(
         },
     ));
 
-    results.push(run_benchmark(
+    results.push(capture(
         "ternary_gemv_1024x4096_skip_zeros",
+        "ternary-gemv",
+        &[
+            ("m", m as i64),
+            ("k", k as i64),
+            ("group", group as i64),
+            ("skip_zeros", 1),
+        ],
+        None,
         config.warmup,
         config.iterations,
         || {
@@ -587,8 +761,16 @@ fn bench_ternary_gpu(
     let d_b = GpuBuffer::from_slice(&b).unwrap();
     let mut d_c = GpuBuffer::<f32>::alloc(m2 * n2).unwrap();
 
-    results.push(run_benchmark(
+    results.push(capture(
         "ternary_gemm_256x1024x64",
+        "ternary-gemm",
+        &[
+            ("m", m2 as i64),
+            ("k", k2 as i64),
+            ("n", n2 as i64),
+            ("group", group as i64),
+        ],
+        None,
         config.warmup,
         config.iterations,
         || {
@@ -612,10 +794,14 @@ fn bench_ternary_gpu(
     // Reuse `y_host` outside the timed loop so allocation is not in the sample.
     let dense_w: Vec<f32> = weights.iter().map(|&t| t as f32).collect();
     let mut y_host = vec![0.0f32; m];
-    results.push(run_benchmark(
+    let host_iters = config.iterations.min(50);
+    results.push(capture(
         "dense_f32_gemv_1024x4096_host",
+        "dense-f32-gemv-host",
+        &[("m", m as i64), ("k", k as i64)],
+        None,
         config.warmup,
-        config.iterations.min(50),
+        host_iters,
         || {
             for mi in 0..m {
                 let mut acc_v = 0.0f32;
@@ -633,52 +819,207 @@ fn bench_ternary_gpu(
 }
 
 #[cfg(not(feature = "cuda"))]
-fn bench_gpu_kernels(_config: &Config) -> Vec<BenchmarkResult> {
+fn bench_gpu_kernels(_config: &Config) -> Vec<Capture> {
     eprintln!("[bench] Built without cuda feature, skipping GPU kernel benchmarks");
     Vec::new()
 }
 
 // ── Baseline comparison ─────────────────────────────────────────────────────
 
-fn compare_with_baseline(current: &[BenchmarkResult], baseline_path: &str) {
+fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
+    let Some(baseline_path) = config.baseline.as_deref() else {
+        return 0;
+    };
+
     let Ok(data) = std::fs::read_to_string(baseline_path) else {
         eprintln!("[bench] Could not read baseline file: {baseline_path}");
-        return;
+        return if config.enforce_budget { 1 } else { 0 };
     };
-    let Ok(report) = serde_json::from_str::<BenchmarkReport>(&data) else {
-        eprintln!("[bench] Could not parse baseline JSON");
-        return;
+
+    let rows = match load_baseline_rows(&data) {
+        Ok(rows) => rows,
+        Err(err) => {
+            eprintln!("[bench] Could not parse baseline JSON: {err}");
+            return if config.enforce_budget { 1 } else { 0 };
+        }
     };
 
     println!("\n{:=>70}", "");
     println!("  Baseline comparison: {baseline_path}");
+    if config.enforce_budget {
+        println!("  Enforcement: ON (process fails only on class=fail)");
+    } else {
+        println!("  Enforcement: off (informational; set --enforce-budget to fail)");
+    }
     println!("{:=>70}\n", "");
 
     println!(
-        "{:<40} {:>12} {:>12} {:>10}",
-        "Benchmark", "Baseline(µs)", "Current(µs)", "Change"
+        "{:<40} {:>12} {:>12} {:>10} {:>10} {:>22}",
+        "Benchmark", "Base p50(µs)", "Curr p50(µs)", "Rel %", "Abs µs", "Class"
     );
-    println!("{:-<76}", "");
+    println!("{:-<110}", "");
 
+    let mut cases: Vec<ComparisonCase> = Vec::new();
     for curr in current {
-        if let Some(base) = report.results.iter().find(|r| r.name == curr.name) {
-            let change = if base.mean_us > 0.0 {
-                ((curr.mean_us - base.mean_us) / base.mean_us) * 100.0
-            } else {
-                0.0
-            };
-            let indicator = if change > 5.0 {
-                "⚠ SLOWER"
-            } else if change < -5.0 {
-                "✓ faster"
-            } else {
-                "  ~same"
-            };
-            println!(
-                "{:<40} {:>12.2} {:>12.2} {:>+8.1}% {}",
-                curr.name, base.mean_us, curr.mean_us, change, indicator
-            );
+        let Some(base) = rows.iter().find(|r| r.name == curr.name) else {
+            continue;
+        };
+        let row = compare_one(
+            &curr.name,
+            base.source(),
+            SampleSource::Samples(&curr.samples_us),
+            &config.budget,
+        );
+        let rel_pct = if row.relative_delta.is_finite() {
+            row.relative_delta * 100.0
+        } else {
+            f64::INFINITY
+        };
+        println!(
+            "{:<40} {:>12.2} {:>12.2} {:>+9.1}% {:>10.2} {:>22}",
+            row.name,
+            row.baseline_median_us,
+            row.current_median_us,
+            rel_pct,
+            row.absolute_delta_us,
+            class_label(row.class),
+        );
+        cases.push(row);
+    }
+
+    let report = comparison_report(cases, config.budget.clone(), config.enforce_budget);
+    write_comparison(&report, &config.output_prefix);
+
+    if config.enforce_budget && report.has_failure() {
+        eprintln!("[bench] Regression budget exceeded (enforcement enabled).");
+        1
+    } else {
+        0
+    }
+}
+
+struct BaselineRow {
+    name: String,
+    samples_us: Vec<f64>,
+    stats: SampleStats,
+}
+
+impl BaselineRow {
+    fn source(&self) -> SampleSource<'_> {
+        if self.samples_us.is_empty() {
+            SampleSource::Stats(self.stats.clone())
+        } else {
+            SampleSource::Samples(&self.samples_us)
         }
+    }
+}
+
+fn load_baseline_rows(data: &str) -> Result<Vec<BaselineRow>, String> {
+    if let Ok(manifest) = serde_json::from_str::<BenchmarkManifest>(data) {
+        return Ok(manifest
+            .cases
+            .into_iter()
+            .map(|c| BaselineRow {
+                name: c.name,
+                stats: SampleStats {
+                    n: c.samples,
+                    mean: c.mean_us,
+                    median: c.median_us,
+                    mad: c.mad_us,
+                    relative_dispersion: c.relative_dispersion,
+                    min: c.min_us,
+                    max: c.max_us,
+                    p50: c.p50_us,
+                    p95: c.p95_us,
+                    p99: c.p99_us,
+                },
+                samples_us: c.samples_us,
+            })
+            .collect());
+    }
+    let report: BenchmarkReport = serde_json::from_str(data).map_err(|e| e.to_string())?;
+    Ok(report
+        .results
+        .into_iter()
+        .map(|r| BaselineRow {
+            name: r.name,
+            samples_us: Vec::new(),
+            stats: SampleStats {
+                n: r.iterations,
+                mean: r.mean_us,
+                median: r.p50_us,
+                mad: 0.0,
+                relative_dispersion: 0.0,
+                min: r.min_us,
+                max: r.max_us,
+                p50: r.p50_us,
+                p95: r.p95_us,
+                p99: r.p99_us,
+            },
+        })
+        .collect())
+}
+
+fn class_label(class: RegressionClass) -> &'static str {
+    match class {
+        RegressionClass::Pass => "pass",
+        RegressionClass::Fail => "fail",
+        RegressionClass::Noisy => "noisy",
+        RegressionClass::InsufficientSamples => "insufficient_samples",
+    }
+}
+
+fn output_collides_with_baseline(prefix: &str, baseline: &str) -> bool {
+    let outputs = [
+        format!("{prefix}.json"),
+        format!("{prefix}.csv"),
+        format!("{prefix}.manifest.json"),
+        format!("{prefix}.comparison.json"),
+    ];
+    let base = Path::new(baseline);
+    outputs.iter().any(|p| Path::new(p) == base)
+}
+
+fn write_comparison(report: &myelin_accelerator::bench::ComparisonReport, prefix: &str) {
+    let path = format!("{prefix}.comparison.json");
+    match redact_and_canonicalize(report, &RedactionContext::from_env()) {
+        Ok(data) => {
+            if let Err(err) = std::fs::write(&path, data) {
+                eprintln!("[bench] Could not write {path}: {err}");
+            } else {
+                println!("[bench] Comparison written to {path}");
+            }
+        }
+        Err(err) => eprintln!("[bench] Could not serialize comparison: {err}"),
+    }
+}
+
+fn sm_arch_to_cc(sm_arch: &str) -> Option<String> {
+    let rest = sm_arch.strip_prefix("sm_")?;
+    if rest.is_empty() {
+        return None;
+    }
+    let (maj, min) = rest.split_at(rest.len().saturating_sub(1));
+    if maj.is_empty() {
+        Some(rest.to_string())
+    } else {
+        Some(format!("{maj}.{min}"))
+    }
+}
+
+fn device_from_gpu(info: Option<&GpuInfo>, uuid: Option<String>) -> DeviceIdentity {
+    let Some(info) = info else {
+        return DeviceIdentity::unavailable();
+    };
+    DeviceIdentity {
+        name: Some(info.device_name.clone()),
+        uuid,
+        compute_capability: sm_arch_to_cc(&info.sm_arch),
+        sm_arch: Some(info.sm_arch.clone()),
+        driver_version: Some(info.driver_version.clone()),
+        runtime_version: Some(info.driver_version.clone()),
+        toolchain_version: Some(info.cuda_version.clone()),
+        vram_total_mb: Some(info.vram_total_mb),
     }
 }
 
@@ -763,15 +1104,16 @@ fn main() {
         );
     }
 
-    let mut results = Vec::new();
-    results.extend(bench_bitpacking(&config));
-    results.extend(bench_gpu_kernels(&config));
+    let mut captures = Vec::new();
+    captures.extend(bench_bitpacking(&config));
+    captures.extend(bench_gpu_kernels(&config));
 
+    let results: Vec<BenchmarkResult> = captures.iter().map(|c| c.result.clone()).collect();
     print_results(&results);
 
     let report = BenchmarkReport {
         timestamp: chrono_now(),
-        gpu_info,
+        gpu_info: gpu_info.clone(),
         config: RunConfig {
             warmup: config.warmup,
             iterations: config.iterations,
@@ -779,14 +1121,49 @@ fn main() {
         results: results.clone(),
     };
 
+    if let Some(ref baseline) = config.baseline
+        && output_collides_with_baseline(&config.output_prefix, baseline)
+    {
+        eprintln!(
+            "[bench] Refusing to overwrite baseline {baseline}; choose a different --output prefix"
+        );
+        std::process::exit(1);
+    }
+
     write_json(&report, &config.output_prefix);
     write_csv(&results, &config.output_prefix);
 
-    if let Some(ref baseline) = config.baseline {
-        compare_with_baseline(&results, baseline);
+    let (uuid, power_clock) = probe_power_clock();
+    let cases: Vec<ManifestCase> = captures.into_iter().map(|c| c.case).collect();
+    let mut manifest = BenchmarkManifest::new(
+        myelin_accelerator::bench::RunTiming {
+            warmup: config.warmup,
+            samples: config.iterations,
+            seed: Some(42),
+        },
+        cases,
+    );
+    manifest.device = device_from_gpu(gpu_info.as_ref(), uuid);
+    if manifest.device.toolchain_version.is_none() {
+        manifest.device.toolchain_version = manifest.toolchain.nvcc.clone();
+    }
+    manifest.power_clock = power_clock;
+
+    let manifest_path = PathBuf::from(format!("{}.manifest.json", config.output_prefix));
+    match write_canonical_manifest(&manifest_path, &manifest) {
+        Ok(()) => println!("[bench] Manifest written to {}", manifest_path.display()),
+        Err(err) => eprintln!("[bench] Could not write manifest: {err}"),
+    }
+
+    let mut exit_code = 0;
+    if config.baseline.is_some() {
+        exit_code = compare_with_baseline(&manifest.cases, &config);
     }
 
     println!("[bench] Done.");
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
 }
 
 /// Simple timestamp without chrono dependency.

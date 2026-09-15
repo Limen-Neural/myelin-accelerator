@@ -1,0 +1,94 @@
+{
+  "budget": {
+    "min_absolute_us": 2.0,
+    "min_samples": 8,
+    "noisy_relative_dispersion": 0.25,
+    "relative": 0.1
+  },
+  "cases": [
+    {
+      "name": "pass_small_delta",
+      "baseline_samples_us": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+      "current_samples_us": [101.0, 101.0, 101.0, 101.0, 101.0, 101.0, 101.0, 101.0],
+      "expected_class": "pass"
+    },
+    {
+      "name": "fail_regression",
+      "baseline_samples_us": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+      "current_samples_us": [130.0, 130.0, 130.0, 130.0, 130.0, 130.0, 130.0, 130.0],
+      "expected_class": "fail"
+    },
+    {
+      "name": "noisy_high_mad",
+      "baseline_samples_us": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+      "current_samples_us": [10.0, 20.0, 50.0, 80.0, 100.0, 250.0, 300.0, 400.0],
+      "expected_class": "noisy"
+    },
+    {
+      "name": "insufficient_samples",
+      "baseline_samples_us": [100.0, 100.0, 100.0],
+      "current_samples_us": [200.0, 200.0, 200.0],
+      "expected_class": "insufficient_samples"
+    }
+  ],
+  "report": {
+    "schema_version": 1,
+    "budget": {
+      "min_absolute_us": 2.0,
+      "min_samples": 8,
+      "noisy_relative_dispersion": 0.25,
+      "relative": 0.1
+    },
+    "enforced": false,
+    "cases": [
+      {
+        "name": "pass_small_delta",
+        "class": "pass",
+        "baseline_n": 8,
+        "current_n": 8,
+        "baseline_median_us": 100.0,
+        "current_median_us": 101.0,
+        "relative_delta": 0.01,
+        "absolute_delta_us": 1.0,
+        "baseline_relative_dispersion": 0.0,
+        "current_relative_dispersion": 0.0
+      },
+      {
+        "name": "fail_regression",
+        "class": "fail",
+        "baseline_n": 8,
+        "current_n": 8,
+        "baseline_median_us": 100.0,
+        "current_median_us": 130.0,
+        "relative_delta": 0.3,
+        "absolute_delta_us": 30.0,
+        "baseline_relative_dispersion": 0.0,
+        "current_relative_dispersion": 0.0
+      },
+      {
+        "name": "noisy_high_mad",
+        "class": "noisy",
+        "baseline_n": 8,
+        "current_n": 8,
+        "baseline_median_us": 100.0,
+        "current_median_us": 90.0,
+        "relative_delta": -0.1,
+        "absolute_delta_us": -10.0,
+        "baseline_relative_dispersion": 0.0,
+        "current_relative_dispersion": 0.8333333333333334
+      },
+      {
+        "name": "insufficient_samples",
+        "class": "insufficient_samples",
+        "baseline_n": 3,
+        "current_n": 3,
+        "baseline_median_us": 100.0,
+        "current_median_us": 200.0,
+        "relative_delta": 1.0,
+        "absolute_delta_us": 100.0,
+        "baseline_relative_dispersion": 0.0,
+        "current_relative_dispersion": 0.0
+      }
+    ]
+  }
+}

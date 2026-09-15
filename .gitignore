@@ -33,6 +33,8 @@ compile_commands.json
 # Generated benchmark result artifacts
 benchmark_results.csv
 benchmark_results.json
+benchmark_results.manifest.json
+benchmark_results.comparison.json
 
 # Cargo / Rust scratch files
 *.rmeta
