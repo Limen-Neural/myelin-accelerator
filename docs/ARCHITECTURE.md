@@ -25,11 +25,11 @@ local quality/benchmark harness. Not a research orchestrator.
 | CUDA kernels | `cu/*.cu`, shared headers (`cu/common.cuh`), `sm_120`-tuned reductions |
 | PTX build path | `build.rs` (`nvcc -ptx`), CMake `cuda_kernels` target, embedded PTX |
 | Safe GPU FFI | `GpuContext`, `KernelModule`, `GpuBuffer`, launch wrappers |
-| Feature gates | `cuda` (cust + nvtx), `bench` (serde JSON/CSV harness) |
+| Feature gates | `cuda` (cust + nvtx), `bench` (example harness flag); manifest schema lives in `src/bench` |
 | CPU-safe stub | `src/gpu_stub.rs` when `cuda` is off (CI / sandboxes) |
 | Host packing utilities | Binary / ternary bitpacking (`src/bitpacking.rs`) — host-side layout helpers that match future device kernels |
 | Launch / stream helpers | Default streams, aux buffers for multi-pass reductions |
-| Local QA | CTest matrix, GPU `#[ignore]` tests, `examples/benchmark.rs` |
+| Local QA | CTest matrix, GPU `#[ignore]` tests, `examples/benchmark.rs`, `docs/BENCHMARKS.md` |
 | Kernel-level telemetry primitives | On-device reduce passes (entropy, membrane stats) that stay generic |
 
 **Rule of thumb:** if another project would copy a `.cu` file or re-implement
@@ -83,6 +83,7 @@ myelin-accelerator/
 │   └── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
 ├── src/
 │   ├── lib.rs                   # Crate root; public re-exports
+│   ├── bench/                   # Manifest schema, redaction, regression budgets
 │   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
 │   ├── gpu_stub.rs              # CPU-safe stand-ins (no cuda feature)
 │   └── gpu/                     # Real CUDA path (feature = "cuda")
@@ -93,10 +94,12 @@ myelin-accelerator/
 │       ├── error.rs             # GpuError / GpuResult
 │       └── accelerator.rs       # High-level launch wrappers
 ├── examples/benchmark.rs        # Optional bench harness (feature = "bench")
+├── tests/fixtures/bench/        # Sanitized manifest + classification fixtures
 ├── build.rs                     # nvcc → PTX into OUT_DIR
 ├── CMakeLists.txt               # CLion/CTest quality gate (nvcc -ptx)
 └── docs/
     ├── ARCHITECTURE.md          # This file
+    ├── BENCHMARKS.md            # Manifests, compare, baseline refresh
     └── TERNARY.md               # Ternary encoding, scales, GOZ1, kernels
 ```
 
@@ -106,7 +109,7 @@ myelin-accelerator/
 |---------|--------|
 | *(default empty)* | Stub GPU API; no `nvcc` required |
 | `cuda` | Real `src/gpu/*`, `cust`, optional `nvtx` profiling ranges |
-| `bench` | Serde deps for `examples/benchmark` (pair with `cuda` for GPU) |
+| `bench` | Example `required-features` flag so existing `--features bench` commands stay valid |
 
 ---
 
@@ -124,6 +127,7 @@ Re-exported from `src/lib.rs` (names available with or without `cuda` via stub):
 | `KernelModule` | Loaded PTX modules + `get_function` |
 | `GpuError` | Error type re-exported at the crate root |
 | `bitpacking` module | Host packing APIs (`pack_ternary`, `pack_binary`, …) |
+| `bench` module | Manifest schema, redaction, median/MAD stats, opt-in regression budgets |
 
 `GpuResult<T>` (`type` alias for `Result<T, GpuError>`) is **not** re-exported
 from the crate root today. Use `Result<_, myelin_accelerator::GpuError>` at the
