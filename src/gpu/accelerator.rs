@@ -930,8 +930,8 @@ impl GpuAccelerator {
                 n_nodes,
                 n_routes,
                 top_k,
-                adaptation_scale,
                 logits,
+                adaptation_scale,
             ))
             .and_then(|_| {
                 launch!(pass2<<<1u32, block, 0, stream>>>(
