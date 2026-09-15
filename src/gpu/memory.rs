@@ -64,9 +64,7 @@ impl<T: cust::memory::DeviceCopy + Default + Clone> GpuBuffer<T> {
     pub fn as_device_ptr(&self) -> cust::memory::DevicePointer<T> {
         self.inner.as_device_ptr()
     }
-}
 
-impl GpuBuffer<f32> {
     /// Zero the first `count` elements on device; leaves any tail untouched.
     ///
     /// Uses a device memset (no host-sized staging buffer), so empty-K GEMM/GEMV

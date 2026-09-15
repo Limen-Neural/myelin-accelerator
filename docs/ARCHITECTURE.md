@@ -85,6 +85,7 @@ myelin-accelerator/
 ├── src/
 │   ├── lib.rs                   # Crate root; public re-exports
 │   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
+│   ├── fused.rs                # Host fused routing / SAAQ + traffic model
 │   ├── gpu_stub.rs              # CPU-safe stand-ins (no cuda feature)
 │   └── gpu/                     # Real CUDA path (feature = "cuda")
 │       ├── mod.rs               # Internal module tree + re-exports

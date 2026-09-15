@@ -573,7 +573,7 @@ impl GpuAccelerator {
         Self::expect_len("best_walker", best_walker.len(), 1)?;
         if n == 0 {
             // Defined empty result: no valid walker; do not leave device memory stale.
-            best_walker.upload(&[0])?;
+            best_walker.zero_prefix(1)?;
             return Ok(());
         }
 
@@ -640,7 +640,7 @@ impl GpuAccelerator {
         Self::expect_len("adaptation", adaptation.len(), n)?;
         Self::expect_len("best_walker", best_walker.len(), 1)?;
         if n == 0 {
-            best_walker.upload(&[0])?;
+            best_walker.zero_prefix(1)?;
             return Ok(());
         }
 
@@ -707,8 +707,8 @@ impl GpuAccelerator {
         Self::expect_len("entropy_sum", entropy_sum.len(), 1)?;
         Self::expect_len("entropy_max", entropy_max.len(), 1)?;
         if n_nodes == 0 {
-            entropy_sum.upload(&[0.0])?;
-            entropy_max.upload(&[0.0])?;
+            entropy_sum.zero_prefix(1)?;
+            entropy_max.zero_prefix(1)?;
             return Ok(());
         }
 
@@ -893,9 +893,9 @@ impl GpuAccelerator {
         Self::expect_len("entropy_max", entropy_max.len(), 1)?;
         Self::expect_len("best_walker", best_walker.len(), 1)?;
         if n_nodes == 0 {
-            entropy_sum.upload(&[0.0])?;
-            entropy_max.upload(&[0.0])?;
-            best_walker.upload(&[0])?;
+            entropy_sum.zero_prefix(1)?;
+            entropy_max.zero_prefix(1)?;
+            best_walker.zero_prefix(1)?;
             return Ok(());
         }
 
