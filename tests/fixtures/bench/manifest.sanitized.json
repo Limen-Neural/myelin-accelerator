@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "input_dimensions": {
+        "n": 256
+      },
+      "kernel_variant": "host-bitpack",
+      "mad_us": 0.0,
+      "max_us": 1.25,
+      "mean_us": 1.2,
+      "median_us": 1.2,
+      "min_us": 1.15,
+      "name": "bitpack_binary_pack_256",
+      "p50_us": 1.2,
+      "p95_us": 1.25,
+      "p99_us": 1.25,
+      "relative_dispersion": 0.0,
+      "samples": 8,
+      "samples_us": [1.15, 1.16, 1.18, 1.2, 1.2, 1.22, 1.24, 1.25],
+      "seed": null,
+      "warmup": 2
+    }
+  ],
+  "device": {
+    "compute_capability": null,
+    "driver_version": null,
+    "name": null,
+    "runtime_version": null,
+    "sm_arch": null,
+    "toolchain_version": null,
+    "uuid": null,
+    "vram_total_mb": null
+  },
+  "features": ["bench"],
+  "git": {
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "dirty": false
+  },
+  "power_clock": {
+    "graphics_clock_mhz": null,
+    "memory_clock_mhz": null,
+    "persistence_mode": null,
+    "power_limit_w": null
+  },
+  "run": {
+    "samples": 8,
+    "seed": 42,
+    "warmup": 2
+  },
+  "toolchain": {
+    "crate_version": "0.2.0",
+    "debug_assertions": false,
+    "host_arch": "x86_64",
+    "host_os": "linux",
+    "nvcc": null,
+    "opt_level": "3",
+    "rustc": "rustc 1.98.1"
+  }
+}
