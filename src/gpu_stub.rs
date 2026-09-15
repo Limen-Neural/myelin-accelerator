@@ -1,6 +1,7 @@
 // Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::gif::SnapshotChannels;
 use std::fmt;
 
 pub type GpuResult<T> = Result<T, GpuError>;
@@ -200,6 +201,58 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    pub fn ensure_temporal_state(&mut self, _: usize) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn project_snapshot_current(&mut self, _: SnapshotChannels, _: usize) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn gif_step_weighted_tick(&mut self, _: usize) -> GpuResult<u32> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn reset_temporal_state(&mut self) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn load_synapse_weights(&mut self, _: &[f32]) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn load_synapse_weights_named(&mut self, _: &str, _: &[f32]) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn load_synapse_weights_f16_registered(&mut self, _: &str, _: &[u16]) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn synapse_signature(&self) -> Option<&str> {
+        None
+    }
+
+    pub fn temporal_spikes_to_vec(&self, _: usize) -> GpuResult<Vec<u32>> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn temporal_membrane_to_vec(&self, _: usize) -> GpuResult<Vec<f32>> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn temporal_adaptation_to_vec(&self, _: usize) -> GpuResult<Vec<f32>> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn upload_temporal_input_spikes(&mut self, _: &[f32]) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn saaq_find_best_walker(&mut self, _: usize) -> GpuResult<u32> {
+        Err(GpuError::NoGpu)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn ternary_gemv(
         &self,
@@ -275,6 +328,7 @@ impl Default for GpuAccelerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gif::SnapshotChannels;
 
     // ── GpuError Display ────────────────────────────────────────────────────
 
@@ -570,6 +624,58 @@ mod tests {
         assert!(matches!(
             acc.ternary_gemm_async(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .unwrap_err(),
+            GpuError::NoGpu
+        ));
+    }
+
+    #[test]
+    fn accelerator_temporal_methods_return_no_gpu() {
+        let mut acc = GpuAccelerator::new();
+        assert!(matches!(
+            acc.ensure_temporal_state(16).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.project_snapshot_current(SnapshotChannels::default(), 16)
+                .unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.gif_step_weighted_tick(16).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.reset_temporal_state().unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.load_synapse_weights_named("x", &[0.0]).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.load_synapse_weights_f16_registered("x", &[0u16])
+                .unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(acc.synapse_signature().is_none());
+        assert!(matches!(
+            acc.temporal_spikes_to_vec(16).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.temporal_membrane_to_vec(16).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.temporal_adaptation_to_vec(16).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.upload_temporal_input_spikes(&[0.0]).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.saaq_find_best_walker(16).unwrap_err(),
             GpuError::NoGpu
         ));
     }
