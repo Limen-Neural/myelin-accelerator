@@ -54,6 +54,49 @@ fn saaq_unfused_matches_host() {
 
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
+fn saaq_unfused_reduces_more_than_32_partials() {
+    let acc = GpuAccelerator::new();
+    assert!(acc.is_ready(), "GPU not ready for SAAQ golden");
+
+    // 36 blocks of 256 → n_partials = 36, which the old <<<1,32>>> pass2 dropped.
+    let n = 9000usize;
+    let mut membrane = vec![0.0f32; n];
+    let adaptation = vec![0.0f32; n];
+    membrane[8500] = 10.0;
+    let expected = saaq_best_walker(&membrane, &adaptation, GIF_ADAPTATION_SCALE);
+    assert_eq!(expected, 8500);
+
+    let d_m = GpuBuffer::from_slice(&membrane).unwrap();
+    let d_a = GpuBuffer::from_slice(&adaptation).unwrap();
+    let mut d_w = GpuBuffer::<u32>::alloc(1).unwrap();
+    acc.saaq_select(&d_m, &d_a, &mut d_w, GIF_ADAPTATION_SCALE)
+        .expect("saaq_select large");
+    assert_eq!(d_w.to_vec().unwrap()[0], expected);
+    acc.saaq_select_fused(&d_m, &d_a, &mut d_w, GIF_ADAPTATION_SCALE)
+        .expect("saaq_select_fused large");
+    assert_eq!(d_w.to_vec().unwrap()[0], expected);
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn saaq_empty_writes_walker_zero() {
+    let acc = GpuAccelerator::new();
+    assert!(acc.is_ready(), "GPU not ready");
+
+    let d_m = GpuBuffer::<f32>::alloc(0).unwrap();
+    let d_a = GpuBuffer::<f32>::alloc(0).unwrap();
+    let mut d_w = GpuBuffer::<u32>::from_slice(&[u32::MAX]).unwrap();
+    acc.saaq_select(&d_m, &d_a, &mut d_w, GIF_ADAPTATION_SCALE)
+        .unwrap();
+    assert_eq!(d_w.to_vec().unwrap()[0], 0);
+    d_w.upload(&[u32::MAX]).unwrap();
+    acc.saaq_select_fused(&d_m, &d_a, &mut d_w, GIF_ADAPTATION_SCALE)
+        .unwrap();
+    assert_eq!(d_w.to_vec().unwrap()[0], 0);
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
 fn saaq_fused_matches_unfused() {
     let acc = GpuAccelerator::new();
     assert!(acc.is_ready(), "GPU not ready");
@@ -238,4 +281,75 @@ fn routing_saaq_fused_matches_host() {
         "fused vs host entropy_max: {got_max} vs {}",
         expected.entropy_max
     );
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn routing_saaq_fused_zero_nodes_writes_defined_outputs() {
+    let acc = GpuAccelerator::new();
+    assert!(acc.is_ready(), "GPU not ready");
+
+    let d_scores = GpuBuffer::<f32>::from_slice(&[]).unwrap();
+    let d_m = GpuBuffer::<f32>::from_slice(&[]).unwrap();
+    let d_a = GpuBuffer::<f32>::from_slice(&[]).unwrap();
+    let mut d_topk = GpuBuffer::<i32>::from_slice(&[]).unwrap();
+    let mut d_sum = GpuBuffer::<f32>::from_slice(&[42.0]).unwrap();
+    let mut d_max = GpuBuffer::<f32>::from_slice(&[42.0]).unwrap();
+    let mut d_w = GpuBuffer::<u32>::from_slice(&[u32::MAX]).unwrap();
+
+    acc.routing_saaq_fused(
+        &d_scores,
+        &d_m,
+        &d_a,
+        &mut d_topk,
+        &mut d_sum,
+        &mut d_max,
+        &mut d_w,
+        0,
+        0,
+        1,
+        GIF_ADAPTATION_SCALE,
+        true,
+    )
+    .unwrap();
+    assert_eq!(d_sum.to_vec().unwrap()[0], 0.0);
+    assert_eq!(d_max.to_vec().unwrap()[0], 0.0);
+    assert_eq!(d_w.to_vec().unwrap()[0], 0);
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn routing_saaq_fused_zero_routes_still_selects_saaq() {
+    let acc = GpuAccelerator::new();
+    assert!(acc.is_ready(), "GPU not ready");
+
+    let membrane = [1.0f32, 4.0, 2.0];
+    let adaptation = [0.0f32, 0.0, 0.0];
+    let d_scores = GpuBuffer::<f32>::from_slice(&[]).unwrap();
+    let d_m = GpuBuffer::from_slice(&membrane).unwrap();
+    let d_a = GpuBuffer::from_slice(&adaptation).unwrap();
+    let mut d_topk = GpuBuffer::<i32>::alloc(6).unwrap();
+    let mut d_sum = GpuBuffer::<f32>::alloc(1).unwrap();
+    let mut d_max = GpuBuffer::<f32>::alloc(1).unwrap();
+    let mut d_w = GpuBuffer::<u32>::alloc(1).unwrap();
+
+    acc.routing_saaq_fused(
+        &d_scores,
+        &d_m,
+        &d_a,
+        &mut d_topk,
+        &mut d_sum,
+        &mut d_max,
+        &mut d_w,
+        3,
+        0,
+        2,
+        GIF_ADAPTATION_SCALE,
+        true,
+    )
+    .unwrap();
+    assert_eq!(d_w.to_vec().unwrap()[0], 1);
+    assert_eq!(d_sum.to_vec().unwrap()[0], 0.0);
+    assert_eq!(d_max.to_vec().unwrap()[0], 0.0);
+    assert_eq!(d_topk.to_vec().unwrap(), vec![-1, -1, -1, -1, -1, -1]);
 }
