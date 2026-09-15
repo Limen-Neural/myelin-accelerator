@@ -743,7 +743,7 @@ fn bench_fused_routing_saaq_gpu(
         config.warmup,
         config.iterations,
         || {
-            acc.routing_softmax(
+            acc.routing_softmax_async(
                 &d_scores,
                 &mut d_probs,
                 n_nodes as i32,
@@ -751,7 +751,7 @@ fn bench_fused_routing_saaq_gpu(
                 true,
             )
             .unwrap();
-            acc.routing_entropy_reduce(
+            acc.routing_entropy_reduce_async(
                 &d_probs,
                 &mut d_sum,
                 &mut d_max,
@@ -759,8 +759,9 @@ fn bench_fused_routing_saaq_gpu(
                 n_routes as i32,
             )
             .unwrap();
-            acc.saaq_select(&d_m, &d_a, &mut d_w, GIF_ADAPTATION_SCALE)
+            acc.saaq_select_async(&d_m, &d_a, &mut d_w, GIF_ADAPTATION_SCALE)
                 .unwrap();
+            acc.synchronize().unwrap();
         },
     ));
     results.push(run_benchmark(
@@ -768,7 +769,7 @@ fn bench_fused_routing_saaq_gpu(
         config.warmup,
         config.iterations,
         || {
-            acc.routing_saaq_fused(
+            acc.routing_saaq_fused_async(
                 &d_scores,
                 &d_m,
                 &d_a,
@@ -783,6 +784,7 @@ fn bench_fused_routing_saaq_gpu(
                 true,
             )
             .unwrap();
+            acc.synchronize().unwrap();
         },
     ));
     results.push(run_benchmark(
