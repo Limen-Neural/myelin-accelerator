@@ -133,9 +133,11 @@ impl ComputeCapability {
     pub const REQUIRED: Self = REQUIRED_COMPUTE_CAPABILITY;
 
     /// `true` when this capability can run `sm_120` first-party PTX.
+    ///
+    /// The published floor is [`REQUIRED_COMPUTE_CAPABILITY`] (`12.0`). Any
+    /// `major >= 12` is accepted; `minor` is reserved for a future raise.
     pub const fn meets_minimum(self) -> bool {
-        self.major > Self::REQUIRED.major
-            || (self.major == Self::REQUIRED.major && self.minor >= Self::REQUIRED.minor)
+        self.major >= Self::REQUIRED.major
     }
 }
 
@@ -405,11 +407,11 @@ fn sanitize_token(tok: &str) -> String {
     if is_user_path(&lower) {
         return format!("{prefix}<path>{suffix}");
     }
-    if let Some((key, _)) = lower.split_once('=') {
-        if is_secret_key(key) {
-            let orig_key = core.split_once('=').map(|(k, _)| k).unwrap_or(core);
-            return format!("{prefix}{orig_key}=<redacted>{suffix}");
-        }
+    if let Some((key, _)) = lower.split_once('=')
+        && is_secret_key(key)
+    {
+        let orig_key = core.split_once('=').map(|(k, _)| k).unwrap_or(core);
+        return format!("{prefix}{orig_key}=<redacted>{suffix}");
     }
     tok.to_string()
 }
