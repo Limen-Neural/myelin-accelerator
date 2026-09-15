@@ -506,8 +506,8 @@ void saaq_find_best_walker(
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    float my_score = -1e30f;
-    int my_walker = 0;
+    float my_score = SAAQ_SENTINEL;
+    int my_walker = INT_MAX;
 
     if (tid < n_neurons) {
         my_score = membrane[tid] - (adaptation_scale * adaptation[tid]);
@@ -537,8 +537,8 @@ void saaq_find_best_walker(
     __syncthreads();
 
     if (warp_id == 0) {
-        float bscore = (threadIdx.x < n_warps) ? s_scores[lane] : -1e30f;
-        int bwalker = (threadIdx.x < n_warps) ? s_walkers[lane] : 0;
+        float bscore = (threadIdx.x < n_warps) ? s_scores[lane] : SAAQ_SENTINEL;
+        int bwalker = (threadIdx.x < n_warps) ? s_walkers[lane] : INT_MAX;
 
         for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
             float other_score = __shfl_down_sync(0xffffffffu, bscore, offset);
@@ -562,24 +562,29 @@ void saaq_find_best_walker(
 //  Unfused SAAQ pass 2. Consumes per-block winners from
 //  `saaq_find_best_walker` and writes one global best walker.
 //
-//  Typical launch: <<<1, 32>>>. Lanes >= n_partials use the -1e30f
-//  sentinel so the warp reduce never compares uninitialized values.
+//  Typical launch: <<<1, 256>>>. Grid-strides over n_partials so neuron
+//  counts above 8192 (more than 32 blocks of 256) still reduce correctly.
+//  Inactive lanes use SAAQ_SENTINEL / INT_MAX and do not win ties.
 // ════════════════════════════════════════════════════════════════════
 extern "C" __global__
-__launch_bounds__(32)
+__launch_bounds__(256)
 void saaq_reduce_partials_f16(
     const float* __restrict__ partial_scores,
     const unsigned int* __restrict__ partial_walkers,
     unsigned int* __restrict__ best_walker_out,
     int n_partials)
 {
-    int lane = threadIdx.x;
-    float my_score = -1e30f;
-    int my_walker = 0;
+    int tid = threadIdx.x;
+    float my_score = SAAQ_SENTINEL;
+    int my_walker = INT_MAX;
 
-    if (lane < n_partials) {
-        my_score = partial_scores[lane];
-        my_walker = (int)partial_walkers[lane];
+    for (int i = tid; i < n_partials; i += (int)blockDim.x) {
+        float sc = partial_scores[i];
+        int w = (int)partial_walkers[i];
+        if (sc > my_score || (sc == my_score && w < my_walker)) {
+            my_score = sc;
+            my_walker = w;
+        }
     }
 
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
@@ -591,7 +596,34 @@ void saaq_reduce_partials_f16(
         }
     }
 
+    int lane = tid & (WARP_SIZE - 1);
+    int warp_id = tid / WARP_SIZE;
+    int n_warps = (blockDim.x + WARP_SIZE - 1) / WARP_SIZE;
+
+    __shared__ float s_scores[32];
+    __shared__ int s_walkers[32];
+
     if (lane == 0) {
-        best_walker_out[0] = (unsigned int)my_walker;
+        s_scores[warp_id] = my_score;
+        s_walkers[warp_id] = my_walker;
+    }
+    __syncthreads();
+
+    if (warp_id == 0) {
+        float bscore = (tid < n_warps) ? s_scores[lane] : SAAQ_SENTINEL;
+        int bwalker = (tid < n_warps) ? s_walkers[lane] : INT_MAX;
+
+        for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+            float other_score = __shfl_down_sync(0xffffffffu, bscore, offset);
+            int other_walker = __shfl_down_sync(0xffffffffu, bwalker, offset);
+            if (other_score > bscore || (other_score == bscore && other_walker < bwalker)) {
+                bscore = other_score;
+                bwalker = other_walker;
+            }
+        }
+
+        if (tid == 0) {
+            best_walker_out[0] = (n_partials > 0) ? (unsigned int)bwalker : 0u;
+        }
     }
 }

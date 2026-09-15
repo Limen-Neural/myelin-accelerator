@@ -64,6 +64,9 @@ Those functions are the source of the committed JSON/CSV.
   at 8 blocks). Fusing them into `saaq_select_fused` (<<<1, 256>>>) saves a
   launch but **cuts occupancy to one block** (~12.5% of an SM). Prefer the
   two-pass SAAQ kernels when the grid is already 8×256 for 2048 neurons.
+  Unfused pass2 (`saaq_reduce_partials_f16`) grid-strides like
+  `fused_telemetry_reduce_pass2`, so counts above 8192 (more than 32 blocks)
+  still reduce every partial.
 - **GIF `gif_step_weighted` itself.** That kernel’s traffic is the weight
   matrix, not routing logits. Fusing GIF into this pass is a different
   prototype and belongs with the GH #27 port (`TemporalState`).

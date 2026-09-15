@@ -17,7 +17,6 @@ use tracing::warn;
 const SATSOLVER_BLOCK_SIZE: u32 = 256;
 const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
 const REDUCE_BLOCK_SIZE: u32 = 256;
-const SAAQ_PASS2_BLOCK: u32 = 32;
 
 pub struct GpuAccelerator {
     _ctx: Option<GpuContext>,
@@ -573,6 +572,8 @@ impl GpuAccelerator {
         Self::expect_len("adaptation", adaptation.len(), n)?;
         Self::expect_len("best_walker", best_walker.len(), 1)?;
         if n == 0 {
+            // Defined empty result: no valid walker; do not leave device memory stale.
+            best_walker.upload(&[0])?;
             return Ok(());
         }
 
@@ -602,7 +603,7 @@ impl GpuAccelerator {
                 adaptation_scale,
             ))
             .and_then(|_| {
-                launch!(pass2<<<1u32, SAAQ_PASS2_BLOCK, 0, stream>>>(
+                launch!(pass2<<<1u32, REDUCE_BLOCK_SIZE, 0, stream>>>(
                     partial_scores.as_device_ptr(),
                     partial_walkers.as_device_ptr(),
                     best_walker.as_device_ptr(),
@@ -639,6 +640,7 @@ impl GpuAccelerator {
         Self::expect_len("adaptation", adaptation.len(), n)?;
         Self::expect_len("best_walker", best_walker.len(), 1)?;
         if n == 0 {
+            best_walker.upload(&[0])?;
             return Ok(());
         }
 
@@ -889,6 +891,9 @@ impl GpuAccelerator {
         Self::expect_len("entropy_max", entropy_max.len(), 1)?;
         Self::expect_len("best_walker", best_walker.len(), 1)?;
         if n_nodes == 0 {
+            entropy_sum.upload(&[0.0])?;
+            entropy_max.upload(&[0.0])?;
+            best_walker.upload(&[0])?;
             return Ok(());
         }
 

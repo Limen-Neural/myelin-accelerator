@@ -16,7 +16,6 @@
 #include "common.cuh"
 
 #define MAX_FUSED_TOP_K 8
-#define SAAQ_SENTINEL   -1e30f
 
 __device__ __forceinline__
 bool fused_better(float lhs_score, int lhs_idx, float rhs_score, int rhs_idx)
@@ -126,7 +125,7 @@ void saaq_select_fused(
     float adaptation_scale)
 {
     float my_score = SAAQ_SENTINEL;
-    int my_walker = 0;
+    int my_walker = INT_MAX;
 
     for (int tid = (int)threadIdx.x; tid < n_neurons; tid += (int)blockDim.x) {
         float score = membrane[tid] - (adaptation_scale * adaptation[tid]);
@@ -153,10 +152,10 @@ void saaq_select_fused(
 
     if (warp_id == 0) {
         float bscore = (threadIdx.x < n_warps) ? s_scores[lane] : SAAQ_SENTINEL;
-        int bwalker = (threadIdx.x < n_warps) ? s_walkers[lane] : 0;
+        int bwalker = (threadIdx.x < n_warps) ? s_walkers[lane] : INT_MAX;
         fused_argmax_reduce(bscore, bwalker);
         if (threadIdx.x == 0)
-            best_walker_out[0] = (unsigned int)bwalker;
+            best_walker_out[0] = (n_neurons > 0) ? (unsigned int)bwalker : 0u;
     }
 }
 
@@ -196,7 +195,13 @@ void routing_saaq_fused_pass1(
 
     float entropy = 0.0f;
     float saaq_score = SAAQ_SENTINEL;
-    int saaq_walker = 0;
+    int saaq_walker = INT_MAX;
+
+    // SAAQ is independent of routing width: zero routes still argmax membrane.
+    if (tid < n_nodes) {
+        saaq_score = membrane[tid] - (adaptation_scale * adaptation[tid]);
+        saaq_walker = tid;
+    }
 
     if (tid < n_nodes && n_routes > 0) {
         const float* row = scores + (long)tid * n_routes;
@@ -240,9 +245,6 @@ void routing_saaq_fused_pass1(
             for (int t = actual_k; t < top_k; ++t)
                 out_idx[t] = -1;
         }
-
-        saaq_score = membrane[tid] - (adaptation_scale * adaptation[tid]);
-        saaq_walker = tid;
     } else if (tid < n_nodes && top_k_indices && top_k > 0) {
         int* out_idx = top_k_indices + (long)tid * top_k;
         for (int t = 0; t < top_k; ++t)
@@ -274,7 +276,7 @@ void routing_saaq_fused_pass1(
         float bsum = (threadIdx.x < n_warps) ? s_sum[lane] : 0.0f;
         float bmax = (threadIdx.x < n_warps) ? s_max[lane] : 0.0f;
         float bsaaq = (threadIdx.x < n_warps) ? s_saaq[lane] : SAAQ_SENTINEL;
-        int bwalk = (threadIdx.x < n_warps) ? s_walk[lane] : 0;
+        int bwalk = (threadIdx.x < n_warps) ? s_walk[lane] : INT_MAX;
         bsum = warp_reduce_sum(bsum);
         bmax = warp_reduce_max(bmax);
         fused_argmax_reduce(bsaaq, bwalk);
@@ -315,7 +317,7 @@ void fused_telemetry_reduce_pass2(
     float local_sum = 0.0f;
     float local_max = 0.0f;
     float local_saaq = SAAQ_SENTINEL;
-    int local_walker = 0;
+    int local_walker = INT_MAX;
 
     for (int i = tid; i < n_partials; i += blockDim.x) {
         local_sum += entropy_partial_sum[i];
@@ -353,14 +355,14 @@ void fused_telemetry_reduce_pass2(
         float bsum = (tid < n_warps) ? s_sum[lane] : 0.0f;
         float bmax = (tid < n_warps) ? s_max[lane] : 0.0f;
         float bsaaq = (tid < n_warps) ? s_saaq[lane] : SAAQ_SENTINEL;
-        int bwalk = (tid < n_warps) ? s_walk[lane] : 0;
+        int bwalk = (tid < n_warps) ? s_walk[lane] : INT_MAX;
         bsum = warp_reduce_sum(bsum);
         bmax = warp_reduce_max(bmax);
         fused_argmax_reduce(bsaaq, bwalk);
         if (tid == 0) {
             entropy_sum_out[0] = bsum;
             entropy_max_out[0] = bmax;
-            best_walker_out[0] = (unsigned int)bwalk;
+            best_walker_out[0] = (n_partials > 0) ? (unsigned int)bwalk : 0u;
         }
     }
 }

@@ -17,6 +17,8 @@
 #define SHIP_PI       3.14159265358979323846f
 #define SHIP_E        2.71828182845904523536f
 #define SHIP_EPS      1e-8f
+// Inactive SAAQ lanes use -inf so any finite (or even -1e30) score wins.
+#define SAAQ_SENTINEL (-INFINITY)
 
 // ── Warp utility ──────────────────────────────────────────────────
 #define WARP_SIZE 32

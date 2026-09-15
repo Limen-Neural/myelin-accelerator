@@ -17,7 +17,7 @@ pub const FUSED_BLOCK_SIZE: usize = 256;
 pub const MAX_FUSED_TOP_K: usize = 8;
 
 /// Matches the device SAAQ sentinel used to mask empty lanes.
-const SAAQ_SENTINEL: f32 = -1e30;
+const SAAQ_SENTINEL: f32 = f32::NEG_INFINITY;
 
 /// Blackwell SM occupancy constants used for the analytical model.
 /// These are the published sm_90-class SM limits that sm_120 inherits for
@@ -411,6 +411,38 @@ mod tests {
         }
         let h = entropy_row(&p);
         assert!((h - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn saaq_empty_returns_walker_zero() {
+        assert_eq!(saaq_best_walker(&[], &[], 0.22), 0);
+    }
+
+    #[test]
+    fn saaq_selects_true_max_below_old_finite_sentinel() {
+        let membrane = vec![-1e32, -1e31, -1e32];
+        let adaptation = vec![0.0, 0.0, 0.0];
+        assert_eq!(saaq_best_walker(&membrane, &adaptation, 0.0), 1);
+    }
+
+    #[test]
+    fn fused_zero_routes_still_selects_saaq() {
+        let membrane = [1.0f32, 4.0, 2.0];
+        let adaptation = [0.0f32, 0.0, 0.0];
+        let fused = fused_routing_saaq(&RoutingSaaqInput {
+            scores: &[],
+            membrane: &membrane,
+            adaptation: &adaptation,
+            n_nodes: 3,
+            n_routes: 0,
+            top_k: 2,
+            adaptation_scale: GIF_ADAPTATION_SCALE,
+            scores_are_logits: true,
+        });
+        assert_eq!(fused.best_walker, 1);
+        assert_eq!(fused.entropy_sum, 0.0);
+        assert_eq!(fused.entropy_max, 0.0);
+        assert_eq!(fused.top_k_indices, vec![-1, -1, -1, -1, -1, -1]);
     }
 
     #[test]
