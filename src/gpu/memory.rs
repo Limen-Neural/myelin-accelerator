@@ -64,24 +64,34 @@ impl<T: cust::memory::DeviceCopy + Default + Clone> GpuBuffer<T> {
     pub fn as_device_ptr(&self) -> cust::memory::DevicePointer<T> {
         self.inner.as_device_ptr()
     }
-
-    /// Zero the first `count` elements on device; leaves any tail untouched.
-    ///
-    /// Uses a device memset (no host-sized staging buffer), so empty-K GEMM/GEMV
-    /// zero-fills stay bounded in host memory for large `M*N`.
-    pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
-        if count > self.len {
-            return Err(GpuError::MemoryError(format!(
-                "zero_prefix: count {count} > device len {}",
-                self.len
-            )));
-        }
-        if count == 0 {
-            return Ok(());
-        }
-        let mut prefix = self.inner.index(0..count);
-        prefix
-            .set_zero()
-            .map_err(|e| GpuError::MemoryError(format!("zero_prefix: {e:?}")))
-    }
 }
+
+macro_rules! impl_zero_prefix {
+    ($($t:ty),+) => {
+        $(
+            impl GpuBuffer<$t> {
+                /// Zero the first `count` elements on device; leaves any tail untouched.
+                ///
+                /// Uses a device memset (no host-sized staging buffer), so empty-K GEMM/GEMV
+                /// zero-fills stay bounded in host memory for large `M*N`.
+                pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
+                    if count > self.len {
+                        return Err(GpuError::MemoryError(format!(
+                            "zero_prefix: count {count} > device len {}",
+                            self.len
+                        )));
+                    }
+                    if count == 0 {
+                        return Ok(());
+                    }
+                    let mut prefix = self.inner.index(0..count);
+                    prefix
+                        .set_zero()
+                        .map_err(|e| GpuError::MemoryError(format!("zero_prefix: {e:?}")))
+                }
+            }
+        )+
+    };
+}
+
+impl_zero_prefix!(f32, u32);
