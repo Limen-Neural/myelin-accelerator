@@ -15,6 +15,7 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 - `Rust FFI`: kernel symbols are loaded through `src/gpu/kernel.rs`; the codebase stays ABI-consistent with the CUDA side.
 - Host **binary/ternary bitpacking** + group scales + CPU ref matmul: `src/bitpacking.rs`.
 - Device **ternary GEMV/GEMM** (group-scaled, optional zero-skip): `cu/ternary_gemm.cu` — see [docs/TERNARY.md](docs/TERNARY.md).
+- **Fused routing / SAAQ** (softmax + entropy + top-k + walker select without materializing the routing matrix): `cu/fused_routing_saaq.cu` — see [docs/FUSED_ROUTING_SAAQ.md](docs/FUSED_ROUTING_SAAQ.md).
 
 ## Module map
 
@@ -29,6 +30,7 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 | `build.rs` / `CMakeLists.txt` | `nvcc -ptx` quality path | build-only |
 | `docs/ARCHITECTURE.md` | Ownership + API boundary | docs |
 | `docs/TERNARY.md` | Ternary encoding, scales, GOZ1 interop, kernels | docs |
+| `docs/FUSED_ROUTING_SAAQ.md` | Fused routing / SAAQ kernels + VRAM traffic model | docs |
 
 ### Features
 
@@ -40,7 +42,7 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 
 ### Public symbols (crate root)
 
-`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError` — plus the `bitpacking` module. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError` — plus the `bitpacking` and `fused` modules. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## What Changed
 

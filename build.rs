@@ -20,6 +20,7 @@ const KERNELS: &[(&str, &str)] = &[
     ("vector_similarity.cu", "vector_similarity_sm_120.ptx"),
     ("satsolver.cu", "satsolver_sm_120.ptx"),
     ("ternary_gemm.cu", "ternary_gemm_sm_120.ptx"),
+    ("fused_routing_saaq.cu", "fused_routing_saaq_sm_120.ptx"),
 ];
 
 fn main() {

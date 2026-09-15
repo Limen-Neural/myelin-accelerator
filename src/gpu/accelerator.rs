@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::bitpacking::TERNARY_VALUES_PER_WORD;
+use crate::fused::MAX_FUSED_TOP_K;
 use crate::gpu::context::GpuContext;
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::kernel::KernelModule;
 use crate::gpu::memory::GpuBuffer;
 use cust::launch;
+use cust::memory::DeviceCopy;
 use cust::stream::{Stream, StreamFlags};
 use nvtx::{range_pop, range_push};
 use std::cell::RefCell;
@@ -14,6 +16,8 @@ use tracing::warn;
 
 const SATSOLVER_BLOCK_SIZE: u32 = 256;
 const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
+const REDUCE_BLOCK_SIZE: u32 = 256;
+const SAAQ_PASS2_BLOCK: u32 = 32;
 
 pub struct GpuAccelerator {
     _ctx: Option<GpuContext>,
@@ -21,52 +25,52 @@ pub struct GpuAccelerator {
     stream: Option<Stream>,
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
+    aux_entropy_partial_sum: RefCell<Option<GpuBuffer<f32>>>,
+    aux_entropy_partial_max: RefCell<Option<GpuBuffer<f32>>>,
+    aux_saaq_partial_scores: RefCell<Option<GpuBuffer<f32>>>,
+    aux_saaq_partial_walkers: RefCell<Option<GpuBuffer<u32>>>,
 }
 
 impl GpuAccelerator {
+    fn from_parts(
+        ctx: Option<GpuContext>,
+        modules: Option<KernelModule>,
+        stream: Option<Stream>,
+    ) -> Self {
+        Self {
+            _ctx: ctx,
+            modules,
+            stream,
+            aux_partial_scores: RefCell::new(None),
+            aux_partial_walkers: RefCell::new(None),
+            aux_entropy_partial_sum: RefCell::new(None),
+            aux_entropy_partial_max: RefCell::new(None),
+            aux_saaq_partial_scores: RefCell::new(None),
+            aux_saaq_partial_walkers: RefCell::new(None),
+        }
+    }
+
     pub fn new() -> Self {
         match GpuContext::init() {
             Ok(ctx) => match (
                 KernelModule::load(),
                 Stream::new(StreamFlags::DEFAULT, None),
             ) {
-                (Ok(modules), Ok(stream)) => Self {
-                    _ctx: Some(ctx),
-                    modules: Some(modules),
-                    stream: Some(stream),
-                    aux_partial_scores: RefCell::new(None),
-                    aux_partial_walkers: RefCell::new(None),
-                },
+                (Ok(modules), Ok(stream)) => {
+                    Self::from_parts(Some(ctx), Some(modules), Some(stream))
+                }
                 (Err(e), _) => {
                     warn!("[GPU] PTX load failed (CPU fallback): {e}");
-                    Self {
-                        _ctx: Some(ctx),
-                        modules: None,
-                        stream: None,
-                        aux_partial_scores: RefCell::new(None),
-                        aux_partial_walkers: RefCell::new(None),
-                    }
+                    Self::from_parts(Some(ctx), None, None)
                 }
                 (_, Err(e)) => {
                     warn!("[GPU] stream creation failed (CPU fallback): {e:?}");
-                    Self {
-                        _ctx: Some(ctx),
-                        modules: None,
-                        stream: None,
-                        aux_partial_scores: RefCell::new(None),
-                        aux_partial_walkers: RefCell::new(None),
-                    }
+                    Self::from_parts(Some(ctx), None, None)
                 }
             },
             Err(e) => {
                 warn!("[GPU] No CUDA device (CPU fallback): {e}");
-                Self {
-                    _ctx: None,
-                    modules: None,
-                    stream: None,
-                    aux_partial_scores: RefCell::new(None),
-                    aux_partial_walkers: RefCell::new(None),
-                }
+                Self::from_parts(None, None, None)
             }
         }
     }
@@ -542,6 +546,443 @@ impl GpuAccelerator {
         range_pop!();
         launch_result.map_err(|e| GpuError::LaunchFailed(format!("ternary_gemm launch: {e:?}")))?;
 
+        Ok(())
+    }
+
+    /// Unfused two-pass SAAQ argmax (`saaq_find_best_walker` + pass 2).
+    pub fn saaq_select(
+        &self,
+        membrane: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        best_walker: &mut GpuBuffer<u32>,
+        adaptation_scale: f32,
+    ) -> GpuResult<()> {
+        self.saaq_select_async(membrane, adaptation, best_walker, adaptation_scale)?;
+        self.synchronize()
+    }
+
+    /// Async variant of [`Self::saaq_select`].
+    pub fn saaq_select_async(
+        &self,
+        membrane: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        best_walker: &mut GpuBuffer<u32>,
+        adaptation_scale: f32,
+    ) -> GpuResult<()> {
+        let n = membrane.len();
+        Self::expect_len("adaptation", adaptation.len(), n)?;
+        Self::expect_len("best_walker", best_walker.len(), 1)?;
+        if n == 0 {
+            return Ok(());
+        }
+
+        let kernels = self.kernels()?;
+        let pass1 = kernels.get_function("saaq_find_best_walker")?;
+        let pass2 = kernels.get_function("saaq_reduce_partials_f16")?;
+        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        let block = REDUCE_BLOCK_SIZE;
+        let grid = Self::ceil_div_u32(n as u32, block);
+        let partial_len = grid as usize;
+
+        self.ensure_aux_f32(&self.aux_saaq_partial_scores, partial_len, stream)?;
+        self.ensure_aux_u32(&self.aux_saaq_partial_walkers, partial_len, stream)?;
+        let partial_scores = self.aux_saaq_partial_scores.borrow();
+        let partial_walkers = self.aux_saaq_partial_walkers.borrow();
+        let partial_scores = partial_scores.as_ref().expect("saaq partial scores");
+        let partial_walkers = partial_walkers.as_ref().expect("saaq partial walkers");
+
+        range_push!("saaq_select");
+        let launch_result = unsafe {
+            launch!(pass1<<<grid, block, 0, stream>>>(
+                membrane.as_device_ptr(),
+                adaptation.as_device_ptr(),
+                partial_scores.as_device_ptr(),
+                partial_walkers.as_device_ptr(),
+                n as i32,
+                adaptation_scale,
+            ))
+            .and_then(|_| {
+                launch!(pass2<<<1u32, SAAQ_PASS2_BLOCK, 0, stream>>>(
+                    partial_scores.as_device_ptr(),
+                    partial_walkers.as_device_ptr(),
+                    best_walker.as_device_ptr(),
+                    partial_len as i32,
+                ))
+            })
+        };
+        range_pop!();
+        launch_result.map_err(|e| GpuError::LaunchFailed(format!("saaq_select launch: {e:?}")))?;
+        Ok(())
+    }
+
+    /// Fused single-block SAAQ argmax (no partial buffers).
+    pub fn saaq_select_fused(
+        &self,
+        membrane: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        best_walker: &mut GpuBuffer<u32>,
+        adaptation_scale: f32,
+    ) -> GpuResult<()> {
+        self.saaq_select_fused_async(membrane, adaptation, best_walker, adaptation_scale)?;
+        self.synchronize()
+    }
+
+    /// Async variant of [`Self::saaq_select_fused`].
+    pub fn saaq_select_fused_async(
+        &self,
+        membrane: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        best_walker: &mut GpuBuffer<u32>,
+        adaptation_scale: f32,
+    ) -> GpuResult<()> {
+        let n = membrane.len();
+        Self::expect_len("adaptation", adaptation.len(), n)?;
+        Self::expect_len("best_walker", best_walker.len(), 1)?;
+        if n == 0 {
+            return Ok(());
+        }
+
+        let kernels = self.kernels()?;
+        let func = kernels.get_function("saaq_select_fused")?;
+        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+
+        range_push!("saaq_select_fused");
+        let launch_result = unsafe {
+            launch!(func<<<1u32, REDUCE_BLOCK_SIZE, 0, stream>>>(
+                membrane.as_device_ptr(),
+                adaptation.as_device_ptr(),
+                best_walker.as_device_ptr(),
+                n as i32,
+                adaptation_scale,
+            ))
+        };
+        range_pop!();
+        launch_result
+            .map_err(|e| GpuError::LaunchFailed(format!("saaq_select_fused launch: {e:?}")))?;
+        Ok(())
+    }
+
+    /// Unfused entropy reduce: `routing_entropy_reduce_pass1` + `latent_reduce_pass2`.
+    pub fn routing_entropy_reduce(
+        &self,
+        routing_probs: &GpuBuffer<f32>,
+        entropy_sum: &mut GpuBuffer<f32>,
+        entropy_max: &mut GpuBuffer<f32>,
+        n_nodes: i32,
+        n_routes: i32,
+    ) -> GpuResult<()> {
+        self.routing_entropy_reduce_async(
+            routing_probs,
+            entropy_sum,
+            entropy_max,
+            n_nodes,
+            n_routes,
+        )?;
+        self.synchronize()
+    }
+
+    /// Async variant of [`Self::routing_entropy_reduce`].
+    pub fn routing_entropy_reduce_async(
+        &self,
+        routing_probs: &GpuBuffer<f32>,
+        entropy_sum: &mut GpuBuffer<f32>,
+        entropy_max: &mut GpuBuffer<f32>,
+        n_nodes: i32,
+        n_routes: i32,
+    ) -> GpuResult<()> {
+        if n_nodes < 0 || n_routes < 0 {
+            return Err(GpuError::LaunchFailed(format!(
+                "routing_entropy_reduce: n_nodes and n_routes must be >= 0, got {n_nodes} {n_routes}"
+            )));
+        }
+        let n_nodes_u = n_nodes as usize;
+        let n_routes_u = n_routes as usize;
+        Self::expect_len(
+            "routing_probs",
+            routing_probs.len(),
+            n_nodes_u.saturating_mul(n_routes_u),
+        )?;
+        Self::expect_len("entropy_sum", entropy_sum.len(), 1)?;
+        Self::expect_len("entropy_max", entropy_max.len(), 1)?;
+        if n_nodes == 0 {
+            return Ok(());
+        }
+
+        let kernels = self.kernels()?;
+        let pass1 = kernels.get_function("routing_entropy_reduce_pass1")?;
+        let pass2 = kernels.get_function("latent_reduce_pass2")?;
+        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        let block = REDUCE_BLOCK_SIZE;
+        let grid = Self::ceil_div_u32(n_nodes as u32, block);
+        let partial_len = grid as usize;
+
+        self.ensure_aux_f32(&self.aux_entropy_partial_sum, partial_len, stream)?;
+        self.ensure_aux_f32(&self.aux_entropy_partial_max, partial_len, stream)?;
+        let partial_sum = self.aux_entropy_partial_sum.borrow();
+        let partial_max = self.aux_entropy_partial_max.borrow();
+        let partial_sum = partial_sum.as_ref().expect("entropy partial sum");
+        let partial_max = partial_max.as_ref().expect("entropy partial max");
+
+        range_push!("routing_entropy_reduce");
+        let launch_result = unsafe {
+            launch!(pass1<<<grid, block, 0, stream>>>(
+                routing_probs.as_device_ptr(),
+                partial_sum.as_device_ptr(),
+                partial_max.as_device_ptr(),
+                n_nodes,
+                n_routes,
+            ))
+            .and_then(|_| {
+                launch!(pass2<<<1u32, block, 0, stream>>>(
+                    partial_sum.as_device_ptr(),
+                    partial_max.as_device_ptr(),
+                    entropy_sum.as_device_ptr(),
+                    entropy_max.as_device_ptr(),
+                    partial_len as i32,
+                ))
+            })
+        };
+        range_pop!();
+        launch_result
+            .map_err(|e| GpuError::LaunchFailed(format!("routing_entropy_reduce launch: {e:?}")))?;
+        Ok(())
+    }
+
+    /// Unfused softmax: logits (or already-normalized scores) → probability matrix.
+    pub fn routing_softmax(
+        &self,
+        scores: &GpuBuffer<f32>,
+        probs: &mut GpuBuffer<f32>,
+        n_nodes: i32,
+        n_routes: i32,
+        scores_are_logits: bool,
+    ) -> GpuResult<()> {
+        self.routing_softmax_async(scores, probs, n_nodes, n_routes, scores_are_logits)?;
+        self.synchronize()
+    }
+
+    /// Async variant of [`Self::routing_softmax`].
+    pub fn routing_softmax_async(
+        &self,
+        scores: &GpuBuffer<f32>,
+        probs: &mut GpuBuffer<f32>,
+        n_nodes: i32,
+        n_routes: i32,
+        scores_are_logits: bool,
+    ) -> GpuResult<()> {
+        if n_nodes < 0 || n_routes < 0 {
+            return Err(GpuError::LaunchFailed(format!(
+                "routing_softmax: n_nodes and n_routes must be >= 0, got {n_nodes} {n_routes}"
+            )));
+        }
+        let n_nodes_u = n_nodes as usize;
+        let n_routes_u = n_routes as usize;
+        let elems = n_nodes_u.saturating_mul(n_routes_u);
+        Self::expect_len("scores", scores.len(), elems)?;
+        Self::expect_len("probs", probs.len(), elems)?;
+        if n_nodes == 0 || n_routes == 0 {
+            return Ok(());
+        }
+
+        let kernels = self.kernels()?;
+        let func = kernels.get_function("routing_softmax")?;
+        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        let block = REDUCE_BLOCK_SIZE;
+        let grid = Self::ceil_div_u32(n_nodes as u32, block);
+        let logits = if scores_are_logits { 1i32 } else { 0i32 };
+
+        range_push!("routing_softmax");
+        let launch_result = unsafe {
+            launch!(func<<<grid, block, 0, stream>>>(
+                scores.as_device_ptr(),
+                probs.as_device_ptr(),
+                n_nodes,
+                n_routes,
+                logits,
+            ))
+        };
+        range_pop!();
+        launch_result
+            .map_err(|e| GpuError::LaunchFailed(format!("routing_softmax launch: {e:?}")))?;
+        Ok(())
+    }
+
+    /// Fused routing + entropy + SAAQ selection. Telemetry stays on-device
+    /// until the 12-byte pass2 write (`entropy_sum`, `entropy_max`, `best_walker`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn routing_saaq_fused(
+        &self,
+        scores: &GpuBuffer<f32>,
+        membrane: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        top_k_indices: &mut GpuBuffer<i32>,
+        entropy_sum: &mut GpuBuffer<f32>,
+        entropy_max: &mut GpuBuffer<f32>,
+        best_walker: &mut GpuBuffer<u32>,
+        n_nodes: i32,
+        n_routes: i32,
+        top_k: i32,
+        adaptation_scale: f32,
+        scores_are_logits: bool,
+    ) -> GpuResult<()> {
+        self.routing_saaq_fused_async(
+            scores,
+            membrane,
+            adaptation,
+            top_k_indices,
+            entropy_sum,
+            entropy_max,
+            best_walker,
+            n_nodes,
+            n_routes,
+            top_k,
+            adaptation_scale,
+            scores_are_logits,
+        )?;
+        self.synchronize()
+    }
+
+    /// Async variant of [`Self::routing_saaq_fused`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn routing_saaq_fused_async(
+        &self,
+        scores: &GpuBuffer<f32>,
+        membrane: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        top_k_indices: &mut GpuBuffer<i32>,
+        entropy_sum: &mut GpuBuffer<f32>,
+        entropy_max: &mut GpuBuffer<f32>,
+        best_walker: &mut GpuBuffer<u32>,
+        n_nodes: i32,
+        n_routes: i32,
+        top_k: i32,
+        adaptation_scale: f32,
+        scores_are_logits: bool,
+    ) -> GpuResult<()> {
+        if n_nodes < 0 || n_routes < 0 {
+            return Err(GpuError::LaunchFailed(format!(
+                "routing_saaq_fused: n_nodes and n_routes must be >= 0, got {n_nodes} {n_routes}"
+            )));
+        }
+        if top_k <= 0 {
+            return Err(GpuError::LaunchFailed(format!(
+                "routing_saaq_fused: top_k must be > 0, got {top_k}"
+            )));
+        }
+        if top_k as usize > MAX_FUSED_TOP_K {
+            return Err(GpuError::LaunchFailed(format!(
+                "routing_saaq_fused: top_k {top_k} exceeds MAX_FUSED_TOP_K ({MAX_FUSED_TOP_K})"
+            )));
+        }
+        let n_nodes_u = n_nodes as usize;
+        let n_routes_u = n_routes as usize;
+        let top_k_u = top_k as usize;
+        Self::expect_len("scores", scores.len(), n_nodes_u.saturating_mul(n_routes_u))?;
+        Self::expect_len("membrane", membrane.len(), n_nodes_u)?;
+        Self::expect_len("adaptation", adaptation.len(), n_nodes_u)?;
+        Self::expect_len(
+            "top_k_indices",
+            top_k_indices.len(),
+            n_nodes_u.saturating_mul(top_k_u),
+        )?;
+        Self::expect_len("entropy_sum", entropy_sum.len(), 1)?;
+        Self::expect_len("entropy_max", entropy_max.len(), 1)?;
+        Self::expect_len("best_walker", best_walker.len(), 1)?;
+        if n_nodes == 0 {
+            return Ok(());
+        }
+
+        let kernels = self.kernels()?;
+        let pass1 = kernels.get_function("routing_saaq_fused_pass1")?;
+        let pass2 = kernels.get_function("fused_telemetry_reduce_pass2")?;
+        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        let block = REDUCE_BLOCK_SIZE;
+        let grid = Self::ceil_div_u32(n_nodes as u32, block);
+        let partial_len = grid as usize;
+
+        self.ensure_aux_f32(&self.aux_entropy_partial_sum, partial_len, stream)?;
+        self.ensure_aux_f32(&self.aux_entropy_partial_max, partial_len, stream)?;
+        self.ensure_aux_f32(&self.aux_saaq_partial_scores, partial_len, stream)?;
+        self.ensure_aux_u32(&self.aux_saaq_partial_walkers, partial_len, stream)?;
+
+        let entropy_sum_p = self.aux_entropy_partial_sum.borrow();
+        let entropy_max_p = self.aux_entropy_partial_max.borrow();
+        let saaq_scores_p = self.aux_saaq_partial_scores.borrow();
+        let saaq_walkers_p = self.aux_saaq_partial_walkers.borrow();
+        let entropy_sum_p = entropy_sum_p.as_ref().expect("entropy partial sum");
+        let entropy_max_p = entropy_max_p.as_ref().expect("entropy partial max");
+        let saaq_scores_p = saaq_scores_p.as_ref().expect("saaq partial scores");
+        let saaq_walkers_p = saaq_walkers_p.as_ref().expect("saaq partial walkers");
+
+        let logits = if scores_are_logits { 1i32 } else { 0i32 };
+
+        range_push!("routing_saaq_fused");
+        let launch_result = unsafe {
+            launch!(pass1<<<grid, block, 0, stream>>>(
+                scores.as_device_ptr(),
+                membrane.as_device_ptr(),
+                adaptation.as_device_ptr(),
+                top_k_indices.as_device_ptr(),
+                entropy_sum_p.as_device_ptr(),
+                entropy_max_p.as_device_ptr(),
+                saaq_scores_p.as_device_ptr(),
+                saaq_walkers_p.as_device_ptr(),
+                n_nodes,
+                n_routes,
+                top_k,
+                adaptation_scale,
+                logits,
+            ))
+            .and_then(|_| {
+                launch!(pass2<<<1u32, block, 0, stream>>>(
+                    entropy_sum_p.as_device_ptr(),
+                    entropy_max_p.as_device_ptr(),
+                    saaq_scores_p.as_device_ptr(),
+                    saaq_walkers_p.as_device_ptr(),
+                    entropy_sum.as_device_ptr(),
+                    entropy_max.as_device_ptr(),
+                    best_walker.as_device_ptr(),
+                    partial_len as i32,
+                ))
+            })
+        };
+        range_pop!();
+        launch_result
+            .map_err(|e| GpuError::LaunchFailed(format!("routing_saaq_fused launch: {e:?}")))?;
+        Ok(())
+    }
+
+    fn ensure_aux_f32(
+        &self,
+        cell: &RefCell<Option<GpuBuffer<f32>>>,
+        len: usize,
+        stream: &Stream,
+    ) -> GpuResult<()> {
+        Self::ensure_aux_len(cell, len, stream)
+    }
+
+    fn ensure_aux_u32(
+        &self,
+        cell: &RefCell<Option<GpuBuffer<u32>>>,
+        len: usize,
+        stream: &Stream,
+    ) -> GpuResult<()> {
+        Self::ensure_aux_len(cell, len, stream)
+    }
+
+    fn ensure_aux_len<T: DeviceCopy + Default + Clone>(
+        cell: &RefCell<Option<GpuBuffer<T>>>,
+        len: usize,
+        stream: &Stream,
+    ) -> GpuResult<()> {
+        let mut slot = cell.borrow_mut();
+        let need = slot.as_ref().is_none_or(|b| b.len() < len);
+        if need {
+            stream.synchronize().map_err(|e| {
+                GpuError::LaunchFailed(format!("stream sync before aux realloc: {e:?}"))
+            })?;
+            *slot = Some(GpuBuffer::<T>::alloc(len)?);
+        }
         Ok(())
     }
 

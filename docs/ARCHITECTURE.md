@@ -80,7 +80,8 @@ myelin-accelerator/
 │   ├── spiking_network.cu       # Poisson, LIF, STDP, reduce passes
 │   ├── vector_similarity.cu     # Cosine batched + top-k routing
 │   ├── satsolver.cu             # Parallel SAT walkers + reduces
-│   └── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
+│   ├── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
+│   └── fused_routing_saaq.cu   # Fused softmax + entropy + SAAQ (GH #14)
 ├── src/
 │   ├── lib.rs                   # Crate root; public re-exports
 │   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
@@ -97,7 +98,8 @@ myelin-accelerator/
 ├── CMakeLists.txt               # CLion/CTest quality gate (nvcc -ptx)
 └── docs/
     ├── ARCHITECTURE.md          # This file
-    └── TERNARY.md               # Ternary encoding, scales, GOZ1, kernels
+    ├── TERNARY.md               # Ternary encoding, scales, GOZ1, kernels
+    └── FUSED_ROUTING_SAAQ.md    # Fused routing / SAAQ kernels + traffic model
 ```
 
 ### Cargo features
@@ -140,6 +142,7 @@ These are the **ergonomic** wrappers currently implemented:
 - SAT: `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
 - Spiking: `poisson_encode` / `_async`
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
+- Routing / SAAQ: `routing_softmax` / `_async`, `routing_entropy_reduce` / `_async`, `saaq_select` / `_async`, `saaq_select_fused` / `_async`, `routing_saaq_fused` / `_async` (see [FUSED_ROUTING_SAAQ.md](FUSED_ROUTING_SAAQ.md))
 
 Additional kernels may be **loaded** in `KernelModule` and still lack a
 dedicated `GpuAccelerator` method. Advanced callers can use
@@ -151,7 +154,8 @@ consumers share.
 
 | PTX module | Symbols |
 |------------|---------|
-| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `spike_rate`, `reset_membrane`, `stdp_update`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` |
+| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `spike_rate`, `reset_membrane`, `stdp_update`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2`, `saaq_find_best_walker`, `saaq_reduce_partials_f16` |
+| `fused_routing_saaq` | `routing_softmax`, `saaq_select_fused`, `routing_saaq_fused_pass1`, `fused_telemetry_reduce_pass2` |
 | `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` |
 | `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass1`, `satsolver_best_reduce_pass2` |
 | `ternary_gemm` | `ternary_gemv`, `ternary_gemm` |
@@ -205,7 +209,8 @@ When proposing a feature, answer:
 Tracked elsewhere but **in-boundary** if they stay low-level:
 
 - Packed ternary device kernels `ternary_gemv` / `ternary_gemm` (GH #9 / [LIM-890](https://linear.app/rpd-34/issue/LIM-890)) — host + device live in `src/bitpacking.rs`, `cu/ternary_gemm.cu`, `docs/TERNARY.md`
-- Fused routing / SAAQ kernels (GH #14 / [LIM-891](https://linear.app/rpd-34/issue/LIM-891)) — only generic device code + benches
+- Fused routing / SAAQ kernels (GH #14 / [LIM-891](https://linear.app/rpd-34/issue/LIM-891)) — `cu/fused_routing_saaq.cu`, `src/fused.rs`, [docs/FUSED_ROUTING_SAAQ.md](FUSED_ROUTING_SAAQ.md)
+- More `GpuAccelerator` wrappers for already-loaded symbols
 - More `GpuAccelerator` wrappers for already-loaded symbols
 - Wider public surface for bitpacking + device kernel parity docs
 

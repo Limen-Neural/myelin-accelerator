@@ -1,0 +1,10 @@
+{
+  "model": "analytical-vram-bytes",
+  "target": "sm_120",
+  "rows": [
+    {"n_nodes":2048,"n_routes":16,"top_k":4,"unfused_bytes":573708,"fused_bytes":180492,"bytes_saved":393216,"pct_saved":68.54,"unfused_launches":6,"fused_launches":2},
+    {"n_nodes":256,"n_routes":4096,"top_k":8,"unfused_bytes":16787500,"fused_bytes":4204588,"bytes_saved":12582912,"pct_saved":74.95,"unfused_launches":6,"fused_launches":2},
+    {"n_nodes":1024,"n_routes":128,"top_k":4,"unfused_bytes":2121868,"fused_bytes":549004,"bytes_saved":1572864,"pct_saved":74.13,"unfused_launches":6,"fused_launches":2},
+    {"n_nodes":64,"n_routes":8,"top_k":2,"unfused_bytes":9260,"fused_bytes":3116,"bytes_saved":6144,"pct_saved":66.35,"unfused_launches":6,"fused_launches":2}
+  ]
+}
