@@ -707,6 +707,8 @@ impl GpuAccelerator {
         Self::expect_len("entropy_sum", entropy_sum.len(), 1)?;
         Self::expect_len("entropy_max", entropy_max.len(), 1)?;
         if n_nodes == 0 {
+            entropy_sum.upload(&[0.0])?;
+            entropy_max.upload(&[0.0])?;
             return Ok(());
         }
 
