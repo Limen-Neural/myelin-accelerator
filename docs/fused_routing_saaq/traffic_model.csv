@@ -1,0 +1,9 @@
+path,n_nodes,n_routes,top_k,n_blocks,bytes_read,bytes_written,bytes_total,launches,materializes_matrix
+unfused,2048,16,4,8,409728,163980,573708,6,true
+fused,2048,16,4,8,147584,32908,180492,2,false
+unfused,256,4096,8,1,12584976,4202524,16787500,6,true
+fused,256,4096,8,1,4196368,8220,4204588,2,false
+unfused,1024,128,4,4,1581120,540748,2121868,6,true
+fused,1024,128,4,4,532544,16460,549004,2,false
+unfused,64,8,2,1,6672,2588,9260,6,true
+fused,64,8,2,1,2576,540,3116,2,false

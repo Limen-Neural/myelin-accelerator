@@ -129,7 +129,7 @@ jobs:
             exit 1
           fi
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
-                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
+                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx fused_routing_saaq_sm_120.ptx; do
             if [ ! -f "$ptx_dir/$f" ]; then
               echo "::error::Missing PTX file: $f"
               exit 1
@@ -155,6 +155,16 @@ jobs:
               exit 1
             fi
           done
+          for kernel in routing_softmax saaq_select_fused routing_saaq_fused_pass1 \
+                        fused_telemetry_reduce_pass2; do
+            if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
+                "$ptx_dir/fused_routing_saaq_sm_120.ptx"; then
+              echo "✓ fused_routing_saaq PTX: $kernel"
+            else
+              echo "::error::Missing kernel entry: $kernel"
+              exit 1
+            fi
+          done
 
       - name: Offline ptxas assemble (sm_120)
         shell: bash
@@ -162,7 +172,7 @@ jobs:
           set -euo pipefail
           ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
-                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
+                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx fused_routing_saaq_sm_120.ptx; do
             ptxas -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
             echo "✓ ptxas $f"
           done
@@ -243,8 +253,8 @@ jobs:
               echo "::error::Could not find PTX output directory for profile=$profile"
               exit 1
             fi
-            for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
-                     satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
+          for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
+                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx fused_routing_saaq_sm_120.ptx; do
               if [ ! -f "$ptx_dir/$f" ]; then
                 echo "::error::Missing PTX file ($profile): $f"
                 exit 1
@@ -274,7 +284,7 @@ jobs:
             for kernel in poisson_encode lif_step lif_step_weighted spike_rate \
                           reset_membrane stdp_update neuro_bias_logits \
                           membrane_dv_dt_reduce_pass1 routing_entropy_reduce_pass1 \
-                          latent_reduce_pass2; do
+                          latent_reduce_pass2 saaq_find_best_walker saaq_reduce_partials_f16; do
               if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
                   "$ptx_dir/spiking_network_sm_120.ptx"; then
                 echo "✓ $profile spiking_network: $kernel"
@@ -315,6 +325,17 @@ jobs:
                 exit 1
               fi
             done
+
+            for kernel in routing_softmax saaq_select_fused routing_saaq_fused_pass1 \
+                          fused_telemetry_reduce_pass2; do
+              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
+                  "$ptx_dir/fused_routing_saaq_sm_120.ptx"; then
+                echo "✓ $profile fused_routing_saaq: $kernel"
+              else
+                echo "::error::Missing kernel entry: $kernel in $profile fused_routing_saaq PTX"
+                exit 1
+              fi
+            done
           done
           echo ""
           echo "All kernel entry points verified for both debug and release."
@@ -326,7 +347,7 @@ jobs:
           PTXAS="$(dirname "$CUDA_NVCC")/ptxas"
           ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
-                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
+                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx fused_routing_saaq_sm_120.ptx; do
             "$PTXAS" -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
             echo "✓ ptxas $f"
           done

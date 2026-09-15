@@ -338,6 +338,7 @@ fn bench_bitpacking(config: &Config) -> Vec<BenchmarkResult> {
     results.extend(bench_binary_unpack(config));
     results.extend(bench_ternary_pack(config));
     results.extend(bench_ternary_unpack(config));
+    results.extend(bench_fused_host(config));
     results
 }
 
@@ -457,6 +458,78 @@ fn ternary_pattern(n: usize) -> Vec<i8> {
         .collect()
 }
 
+fn bench_fused_host(config: &Config) -> Vec<BenchmarkResult> {
+    use myelin_accelerator::fused::{
+        GIF_ADAPTATION_SCALE, RoutingSaaqInput, fused_routing_saaq, routing_entropy,
+        saaq_best_walker, softmax_row, top_k_indices, traffic_fused, traffic_unfused,
+    };
+
+    let n_nodes = 2048usize;
+    let n_routes = 16usize;
+    let top_k = 4usize;
+    let mut scores = Vec::with_capacity(n_nodes * n_routes);
+    let mut membrane = Vec::with_capacity(n_nodes);
+    let mut adaptation = Vec::with_capacity(n_nodes);
+    for i in 0..n_nodes {
+        membrane.push(i as f32 * 0.01);
+        adaptation.push((i % 5) as f32);
+        for r in 0..n_routes {
+            scores.push((i as f32) * 0.001 - r as f32);
+        }
+    }
+
+    let results = vec![
+        run_benchmark(
+            "fused_routing_saaq_host_2048x16",
+            config.warmup,
+            config.iterations,
+            || {
+                let _ = fused_routing_saaq(&RoutingSaaqInput {
+                    scores: &scores,
+                    membrane: &membrane,
+                    adaptation: &adaptation,
+                    n_nodes,
+                    n_routes,
+                    top_k,
+                    adaptation_scale: GIF_ADAPTATION_SCALE,
+                    scores_are_logits: true,
+                });
+            },
+        ),
+        run_benchmark(
+            "unfused_routing_saaq_host_2048x16",
+            config.warmup,
+            config.iterations,
+            || {
+                let mut probs = Vec::with_capacity(n_nodes * n_routes);
+                for node in 0..n_nodes {
+                    let row = softmax_row(&scores[node * n_routes..node * n_routes + n_routes]);
+                    let _ = top_k_indices(&row, top_k);
+                    probs.extend(row);
+                }
+                let _ = routing_entropy(&probs, n_nodes, n_routes);
+                let _ = saaq_best_walker(&membrane, &adaptation, GIF_ADAPTATION_SCALE);
+            },
+        ),
+    ];
+
+    // Traffic is analytical, not wall-clock; keep it out of duration_us fields.
+    let u = traffic_unfused(n_nodes, n_routes, top_k);
+    let f = traffic_fused(n_nodes, n_routes, top_k);
+    let saved = 100.0 * (1.0 - f.bytes_total() as f64 / u.bytes_total() as f64);
+    println!(
+        "[bench] analytical VRAM traffic 2048×16 top_k={top_k}: \
+         unfused {} bytes / {} launches, fused {} bytes / {} launches ({saved:.1}% fewer bytes). \
+         Committed tables: docs/fused_routing_saaq/",
+        u.bytes_total(),
+        u.launches,
+        f.bytes_total(),
+        f.launches
+    );
+
+    results
+}
+
 // ── GPU kernel benchmarks (requires cuda feature) ───────────────────────────
 
 #[cfg(feature = "cuda")]
@@ -507,6 +580,7 @@ fn bench_gpu_kernels(config: &Config) -> Vec<BenchmarkResult> {
 
     // Packed ternary GEMV / GEMM (group-scaled)
     results.extend(bench_ternary_gpu(&acc, config));
+    results.extend(bench_fused_routing_saaq_gpu(&acc, config));
 
     results
 }
@@ -629,6 +703,108 @@ fn bench_ternary_gpu(
         },
     ));
 
+    results
+}
+
+#[cfg(feature = "cuda")]
+fn bench_fused_routing_saaq_gpu(
+    acc: &myelin_accelerator::GpuAccelerator,
+    config: &Config,
+) -> Vec<BenchmarkResult> {
+    use myelin_accelerator::GpuBuffer;
+    use myelin_accelerator::fused::GIF_ADAPTATION_SCALE;
+
+    let n_nodes = 2048usize;
+    let n_routes = 16usize;
+    let top_k = 4usize;
+    let mut scores = vec![0.0f32; n_nodes * n_routes];
+    let mut membrane = vec![0.0f32; n_nodes];
+    let mut adaptation = vec![0.0f32; n_nodes];
+    for i in 0..n_nodes {
+        membrane[i] = i as f32 * 0.01;
+        adaptation[i] = (i % 5) as f32;
+        for r in 0..n_routes {
+            scores[i * n_routes + r] = (i as f32) * 0.001 - r as f32;
+        }
+    }
+
+    let d_scores = GpuBuffer::from_slice(&scores).unwrap();
+    let d_m = GpuBuffer::from_slice(&membrane).unwrap();
+    let d_a = GpuBuffer::from_slice(&adaptation).unwrap();
+    let mut d_probs = GpuBuffer::<f32>::alloc(n_nodes * n_routes).unwrap();
+    let mut d_sum = GpuBuffer::<f32>::alloc(1).unwrap();
+    let mut d_max = GpuBuffer::<f32>::alloc(1).unwrap();
+    let mut d_w = GpuBuffer::<u32>::alloc(1).unwrap();
+    let mut d_topk = GpuBuffer::<i32>::alloc(n_nodes * top_k).unwrap();
+
+    let mut results = Vec::new();
+    results.push(run_benchmark(
+        "unfused_softmax_entropy_saaq_2048x16",
+        config.warmup,
+        config.iterations,
+        || {
+            acc.routing_softmax_async(
+                &d_scores,
+                &mut d_probs,
+                n_nodes as i32,
+                n_routes as i32,
+                true,
+            )
+            .unwrap();
+            acc.routing_entropy_reduce_async(
+                &d_probs,
+                &mut d_sum,
+                &mut d_max,
+                n_nodes as i32,
+                n_routes as i32,
+            )
+            .unwrap();
+            acc.saaq_select_async(&d_m, &d_a, &mut d_w, GIF_ADAPTATION_SCALE)
+                .unwrap();
+            acc.synchronize().unwrap();
+        },
+    ));
+    results.push(run_benchmark(
+        "fused_routing_saaq_2048x16",
+        config.warmup,
+        config.iterations,
+        || {
+            acc.routing_saaq_fused_async(
+                &d_scores,
+                &d_m,
+                &d_a,
+                &mut d_topk,
+                &mut d_sum,
+                &mut d_max,
+                &mut d_w,
+                n_nodes as i32,
+                n_routes as i32,
+                top_k as i32,
+                GIF_ADAPTATION_SCALE,
+                true,
+            )
+            .unwrap();
+            acc.synchronize().unwrap();
+        },
+    ));
+    results.push(run_benchmark(
+        "saaq_select_unfused_2048",
+        config.warmup,
+        config.iterations,
+        || {
+            acc.saaq_select(&d_m, &d_a, &mut d_w, GIF_ADAPTATION_SCALE)
+                .unwrap();
+        },
+    ));
+    results.push(run_benchmark(
+        "saaq_select_fused_2048",
+        config.warmup,
+        config.iterations,
+        || {
+            acc.saaq_select_fused(&d_m, &d_a, &mut d_w, GIF_ADAPTATION_SCALE)
+                .unwrap();
+        },
+    ));
     results
 }
 

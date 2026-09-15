@@ -96,13 +96,8 @@ impl<T: Default + Clone> GpuBuffer<T> {
     pub fn as_device_ptr(&self) -> *const T {
         self.data.as_ptr()
     }
-}
 
-impl GpuBuffer<f32> {
     /// Zero the first `count` elements; leaves any tail untouched (host stub).
-    ///
-    /// Matches the CUDA `GpuBuffer<f32>::zero_prefix` surface so callers do not
-    /// depend on feature-specific method resolution.
     pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
         if count > self.data.len() {
             return Err(GpuError::MemoryError(format!(
@@ -111,7 +106,7 @@ impl GpuBuffer<f32> {
             )));
         }
         for slot in &mut self.data[..count] {
-            *slot = 0.0;
+            *slot = T::default();
         }
         Ok(())
     }
@@ -257,6 +252,128 @@ impl GpuAccelerator {
         _: i32,
         _: i32,
         _: i32,
+        _: bool,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn saaq_select(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: f32,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn saaq_select_async(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: f32,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn saaq_select_fused(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: f32,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn saaq_select_fused_async(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: f32,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn routing_entropy_reduce(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn routing_entropy_reduce_async(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn routing_softmax(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+        _: bool,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn routing_softmax_async(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+        _: bool,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn routing_saaq_fused(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<i32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: f32,
+        _: bool,
+    ) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn routing_saaq_fused_async(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<i32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: f32,
         _: bool,
     ) -> GpuResult<()> {
         Err(GpuError::NoGpu)
@@ -570,6 +687,57 @@ mod tests {
         assert!(matches!(
             acc.ternary_gemm_async(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .unwrap_err(),
+            GpuError::NoGpu
+        ));
+    }
+
+    #[test]
+    fn accelerator_saaq_and_fused_routing_return_no_gpu() {
+        let acc = GpuAccelerator::new();
+        let membrane = GpuBuffer::<f32>::alloc(4).unwrap();
+        let adaptation = GpuBuffer::<f32>::alloc(4).unwrap();
+        let mut walker = GpuBuffer::<u32>::alloc(1).unwrap();
+        assert!(matches!(
+            acc.saaq_select(&membrane, &adaptation, &mut walker, 0.22)
+                .unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.saaq_select_fused(&membrane, &adaptation, &mut walker, 0.22)
+                .unwrap_err(),
+            GpuError::NoGpu
+        ));
+        let scores = GpuBuffer::<f32>::alloc(8).unwrap();
+        let mut probs = GpuBuffer::<f32>::alloc(8).unwrap();
+        let mut entropy_sum = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut entropy_max = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut top_k = GpuBuffer::<i32>::alloc(8).unwrap();
+        assert!(matches!(
+            acc.routing_softmax(&scores, &mut probs, 2, 4, true)
+                .unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.routing_entropy_reduce(&probs, &mut entropy_sum, &mut entropy_max, 2, 4)
+                .unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.routing_saaq_fused(
+                &scores,
+                &membrane,
+                &adaptation,
+                &mut top_k,
+                &mut entropy_sum,
+                &mut entropy_max,
+                &mut walker,
+                2,
+                4,
+                2,
+                0.22,
+                true,
+            )
+            .unwrap_err(),
             GpuError::NoGpu
         ));
     }
