@@ -187,8 +187,55 @@ fn routing_saaq_fused_matches_host() {
     )
     .expect("routing_saaq_fused");
 
-    assert_eq!(d_w.to_vec().unwrap()[0], expected.best_walker);
-    assert!((d_sum.to_vec().unwrap()[0] - expected.entropy_sum).abs() < 1e-4);
-    assert!((d_max.to_vec().unwrap()[0] - expected.entropy_max).abs() < 1e-4);
-    assert_eq!(d_topk.to_vec().unwrap(), expected.top_k_indices);
+    let got_walker = d_w.to_vec().unwrap()[0];
+    let got_sum = d_sum.to_vec().unwrap()[0];
+    let got_max = d_max.to_vec().unwrap()[0];
+    let got_topk = d_topk.to_vec().unwrap();
+
+    assert_eq!(got_walker, expected.best_walker);
+    assert_eq!(got_topk, expected.top_k_indices);
+
+    // Device-vs-device: fused entropy should match the unfused GPU path
+    // (same log2f / softmax family), not only the host reference.
+    let mut d_probs = GpuBuffer::<f32>::alloc(n_nodes * n_routes).unwrap();
+    let mut u_sum = GpuBuffer::<f32>::alloc(1).unwrap();
+    let mut u_max = GpuBuffer::<f32>::alloc(1).unwrap();
+    acc.routing_softmax(
+        &d_scores,
+        &mut d_probs,
+        n_nodes as i32,
+        n_routes as i32,
+        true,
+    )
+    .unwrap();
+    acc.routing_entropy_reduce(
+        &d_probs,
+        &mut u_sum,
+        &mut u_max,
+        n_nodes as i32,
+        n_routes as i32,
+    )
+    .unwrap();
+    let unfused_sum = u_sum.to_vec().unwrap()[0];
+    let unfused_max = u_max.to_vec().unwrap()[0];
+    assert!(
+        (got_sum - unfused_sum).abs() < 1e-4,
+        "fused vs unfused GPU entropy_sum: {got_sum} vs {unfused_sum}"
+    );
+    assert!(
+        (got_max - unfused_max).abs() < 1e-4,
+        "fused vs unfused GPU entropy_max: {got_max} vs {unfused_max}"
+    );
+
+    let host_tol = 1e-3f32;
+    assert!(
+        (got_sum - expected.entropy_sum).abs() < host_tol,
+        "fused vs host entropy_sum: {got_sum} vs {}",
+        expected.entropy_sum
+    );
+    assert!(
+        (got_max - expected.entropy_max).abs() < host_tol,
+        "fused vs host entropy_max: {got_max} vs {}",
+        expected.entropy_max
+    );
 }

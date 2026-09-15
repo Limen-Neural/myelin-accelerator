@@ -185,8 +185,8 @@ void routing_saaq_fused_pass1(
     int n_nodes,
     int n_routes,
     int top_k,
-    float adaptation_scale,
-    int scores_are_logits)
+    int scores_are_logits,
+    float adaptation_scale)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int actual_k = top_k;
@@ -219,7 +219,7 @@ void routing_saaq_fused_pass1(
             float inv = 1.0f / fmaxf(sum, SHIP_EPS);
 
             for (int r = 0; r < n_routes; ++r) {
-                float p = expf(row[r] - row_max) * inv;
+                float p = fmaxf(expf(row[r] - row_max) * inv, 0.0f);
                 if (p > SHIP_EPS)
                     entropy = fmaf(-p, log2f(p), entropy);
                 fused_topk_insert(p, r, local_scores, local_indices, actual_k);
