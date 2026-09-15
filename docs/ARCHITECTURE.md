@@ -211,7 +211,6 @@ Tracked elsewhere but **in-boundary** if they stay low-level:
 - Packed ternary device kernels `ternary_gemv` / `ternary_gemm` (GH #9 / [LIM-890](https://linear.app/rpd-34/issue/LIM-890)) — host + device live in `src/bitpacking.rs`, `cu/ternary_gemm.cu`, `docs/TERNARY.md`
 - Fused routing / SAAQ kernels (GH #14 / [LIM-891](https://linear.app/rpd-34/issue/LIM-891)) — `cu/fused_routing_saaq.cu`, `src/fused.rs`, [docs/FUSED_ROUTING_SAAQ.md](FUSED_ROUTING_SAAQ.md)
 - More `GpuAccelerator` wrappers for already-loaded symbols
-- More `GpuAccelerator` wrappers for already-loaded symbols
 - Wider public surface for bitpacking + device kernel parity docs
 
 ---

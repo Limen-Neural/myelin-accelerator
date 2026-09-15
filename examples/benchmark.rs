@@ -478,7 +478,7 @@ fn bench_fused_host(config: &Config) -> Vec<BenchmarkResult> {
         }
     }
 
-    let mut results = vec![
+    let results = vec![
         run_benchmark(
             "fused_routing_saaq_host_2048x16",
             config.warmup,
@@ -513,34 +513,19 @@ fn bench_fused_host(config: &Config) -> Vec<BenchmarkResult> {
         ),
     ];
 
-    // Traffic model is not wall-clock; emit it as a synthetic "ops" row so
-    // the CSV/JSON harness always records fused vs unfused bytes.
+    // Traffic is analytical, not wall-clock; keep it out of duration_us fields.
     let u = traffic_unfused(n_nodes, n_routes, top_k);
     let f = traffic_fused(n_nodes, n_routes, top_k);
-    results.push(BenchmarkResult {
-        name: "traffic_unfused_2048x16_bytes".into(),
-        iterations: 1,
-        total_duration_us: u.bytes_total() as f64,
-        mean_us: u.bytes_total() as f64,
-        p50_us: u.bytes_total() as f64,
-        p95_us: u.bytes_total() as f64,
-        p99_us: u.bytes_total() as f64,
-        min_us: u.bytes_total() as f64,
-        max_us: u.bytes_total() as f64,
-        throughput_ops_per_sec: u.launches as f64,
-    });
-    results.push(BenchmarkResult {
-        name: "traffic_fused_2048x16_bytes".into(),
-        iterations: 1,
-        total_duration_us: f.bytes_total() as f64,
-        mean_us: f.bytes_total() as f64,
-        p50_us: f.bytes_total() as f64,
-        p95_us: f.bytes_total() as f64,
-        p99_us: f.bytes_total() as f64,
-        min_us: f.bytes_total() as f64,
-        max_us: f.bytes_total() as f64,
-        throughput_ops_per_sec: f.launches as f64,
-    });
+    let saved = 100.0 * (1.0 - f.bytes_total() as f64 / u.bytes_total() as f64);
+    println!(
+        "[bench] analytical VRAM traffic 2048×16 top_k={top_k}: \
+         unfused {} bytes / {} launches, fused {} bytes / {} launches ({saved:.1}% fewer bytes). \
+         Committed tables: docs/fused_routing_saaq/",
+        u.bytes_total(),
+        u.launches,
+        f.bytes_total(),
+        f.launches
+    );
 
     results
 }
