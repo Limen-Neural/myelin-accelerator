@@ -196,6 +196,11 @@ mod stub_contract {
             acc.ternary_gemm(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .is_err()
         );
+
+        let mut acc = GpuAccelerator::new();
+        assert!(acc.ensure_temporal_state(8).is_err());
+        assert!(acc.gif_step_weighted_tick(8).is_err());
+        assert!(acc.synapse_signature().is_none());
     }
 
     #[test]

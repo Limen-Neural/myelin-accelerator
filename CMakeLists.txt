@@ -29,7 +29,10 @@ set(CU_SOURCES
         cu/vector_similarity.cu
         cu/ternary_gemm.cu)
 set(CU_HEADERS
-        cu/common.cuh)
+        cu/common.cuh
+        cu/myelin_shim.h)
+set(CU_SHIM
+        cu/myelin_shim.cu)
 
 # Build each .cu → .ptx via custom command
 set(PTX_OUTPUTS "")
@@ -63,11 +66,11 @@ endif()
 if(MYELIN_HAS_NVCC)
     add_custom_target(cuda_kernels ALL
             DEPENDS ${PTX_OUTPUTS}
-            SOURCES ${CU_SOURCES} ${CU_HEADERS})
+            SOURCES ${CU_SOURCES} ${CU_HEADERS} ${CU_SHIM})
 else()
     # Indexing-only target (no PTX deps) so CLion still sees .cu/.cuh files.
     add_custom_target(cuda_kernels
-            SOURCES ${CU_SOURCES} ${CU_HEADERS})
+            SOURCES ${CU_SOURCES} ${CU_HEADERS} ${CU_SHIM})
     message(STATUS "nvcc not found at ${CUDA_NVCC}; cuda_kernels is indexing-only (not in ALL)")
 endif()
 

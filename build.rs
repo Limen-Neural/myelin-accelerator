@@ -22,6 +22,13 @@ const KERNELS: &[(&str, &str)] = &[
     ("ternary_gemm.cu", "ternary_gemm_sm_120.ptx"),
 ];
 
+const FATBINS: &[(&str, &str)] = &[
+    ("spiking_network.cu", "spiking_network_sm_120.fatbin"),
+    ("vector_similarity.cu", "vector_similarity_sm_120.fatbin"),
+    ("satsolver.cu", "satsolver_sm_120.fatbin"),
+    ("ternary_gemm.cu", "ternary_gemm_sm_120.fatbin"),
+];
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let cu_dir = manifest_dir.join("cu");
@@ -35,6 +42,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MYELIN_NVCC_THREADS");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=cu/common.cuh");
+    println!("cargo:rerun-if-changed=cu/myelin_shim.cu");
+    println!("cargo:rerun-if-changed=cu/myelin_shim.h");
     for &(cu_name, _) in KERNELS {
         println!("cargo:rerun-if-changed=cu/{cu_name}");
     }
@@ -96,6 +105,16 @@ fn main() {
             );
         }
     }
+
+    for &(cu_name, fatbin_name) in FATBINS {
+        let source = cu_dir.join(cu_name);
+        let output = out_dir.join(fatbin_name);
+        compile_to_fatbin(&nvcc_path, &cu_dir, &source, &output, &arch);
+        println!("cargo:warning=compiled {cu_name} -> {fatbin_name} ({arch} SASS + PTX fallback)");
+    }
+
+    build_myelin_shim(&nvcc_path, &cu_dir, &out_dir, &arch);
+    emit_cuda_runtime_linking(&nvcc_path);
 }
 
 fn find_nvcc() -> Option<PathBuf> {
@@ -212,6 +231,143 @@ fn compile_to_ptx(nvcc: &Path, cu_dir: &Path, source: &Path, output: &Path, arch
         "nvcc completed but did not emit {}",
         output.display()
     );
+}
+
+fn arch_gencode_parts(arch: &str) -> (String, String) {
+    let digits = arch
+        .strip_prefix("sm_")
+        .or_else(|| arch.strip_prefix("compute_"))
+        .unwrap_or("120");
+    (format!("compute_{digits}"), format!("sm_{digits}"))
+}
+
+fn compile_to_fatbin(nvcc: &Path, cu_dir: &Path, source: &Path, output: &Path, arch: &str) {
+    let threads_raw = env::var("MYELIN_NVCC_THREADS").unwrap_or_else(|_| "0".to_string());
+    let threads = threads_raw.parse::<usize>().unwrap_or_else(|_| {
+        panic!("MYELIN_NVCC_THREADS must be a non-negative integer, got \"{threads_raw}\"")
+    });
+    let (compute, sm) = arch_gencode_parts(arch);
+
+    let mut cmd = Command::new(nvcc);
+    cmd.arg("-fatbin")
+        .arg(format!("-gencode=arch={compute},code={sm}"))
+        .arg(format!("-gencode=arch={compute},code={compute}"))
+        .arg("-O3")
+        .arg("--use_fast_math")
+        .arg("--restrict")
+        .arg("--threads")
+        .arg(threads.to_string())
+        .arg("-std=c++17")
+        .arg("-D__STRICT_ANSI__")
+        .arg("--allow-unsupported-compiler")
+        .arg("--expt-relaxed-constexpr")
+        .arg("-I")
+        .arg(cu_dir)
+        .arg("-o")
+        .arg(output)
+        .arg(source);
+    if cfg!(unix) {
+        cmd.arg("-Xcompiler").arg("-fno-builtin");
+    }
+
+    let status = cmd
+        .status()
+        .unwrap_or_else(|e| panic!("Failed to invoke nvcc fatbin for {}: {e}", source.display()));
+    if !status.success() {
+        panic!("nvcc failed to fatbin {}", source.display());
+    }
+    assert!(
+        output.exists(),
+        "nvcc completed but did not emit {}",
+        output.display()
+    );
+}
+
+fn nvcc_common_host_flags(cmd: &mut Command) {
+    cmd.arg("-std=c++17")
+        .arg("-D__STRICT_ANSI__")
+        .arg("--allow-unsupported-compiler")
+        .arg("--expt-relaxed-constexpr");
+    if cfg!(unix) {
+        cmd.arg("-Xcompiler").arg("-fno-builtin");
+    }
+}
+
+fn build_myelin_shim(nvcc: &Path, cu_dir: &Path, out_dir: &Path, arch: &str) {
+    let source = cu_dir.join("myelin_shim.cu");
+    let object = out_dir.join("myelin_shim.o");
+    let threads_raw = env::var("MYELIN_NVCC_THREADS").unwrap_or_else(|_| "0".to_string());
+    let threads = threads_raw.parse::<usize>().unwrap_or_else(|_| {
+        panic!("MYELIN_NVCC_THREADS must be a non-negative integer, got \"{threads_raw}\"")
+    });
+
+    let mut cmd = Command::new(nvcc);
+    cmd.arg("-c")
+        .arg(format!("-arch={arch}"))
+        .arg("-O3")
+        .arg("--use_fast_math")
+        .arg("--restrict")
+        .arg("--threads")
+        .arg(threads.to_string());
+    nvcc_common_host_flags(&mut cmd);
+    cmd.arg("-I")
+        .arg(cu_dir)
+        .arg("-Xcompiler")
+        .arg("-fPIC")
+        .arg("-o")
+        .arg(&object)
+        .arg(&source);
+
+    let status = cmd
+        .status()
+        .unwrap_or_else(|e| panic!("Failed to invoke nvcc for myelin_shim.cu: {e}"));
+    if !status.success() {
+        panic!("nvcc failed to compile myelin_shim.cu");
+    }
+
+    cc::Build::new()
+        .cpp(true)
+        .object(&object)
+        .compile("myelin_shim");
+    println!("cargo:warning=compiled myelin_shim.cu → libmyelin_shim.a");
+}
+
+fn emit_cuda_runtime_linking(nvcc: &Path) {
+    for search_dir in cuda_library_search_paths(nvcc) {
+        println!("cargo:rustc-link-search=native={}", search_dir.display());
+    }
+    println!("cargo:rustc-link-lib=dylib=cudart");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
+}
+
+fn cuda_library_search_paths(nvcc: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for env_var in ["CUDA_HOME", "CUDA_PATH"] {
+        if let Ok(root) = env::var(env_var) {
+            let root = PathBuf::from(root);
+            candidates.push(root.join("lib64"));
+            candidates.push(root.join("lib"));
+            candidates.push(root.join("targets").join("x86_64-linux").join("lib"));
+        }
+    }
+    if let Some(root) = nvcc.parent().and_then(|bin| bin.parent()) {
+        candidates.push(root.join("lib64"));
+        candidates.push(root.join("lib"));
+        candidates.push(root.join("targets").join("x86_64-linux").join("lib"));
+    }
+    candidates.push(PathBuf::from("/usr/local/cuda/lib64"));
+    candidates.push(PathBuf::from("/usr/local/cuda/lib"));
+    candidates.push(PathBuf::from("/usr/lib/x86_64-linux-gnu"));
+
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        if candidate.exists() && !deduped.iter().any(|existing| existing == &candidate) {
+            deduped.push(candidate);
+        }
+    }
+    deduped
 }
 
 fn emit_stub_ptx(out_dir: &Path) {

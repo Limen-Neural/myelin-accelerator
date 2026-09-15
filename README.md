@@ -2,7 +2,7 @@
 
 Blackwell-first CUDA kernels for neuromorphic inference, SAT search, and routing-heavy GPU workloads on RTX 5080-class hardware.
 
-This repo is the **low-level compute layer** behind the stack: CUDA PTX modules, Rust bindings, and the launch paths that keep the GPU busy instead of serializing work through one thread at a time.
+This repo is the **low-level compute layer** behind the stack: CUDA fatbin/PTX modules, Rust bindings, the C-ABI `myelin_shim` for Blackwell-critical GIF/SAAQ launches, and the launch paths that keep the GPU busy instead of serializing work through one thread at a time.
 
 **Backend scope and public API:** see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — what belongs here vs higher-level experiment/orchestration repos.
 
@@ -16,6 +16,8 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 - Host **binary/ternary bitpacking** + group scales + CPU ref matmul: `src/bitpacking.rs`.
 - Scalar **CPU oracles** for public kernel paths + seeded mismatch reporting: `src/oracle.rs`.
 - Device **ternary GEMV/GEMM** (group-scaled, optional zero-skip): `cu/ternary_gemm.cu` — see [docs/TERNARY.md](docs/TERNARY.md).
+- GIF / SAAQ temporal path (`gif_step_weighted`, `gif_step_weighted_f16`, `saaq_find_best_walker`) plus `myelin_shim` C-ABI launches.
+- Fatbin (sm_120 SASS + compute_120 PTX) with PTX-JIT fallback and a consumer-installed launch-failure hook (no `sentry` dependency).
 
 ## Module map
 
@@ -24,11 +26,13 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 | `src/lib.rs` | Crate root re-exports | yes |
 | `src/bitpacking.rs` | Host binary/ternary pack/unpack, scales, ref GEMV/GEMM | yes (`bitpacking`) |
 | `src/oracle.rs` | Scalar CPU oracles + seed/shape mismatch helpers | yes (`oracle`) |
-| `src/gpu/` | CUDA context, PTX load, buffers, launches | via re-exports when `cuda` |
+| `src/gpu/` | CUDA context, fatbin/PTX load, buffers, launches | via re-exports when `cuda` |
 | `src/gpu_stub.rs` | CPU-safe stand-ins without toolkit | used when `cuda` off |
-| `cu/*.cu` | Device kernels (spiking, similarity, SAT, ternary) | via PTX + wrappers |
+| `src/gif.rs` | GIF/SAAQ constants + CPU reference | yes (`gif`) |
+| `src/launch_hook.rs` | Launch-failure callback | yes |
+| `cu/*.cu` | Device kernels (spiking, GIF/SAAQ, similarity, SAT, ternary) | via fatbin/PTX + wrappers |
 | `examples/benchmark.rs` | Latency / GPU info harness | feature `bench` (+ `cuda` for GPU) |
-| `build.rs` / `CMakeLists.txt` | `nvcc -ptx` quality path | build-only |
+| `build.rs` / `CMakeLists.txt` | `nvcc -ptx` sidecar + fatbin; C ABI shim | build-only |
 | `docs/ARCHITECTURE.md` | Ownership + API boundary | docs |
 | `docs/TERNARY.md` | Ternary encoding, scales, GOZ1 interop, kernels | docs |
 
@@ -42,7 +46,7 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 
 ### Public symbols (crate root)
 
-`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError` — plus the `bitpacking` module. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError`, `SnapshotChannels`, `set_launch_failure_hook` — plus the `bitpacking`, `gif`, and `oracle` modules. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## What Changed
 
@@ -62,9 +66,9 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 
 ```toml
 [dependencies]
-myelin-accelerator = "0.2.0"
+myelin-accelerator = "0.3.0"
 # Optional GPU:
-# myelin-accelerator = { version = "0.2.0", features = ["cuda"] }
+# myelin-accelerator = { version = "0.3.0", features = ["cuda"] }
 ```
 
 ```rust

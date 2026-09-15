@@ -1,6 +1,6 @@
 [package]
 name = "myelin-accelerator"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "CUDA spiking-network kernels + safe Rust FFI wrappers (Tier 1)"
 authors = ["Raul Cardenas Montoya <montoyaraul34@gmail.com>"]
@@ -24,6 +24,9 @@ tracing   = "0.1"
 serde     = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 nvtx      = { version = "1", optional = true }
+
+[build-dependencies]
+cc = "1"
 
 [dev-dependencies]
 proptest = "1"
