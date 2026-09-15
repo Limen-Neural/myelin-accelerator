@@ -96,13 +96,8 @@ impl<T: Default + Clone> GpuBuffer<T> {
     pub fn as_device_ptr(&self) -> *const T {
         self.data.as_ptr()
     }
-}
 
-impl GpuBuffer<f32> {
     /// Zero the first `count` elements; leaves any tail untouched (host stub).
-    ///
-    /// Matches the CUDA `GpuBuffer<f32>::zero_prefix` surface so callers do not
-    /// depend on feature-specific method resolution.
     pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
         if count > self.data.len() {
             return Err(GpuError::MemoryError(format!(
@@ -111,7 +106,7 @@ impl GpuBuffer<f32> {
             )));
         }
         for slot in &mut self.data[..count] {
-            *slot = 0.0;
+            *slot = T::default();
         }
         Ok(())
     }
