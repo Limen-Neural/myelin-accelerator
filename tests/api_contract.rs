@@ -112,7 +112,10 @@ fn bitpacking_ternary_gemm_ref_matches_gemv_columns() {
 
 #[cfg(not(feature = "cuda"))]
 mod stub_contract {
-    use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuContext, GpuError, KernelModule};
+    use myelin_accelerator::{
+        Backend, ExecutionPolicy, FallbackReason, GpuAccelerator, GpuBuffer, GpuContext, GpuError,
+        KernelModule, probe_capabilities,
+    };
 
     #[test]
     fn public_types_are_exported() {
@@ -165,8 +168,35 @@ mod stub_contract {
     fn accelerator_construction() {
         let acc = GpuAccelerator::new();
         assert!(!acc.is_ready());
+        assert_eq!(acc.selected_backend(), Backend::Cpu);
+        let fb = acc.fallback().expect("stub fallback record");
+        assert_eq!(fb.reason, FallbackReason::CudaFeatureNotBuilt);
         assert!(acc.kernels().is_err());
         assert!(acc.synchronize().is_err());
+    }
+
+    #[test]
+    fn probe_capabilities_is_honest_without_cuda() {
+        let report = probe_capabilities();
+        assert!(!report.cuda_built);
+        assert!(!report.runtime_available);
+        assert!(!report.device_available);
+        assert!(report.compute_capability.is_none());
+        assert!(!report.kernels.compiled);
+        assert_eq!(report.selected_backend, Backend::Cpu);
+        let fb = report.fallback.as_ref().expect("not-built fallback");
+        assert_eq!(fb.reason, FallbackReason::CudaFeatureNotBuilt);
+        assert_eq!(fb.reason.code(), "cuda_feature_not_built");
+        assert_eq!(fb.selected_backend, Backend::Cpu);
+        assert!(!fb.detail.contains("/home/"));
+        assert!(!report.gpu_usable());
+        assert!(report.select_backend(ExecutionPolicy::RequireGpu).is_err());
+    }
+
+    #[test]
+    fn require_gpu_never_silently_runs_on_cpu() {
+        assert!(GpuAccelerator::require_gpu().is_err());
+        assert!(GpuAccelerator::with_policy(ExecutionPolicy::RequireGpu).is_err());
     }
 
     #[test]
@@ -234,6 +264,11 @@ mod stub_contract {
             GpuError::MemoryError("test".into()),
             GpuError::LaunchFailed("test".into()),
             GpuError::CudaError("test".into()),
+            GpuError::Unavailable {
+                reason: FallbackReason::CudaFeatureNotBuilt,
+                detail: "crate built without the cuda feature".into(),
+            },
+            GpuError::InvalidInput("n_vars must be >= 0".into()),
         ];
 
         for err in &variants {

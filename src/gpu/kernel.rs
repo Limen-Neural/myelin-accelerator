@@ -9,6 +9,7 @@
 //  file-system lookup — the bytes travel with the binary.
 // ════════════════════════════════════════════════════════════════════
 
+use crate::capability::sanitize_diagnostic;
 use crate::gpu::error::{GpuError, GpuResult};
 use cust::function::Function;
 use cust::module::Module;
@@ -144,7 +145,7 @@ impl KernelModule {
 
         module
             .get_function(name)
-            .map_err(|e| GpuError::KernelNotFound(format!("{name}: {e}")))
+            .map_err(|e| GpuError::KernelNotFound(sanitize_diagnostic(&format!("{name}: {e}"))))
     }
 
     // ── private helpers ───────────────────────────────────────────────────────
@@ -152,9 +153,10 @@ impl KernelModule {
     /// JIT-compile a PTX string into a loaded CUDA module.
     fn load_module_from_ptx(ptx: &str, name: &str) -> GpuResult<Module> {
         Module::from_ptx(ptx, &[]).map_err(|e| {
-            eprintln!("[CUDA JIT] Failed to load module '{name}': {e:?}");
+            let detail = sanitize_diagnostic(&format!("{e:?}"));
+            eprintln!("[CUDA JIT] Failed to load module '{name}': {detail}");
             GpuError::ModuleLoadFailed(format!(
-                "JIT compilation failed for '{name}': {e:?} \
+                "JIT compilation failed for '{name}': {detail} \
                  (target: sm_120 — check driver ≥ 570 and CUDA toolkit ≥ 12.8)"
             ))
         })

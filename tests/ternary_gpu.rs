@@ -11,6 +11,16 @@ use myelin_accelerator::bitpacking::{
 };
 use myelin_accelerator::{GpuAccelerator, GpuBuffer};
 
+fn ready_accelerator() -> GpuAccelerator {
+    GpuAccelerator::require_gpu().unwrap_or_else(|err| {
+        panic!(
+            "GPU required for ternary goldens: reason={} detail={}",
+            err.fallback_reason().map(|r| r.code()).unwrap_or("unknown"),
+            err
+        )
+    })
+}
+
 fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
     a.iter()
         .zip(b.iter())
@@ -43,8 +53,7 @@ fn varying_group_scales(m: usize, k: usize, group_size: usize) -> Vec<f32> {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemv_matches_host_ref() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready(), "GPU not ready for ternary_gemv golden");
+    let acc = ready_accelerator();
 
     let m = 64usize;
     let k = 256usize;
@@ -83,8 +92,7 @@ fn ternary_gemv_matches_host_ref() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemv_skip_zeros_matches_host_ref() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready(), "GPU not ready");
+    let acc = ready_accelerator();
 
     let m = 32usize;
     let k = 128usize;
@@ -119,8 +127,7 @@ fn ternary_gemv_skip_zeros_matches_host_ref() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemm_matches_host_ref() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready(), "GPU not ready for ternary_gemm golden");
+    let acc = ready_accelerator();
 
     let m = 16usize;
     let k = 64usize;
@@ -161,8 +168,7 @@ fn ternary_gemm_matches_host_ref() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemm_skip_zeros_matches_host_ref() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready(), "GPU not ready");
+    let acc = ready_accelerator();
 
     let m = 12usize;
     let k = 48usize;
@@ -199,8 +205,7 @@ fn ternary_gemm_skip_zeros_matches_host_ref() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_kernels_registered_in_module() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready());
+    let acc = ready_accelerator();
     let k = acc.kernels().expect("kernels");
     assert!(k.get_function("ternary_gemv").is_ok());
     assert!(k.get_function("ternary_gemm").is_ok());
@@ -209,8 +214,7 @@ fn ternary_kernels_registered_in_module() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemv_nonuniform_scales_and_k_not_multiple_of_16() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready(), "GPU not ready");
+    let acc = ready_accelerator();
 
     // K=20 is not a multiple of 16 → row-padded packing differs from flat pack.
     let m = 8usize;
@@ -261,8 +265,7 @@ fn ternary_gemv_nonuniform_scales_and_k_not_multiple_of_16() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemm_nonuniform_scales_and_k_not_multiple_of_16() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready(), "GPU not ready");
+    let acc = ready_accelerator();
 
     let m = 6usize;
     let k = 20usize;
@@ -301,8 +304,7 @@ fn ternary_gemm_nonuniform_scales_and_k_not_multiple_of_16() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemv_empty_k_zeros_output() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready());
+    let acc = ready_accelerator();
 
     let m = 4usize;
     let packed = GpuBuffer::<u32>::alloc(0).unwrap();
@@ -324,8 +326,7 @@ fn ternary_gemv_empty_k_zeros_output() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemv_empty_k_preserves_pooled_tail() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready());
+    let acc = ready_accelerator();
 
     let m = 4usize;
     let packed = GpuBuffer::<u32>::alloc(0).unwrap();
@@ -353,8 +354,7 @@ fn ternary_gemv_empty_k_preserves_pooled_tail() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemm_empty_k_preserves_pooled_tail() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready());
+    let acc = ready_accelerator();
 
     let m = 3usize;
     let n = 2usize;

@@ -5,32 +5,94 @@
 //  gpu/context.rs — CUDA device context initialisation
 // ════════════════════════════════════════════════════════════════════
 
+use crate::capability::{
+    CapabilityFacts, ComputeCapability, KernelAvailability, sanitize_diagnostic,
+};
 use crate::gpu::error::{GpuError, GpuResult};
 use cust::context::Context;
-use cust::device::Device;
+use cust::device::{Device, DeviceAttribute};
 
 /// Owns a CUDA primary context for device 0.
 pub struct GpuContext {
     pub(crate) _ctx: Context,
+    pub(crate) compute_capability: Option<ComputeCapability>,
 }
 
 impl GpuContext {
     /// Initialise CUDA and create a context on the first available device.
     pub fn init() -> GpuResult<Self> {
-        cust::init(cust::CudaFlags::empty())
-            .map_err(|e| GpuError::InitFailed(format!("cust::init: {e:?}")))?;
+        cust::init(cust::CudaFlags::empty()).map_err(|e| {
+            GpuError::InitFailed(sanitize_diagnostic(&format!("cust::init: {e:?}")))
+        })?;
 
-        let device = Device::get_device(0)
-            .map_err(|e| GpuError::InitFailed(format!("get_device(0): {e:?}")))?;
+        let device = Device::get_device(0).map_err(|e| {
+            GpuError::InitFailed(sanitize_diagnostic(&format!("get_device(0): {e:?}")))
+        })?;
 
-        let ctx = Context::new(device)
-            .map_err(|e| GpuError::InitFailed(format!("Context::new: {e:?}")))?;
+        let compute_capability = query_compute_capability(&device);
 
-        Ok(Self { _ctx: ctx })
+        let ctx = Context::new(device).map_err(|e| {
+            GpuError::InitFailed(sanitize_diagnostic(&format!("Context::new: {e:?}")))
+        })?;
+
+        Ok(Self {
+            _ctx: ctx,
+            compute_capability,
+        })
     }
 
     /// Returns `true` when a CUDA device is accessible.
     pub fn is_available() -> bool {
         cust::init(cust::CudaFlags::empty()).is_ok() && Device::get_device(0).is_ok()
     }
+
+    /// Device 0 compute capability, if the driver reported it.
+    pub fn compute_capability(&self) -> Option<ComputeCapability> {
+        self.compute_capability
+    }
+}
+
+pub(crate) fn host_facts() -> CapabilityFacts {
+    let kernels = KernelAvailability::compiled_unverified();
+
+    if cust::init(cust::CudaFlags::empty()).is_err() {
+        return CapabilityFacts {
+            cuda_built: true,
+            runtime_available: false,
+            device_available: false,
+            compute_capability: None,
+            kernels,
+        };
+    }
+
+    let Ok(device) = Device::get_device(0) else {
+        return CapabilityFacts {
+            cuda_built: true,
+            runtime_available: true,
+            device_available: false,
+            compute_capability: None,
+            kernels,
+        };
+    };
+
+    CapabilityFacts {
+        cuda_built: true,
+        runtime_available: true,
+        device_available: true,
+        compute_capability: query_compute_capability(&device),
+        kernels,
+    }
+}
+
+fn query_compute_capability(device: &Device) -> Option<ComputeCapability> {
+    let major = device
+        .get_attribute(DeviceAttribute::ComputeCapabilityMajor)
+        .ok()?;
+    let minor = device
+        .get_attribute(DeviceAttribute::ComputeCapabilityMinor)
+        .ok()?;
+    Some(ComputeCapability {
+        major: u32::try_from(major).ok()?,
+        minor: u32::try_from(minor).ok()?,
+    })
 }
