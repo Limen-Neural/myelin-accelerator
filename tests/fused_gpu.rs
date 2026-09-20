@@ -6,7 +6,8 @@
 #![cfg(feature = "cuda")]
 
 use myelin_accelerator::fused::{
-    GIF_ADAPTATION_SCALE, RoutingSaaqInput, fused_routing_saaq, saaq_best_walker, softmax_row,
+    GIF_ADAPTATION_SCALE, RoutingSaaqInput, entropy_row, fused_routing_saaq, saaq_best_walker,
+    softmax_row, top_k_indices,
 };
 use myelin_accelerator::{GpuAccelerator, GpuBuffer};
 
@@ -378,29 +379,46 @@ fn saaq_nan_scale_matches_host_walker_zero() {
 
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
-fn routing_pos_inf_logit_matches_host_topk() {
+fn saaq_mixed_nan_adaptation_skips_invalid_walker() {
     let acc = GpuAccelerator::new();
     assert!(acc.is_ready(), "GPU not ready");
 
-    let scores = [1.0f32, f32::INFINITY, 2.0];
+    let membrane = [1.0f32, 4.0, 2.0];
+    let adaptation = [0.0, f32::NAN, 0.0];
+    let expected = saaq_best_walker(&membrane, &adaptation, 1.0);
+    assert_eq!(expected, 2);
+
+    let d_m = GpuBuffer::from_slice(&membrane).unwrap();
+    let d_a = GpuBuffer::from_slice(&adaptation).unwrap();
+    let mut d_w = GpuBuffer::<u32>::from_slice(&[u32::MAX]).unwrap();
+    acc.saaq_select(&d_m, &d_a, &mut d_w, 1.0).unwrap();
+    assert_eq!(d_w.to_vec().unwrap()[0], expected);
+    d_w.upload(&[u32::MAX]).unwrap();
+    acc.saaq_select_fused(&d_m, &d_a, &mut d_w, 1.0).unwrap();
+    assert_eq!(d_w.to_vec().unwrap()[0], expected);
+}
+
+fn fused_gpu_matches_host_row(scores: &[f32], n_routes: i32, top_k: i32) {
+    let acc = GpuAccelerator::new();
+    assert!(acc.is_ready(), "GPU not ready");
+
     let membrane = [0.0f32];
     let adaptation = [0.0f32];
     let expected = fused_routing_saaq(&RoutingSaaqInput {
-        scores: &scores,
+        scores,
         membrane: &membrane,
         adaptation: &adaptation,
         n_nodes: 1,
-        n_routes: 3,
-        top_k: 2,
+        n_routes: n_routes as usize,
+        top_k: top_k as usize,
         adaptation_scale: GIF_ADAPTATION_SCALE,
         scores_are_logits: true,
     });
-    assert_eq!(expected.top_k_indices, vec![1, 0]);
 
-    let d_scores = GpuBuffer::from_slice(&scores).unwrap();
+    let d_scores = GpuBuffer::from_slice(scores).unwrap();
     let d_m = GpuBuffer::from_slice(&membrane).unwrap();
     let d_a = GpuBuffer::from_slice(&adaptation).unwrap();
-    let mut d_topk = GpuBuffer::<i32>::alloc(2).unwrap();
+    let mut d_topk = GpuBuffer::<i32>::alloc(top_k as usize).unwrap();
     let mut d_sum = GpuBuffer::<f32>::alloc(1).unwrap();
     let mut d_max = GpuBuffer::<f32>::alloc(1).unwrap();
     let mut d_w = GpuBuffer::<u32>::alloc(1).unwrap();
@@ -413,11 +431,37 @@ fn routing_pos_inf_logit_matches_host_topk() {
         &mut d_max,
         &mut d_w,
         1,
-        3,
-        2,
+        n_routes,
+        top_k,
         GIF_ADAPTATION_SCALE,
         true,
     )
     .unwrap();
     assert_eq!(d_topk.to_vec().unwrap(), expected.top_k_indices);
+    assert!((d_sum.to_vec().unwrap()[0] - expected.entropy_sum).abs() < 1e-5);
+    assert!((d_max.to_vec().unwrap()[0] - expected.entropy_max).abs() < 1e-5);
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn routing_pos_inf_logit_matches_host_topk() {
+    let scores = [1.0f32, f32::INFINITY, f32::INFINITY];
+    let p = softmax_row(&scores);
+    assert!((p[0] - 0.0).abs() < 1e-6);
+    assert!((p[1] - 0.5).abs() < 1e-6);
+    assert!((p[2] - 0.5).abs() < 1e-6);
+    assert_eq!(top_k_indices(&p, 2), vec![1, 2]);
+    assert!((entropy_row(&p) - 1.0).abs() < 1e-5);
+    fused_gpu_matches_host_row(&scores, 3, 2);
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn routing_mixed_nan_logit_matches_host_topk() {
+    let scores = [f32::NAN, 0.0];
+    let p = softmax_row(&scores);
+    assert!((p[0] - 0.0).abs() < 1e-6);
+    assert!((p[1] - 1.0).abs() < 1e-6);
+    assert_eq!(top_k_indices(&p, 2), vec![1, 0]);
+    fused_gpu_matches_host_row(&scores, 2, 2);
 }

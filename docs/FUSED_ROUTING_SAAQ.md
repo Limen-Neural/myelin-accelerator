@@ -139,6 +139,13 @@ acc.routing_saaq_fused(
 `top_k_count` must be in `1..=MAX_FUSED_TOP_K` (8). `scores_are_logits = true` runs
 a stable softmax; `false` treats rows as already-normalized probabilities.
 
+NaN / infinity policy (host `softmax_row` and the fused CUDA path agree):
+
+- NaN logits are treated as `-inf` (probability 0 when any finite or `+inf` value exists).
+- `+inf` logits share remaining mass uniformly; two `+inf` routes yield entropy `1.0` bit.
+- Rows with no finite maximum (all `-inf` / NaN) are uniform.
+- NaN SAAQ scores (`membrane - scale * adaptation`) become the `-inf` sentinel and lose to any finite walker.
+
 ---
 
 ## What this is not

@@ -69,12 +69,18 @@ pub struct OccupancyEstimate {
 
 /// Numerically stable softmax of a single routing row.
 ///
-/// `+inf` logits share probability mass uniformly; rows with no finite
-/// maximum (all `-inf` / NaN) are uniform.
+/// NaN logits are treated as `-inf` (probability 0 when any finite/`+inf`
+/// value exists). `+inf` logits share remaining mass uniformly. Rows with
+/// no finite maximum (all `-inf` / NaN) are uniform.
 pub fn softmax_row(logits: &[f32]) -> Vec<f32> {
     if logits.is_empty() {
         return Vec::new();
     }
+    let sanitized: Vec<f32> = logits
+        .iter()
+        .map(|&x| if x.is_nan() { f32::NEG_INFINITY } else { x })
+        .collect();
+    let logits = sanitized.as_slice();
     let n = logits.len();
     let n_pos_inf = logits
         .iter()
@@ -467,6 +473,24 @@ mod tests {
     }
 
     #[test]
+    fn softmax_nan_logit_is_neg_inf() {
+        let p = softmax_row(&[f32::NAN, 0.0]);
+        assert!((p[0] - 0.0).abs() < 1e-6);
+        assert!((p[1] - 1.0).abs() < 1e-6);
+        assert_eq!(top_k_indices(&p, 2), vec![1, 0]);
+    }
+
+    #[test]
+    fn softmax_two_pos_inf_share_mass() {
+        let p = softmax_row(&[1.0, f32::INFINITY, f32::INFINITY]);
+        assert!((p[0] - 0.0).abs() < 1e-6);
+        assert!((p[1] - 0.5).abs() < 1e-6);
+        assert!((p[2] - 0.5).abs() < 1e-6);
+        assert_eq!(top_k_indices(&p, 2), vec![1, 2]);
+        assert!((entropy_row(&p) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
     fn softmax_all_neg_inf_is_uniform() {
         let p = softmax_row(&[f32::NEG_INFINITY, f32::NEG_INFINITY]);
         assert!((p[0] - 0.5).abs() < 1e-6);
@@ -478,6 +502,13 @@ mod tests {
         let membrane = vec![1.0, 2.0, 3.0];
         let adaptation = vec![0.0, 0.0, 0.0];
         assert_eq!(saaq_best_walker(&membrane, &adaptation, f32::NAN), 0);
+    }
+
+    #[test]
+    fn saaq_mixed_nan_adaptation_skips_invalid_walker() {
+        let membrane = [1.0f32, 4.0, 2.0];
+        let adaptation = [0.0, f32::NAN, 0.0];
+        assert_eq!(saaq_best_walker(&membrane, &adaptation, 1.0), 2);
     }
 
     #[test]

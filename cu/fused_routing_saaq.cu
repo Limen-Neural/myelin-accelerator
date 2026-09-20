@@ -65,17 +65,24 @@ void fused_argmax_reduce(float& score, int& walker)
     }
 }
 
-// Softmax that keeps +inf logits from becoming NaN via inf-inf.
-// +inf mass is shared uniformly among +inf entries; all-non-finite rows
-// (all -inf / NaN) are uniform.
+// Softmax that keeps +inf / NaN logits from becoming inf-inf NaN.
+// NaN logits are treated as -inf (p=0 unless the whole row is non-finite,
+// in which case the row is uniform). +inf mass is shared uniformly.
+__device__ __forceinline__
+float fused_logit(float x)
+{
+    return isnan(x) ? -INFINITY : x;
+}
+
 __device__ __forceinline__
 float fused_softmax_prob(const float* row, int n_routes, int r, float row_max, int n_pos_inf)
 {
+    float x = fused_logit(row[r]);
     if (n_pos_inf > 0)
-        return (isinf(row[r]) && row[r] > 0.0f) ? (1.0f / (float)n_pos_inf) : 0.0f;
+        return (isinf(x) && x > 0.0f) ? (1.0f / (float)n_pos_inf) : 0.0f;
     if (!isfinite(row_max))
         return 1.0f / (float)n_routes;
-    return expf(row[r] - row_max);
+    return expf(x - row_max);
 }
 
 __device__ __forceinline__
@@ -84,7 +91,7 @@ void fused_softmax_stats(const float* row, int n_routes, float& row_max, int& n_
     row_max = -INFINITY;
     n_pos_inf = 0;
     for (int r = 0; r < n_routes; ++r) {
-        float x = row[r];
+        float x = fused_logit(row[r]);
         if (isinf(x) && x > 0.0f)
             ++n_pos_inf;
         row_max = fmaxf(row_max, x);
@@ -131,11 +138,11 @@ void routing_softmax(
 
     float sum = 0.0f;
     for (int r = 0; r < n_routes; ++r)
-        sum += expf(row[r] - row_max);
+        sum += expf(fused_logit(row[r]) - row_max);
     float inv = 1.0f / fmaxf(sum, SHIP_EPS);
 
     for (int r = 0; r < n_routes; ++r)
-        out[r] = expf(row[r] - row_max) * inv;
+        out[r] = fused_softmax_prob(row, n_routes, r, row_max, n_pos_inf) * inv;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -253,7 +260,7 @@ void routing_saaq_fused_pass1(
             if (n_pos_inf == 0 && isfinite(row_max)) {
                 float sum = 0.0f;
                 for (int r = 0; r < n_routes; ++r)
-                    sum += expf(row[r] - row_max);
+                    sum += expf(fused_logit(row[r]) - row_max);
                 inv = 1.0f / fmaxf(sum, SHIP_EPS);
             }
 
