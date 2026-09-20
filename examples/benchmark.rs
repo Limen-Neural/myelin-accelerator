@@ -738,6 +738,9 @@ fn bench_fused_routing_saaq_gpu(
     let mut d_topk = GpuBuffer::<i32>::alloc(n_nodes * top_k).unwrap();
 
     let mut results = Vec::new();
+    // Unfused GPU path has no device top-k kernel (host stage 6 in the
+    // traffic model). Fused includes on-device top-k writes, so this
+    // timing is conservative for fusion rather than a matched kernel set.
     results.push(run_benchmark(
         "unfused_softmax_entropy_saaq_2048x16",
         config.warmup,

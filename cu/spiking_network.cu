@@ -514,7 +514,7 @@ void saaq_find_best_walker(
     int my_walker = INT_MAX;
 
     if (tid < n_neurons) {
-        my_score = membrane[tid] - (adaptation_scale * adaptation[tid]);
+        my_score = saaq_finite_score(membrane[tid], adaptation[tid], adaptation_scale);
         my_walker = tid;
     }
 

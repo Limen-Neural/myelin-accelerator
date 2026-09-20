@@ -65,6 +65,32 @@ void fused_argmax_reduce(float& score, int& walker)
     }
 }
 
+// Softmax that keeps +inf logits from becoming NaN via inf-inf.
+// +inf mass is shared uniformly among +inf entries; all-non-finite rows
+// (all -inf / NaN) are uniform.
+__device__ __forceinline__
+float fused_softmax_prob(const float* row, int n_routes, int r, float row_max, int n_pos_inf)
+{
+    if (n_pos_inf > 0)
+        return (isinf(row[r]) && row[r] > 0.0f) ? (1.0f / (float)n_pos_inf) : 0.0f;
+    if (!isfinite(row_max))
+        return 1.0f / (float)n_routes;
+    return expf(row[r] - row_max);
+}
+
+__device__ __forceinline__
+void fused_softmax_stats(const float* row, int n_routes, float& row_max, int& n_pos_inf)
+{
+    row_max = -INFINITY;
+    n_pos_inf = 0;
+    for (int r = 0; r < n_routes; ++r) {
+        float x = row[r];
+        if (isinf(x) && x > 0.0f)
+            ++n_pos_inf;
+        row_max = fmaxf(row_max, x);
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════
 //  routing_softmax
 //
@@ -93,9 +119,15 @@ void routing_softmax(
         return;
     }
 
-    float row_max = row[0];
-    for (int r = 1; r < n_routes; ++r)
-        row_max = fmaxf(row_max, row[r]);
+    float row_max;
+    int n_pos_inf;
+    fused_softmax_stats(row, n_routes, row_max, n_pos_inf);
+
+    if (n_pos_inf > 0 || !isfinite(row_max)) {
+        for (int r = 0; r < n_routes; ++r)
+            out[r] = fused_softmax_prob(row, n_routes, r, row_max, n_pos_inf);
+        return;
+    }
 
     float sum = 0.0f;
     for (int r = 0; r < n_routes; ++r)
@@ -128,7 +160,7 @@ void saaq_select_fused(
     int my_walker = INT_MAX;
 
     for (int tid = (int)threadIdx.x; tid < n_neurons; tid += (int)blockDim.x) {
-        float score = membrane[tid] - (adaptation_scale * adaptation[tid]);
+        float score = saaq_finite_score(membrane[tid], adaptation[tid], adaptation_scale);
         if (fused_better(score, tid, my_score, my_walker)) {
             my_score = score;
             my_walker = tid;
@@ -199,7 +231,7 @@ void routing_saaq_fused_pass1(
 
     // SAAQ is independent of routing width: zero routes still argmax membrane.
     if (tid < n_nodes) {
-        saaq_score = membrane[tid] - (adaptation_scale * adaptation[tid]);
+        saaq_score = saaq_finite_score(membrane[tid], adaptation[tid], adaptation_scale);
         saaq_walker = tid;
     }
 
@@ -214,17 +246,22 @@ void routing_saaq_fused_pass1(
         }
 
         if (scores_are_logits) {
-            float row_max = row[0];
-            for (int r = 1; r < n_routes; ++r)
-                row_max = fmaxf(row_max, row[r]);
-
-            float sum = 0.0f;
-            for (int r = 0; r < n_routes; ++r)
-                sum += expf(row[r] - row_max);
-            float inv = 1.0f / fmaxf(sum, SHIP_EPS);
+            float row_max;
+            int n_pos_inf;
+            fused_softmax_stats(row, n_routes, row_max, n_pos_inf);
+            float inv = 1.0f;
+            if (n_pos_inf == 0 && isfinite(row_max)) {
+                float sum = 0.0f;
+                for (int r = 0; r < n_routes; ++r)
+                    sum += expf(row[r] - row_max);
+                inv = 1.0f / fmaxf(sum, SHIP_EPS);
+            }
 
             for (int r = 0; r < n_routes; ++r) {
-                float p = fmaxf(expf(row[r] - row_max) * inv, 0.0f);
+                float p = fused_softmax_prob(row, n_routes, r, row_max, n_pos_inf);
+                if (n_pos_inf == 0 && isfinite(row_max))
+                    p *= inv;
+                p = fmaxf(p, 0.0f);
                 if (p > SHIP_EPS)
                     entropy = fmaf(-p, log2f(p), entropy);
                 fused_topk_insert(p, r, local_scores, local_indices, actual_k);

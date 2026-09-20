@@ -68,11 +68,29 @@ pub struct OccupancyEstimate {
 }
 
 /// Numerically stable softmax of a single routing row.
+///
+/// `+inf` logits share probability mass uniformly; rows with no finite
+/// maximum (all `-inf` / NaN) are uniform.
 pub fn softmax_row(logits: &[f32]) -> Vec<f32> {
     if logits.is_empty() {
         return Vec::new();
     }
+    let n = logits.len();
+    let n_pos_inf = logits
+        .iter()
+        .filter(|&&x| x.is_infinite() && x > 0.0)
+        .count();
+    if n_pos_inf > 0 {
+        let p = 1.0 / n_pos_inf as f32;
+        return logits
+            .iter()
+            .map(|&x| if x.is_infinite() && x > 0.0 { p } else { 0.0 })
+            .collect();
+    }
     let row_max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !row_max.is_finite() {
+        return vec![1.0 / n as f32; n];
+    }
     let mut out: Vec<f32> = logits.iter().map(|&x| (x - row_max).exp()).collect();
     let sum: f32 = out.iter().sum();
     let inv = 1.0 / sum.max(1e-8);
@@ -135,7 +153,10 @@ pub fn saaq_best_walker(membrane: &[f32], adaptation: &[f32], scale: f32) -> u32
     let mut best_score = SAAQ_SENTINEL;
     let mut best = 0u32;
     for (i, (&m, &a)) in membrane.iter().zip(adaptation.iter()).enumerate() {
-        let score = m - scale * a;
+        let mut score = m - scale * a;
+        if score.is_nan() {
+            score = SAAQ_SENTINEL;
+        }
         if score > best_score || (score == best_score && (i as u32) < best) {
             best_score = score;
             best = i as u32;
@@ -435,6 +456,29 @@ pub fn traffic_model_csv() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn softmax_pos_inf_takes_all_mass() {
+        let p = softmax_row(&[1.0, f32::INFINITY, 2.0]);
+        assert!((p[0] - 0.0).abs() < 1e-6);
+        assert!((p[1] - 1.0).abs() < 1e-6);
+        assert!((p[2] - 0.0).abs() < 1e-6);
+        assert_eq!(top_k_indices(&p, 2), vec![1, 0]);
+    }
+
+    #[test]
+    fn softmax_all_neg_inf_is_uniform() {
+        let p = softmax_row(&[f32::NEG_INFINITY, f32::NEG_INFINITY]);
+        assert!((p[0] - 0.5).abs() < 1e-6);
+        assert!((p[1] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn saaq_all_nan_scores_return_walker_zero() {
+        let membrane = vec![1.0, 2.0, 3.0];
+        let adaptation = vec![0.0, 0.0, 0.0];
+        assert_eq!(saaq_best_walker(&membrane, &adaptation, f32::NAN), 0);
+    }
 
     #[test]
     fn softmax_uniform_when_equal_logits() {

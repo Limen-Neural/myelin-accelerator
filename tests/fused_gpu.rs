@@ -353,3 +353,71 @@ fn routing_saaq_fused_zero_routes_still_selects_saaq() {
     assert_eq!(d_max.to_vec().unwrap()[0], 0.0);
     assert_eq!(d_topk.to_vec().unwrap(), vec![-1, -1, -1, -1, -1, -1]);
 }
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn saaq_nan_scale_matches_host_walker_zero() {
+    let acc = GpuAccelerator::new();
+    assert!(acc.is_ready(), "GPU not ready");
+
+    let membrane = [1.0f32, 4.0, 2.0];
+    let adaptation = [0.0f32, 0.0, 0.0];
+    let expected = saaq_best_walker(&membrane, &adaptation, f32::NAN);
+    assert_eq!(expected, 0);
+
+    let d_m = GpuBuffer::from_slice(&membrane).unwrap();
+    let d_a = GpuBuffer::from_slice(&adaptation).unwrap();
+    let mut d_w = GpuBuffer::<u32>::from_slice(&[u32::MAX]).unwrap();
+    acc.saaq_select(&d_m, &d_a, &mut d_w, f32::NAN).unwrap();
+    assert_eq!(d_w.to_vec().unwrap()[0], 0);
+    d_w.upload(&[u32::MAX]).unwrap();
+    acc.saaq_select_fused(&d_m, &d_a, &mut d_w, f32::NAN)
+        .unwrap();
+    assert_eq!(d_w.to_vec().unwrap()[0], 0);
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn routing_pos_inf_logit_matches_host_topk() {
+    let acc = GpuAccelerator::new();
+    assert!(acc.is_ready(), "GPU not ready");
+
+    let scores = [1.0f32, f32::INFINITY, 2.0];
+    let membrane = [0.0f32];
+    let adaptation = [0.0f32];
+    let expected = fused_routing_saaq(&RoutingSaaqInput {
+        scores: &scores,
+        membrane: &membrane,
+        adaptation: &adaptation,
+        n_nodes: 1,
+        n_routes: 3,
+        top_k: 2,
+        adaptation_scale: GIF_ADAPTATION_SCALE,
+        scores_are_logits: true,
+    });
+    assert_eq!(expected.top_k_indices, vec![1, 0]);
+
+    let d_scores = GpuBuffer::from_slice(&scores).unwrap();
+    let d_m = GpuBuffer::from_slice(&membrane).unwrap();
+    let d_a = GpuBuffer::from_slice(&adaptation).unwrap();
+    let mut d_topk = GpuBuffer::<i32>::alloc(2).unwrap();
+    let mut d_sum = GpuBuffer::<f32>::alloc(1).unwrap();
+    let mut d_max = GpuBuffer::<f32>::alloc(1).unwrap();
+    let mut d_w = GpuBuffer::<u32>::alloc(1).unwrap();
+    acc.routing_saaq_fused(
+        &d_scores,
+        &d_m,
+        &d_a,
+        &mut d_topk,
+        &mut d_sum,
+        &mut d_max,
+        &mut d_w,
+        1,
+        3,
+        2,
+        GIF_ADAPTATION_SCALE,
+        true,
+    )
+    .unwrap();
+    assert_eq!(d_topk.to_vec().unwrap(), expected.top_k_indices);
+}

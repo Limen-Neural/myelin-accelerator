@@ -20,6 +20,13 @@
 // Inactive SAAQ lanes use -inf so any finite (or even -1e30) score wins.
 #define SAAQ_SENTINEL (-INFINITY)
 
+__device__ __forceinline__
+float saaq_finite_score(float membrane, float adaptation, float scale)
+{
+    float score = membrane - (scale * adaptation);
+    return isnan(score) ? SAAQ_SENTINEL : score;
+}
+
 // ── Warp utility ──────────────────────────────────────────────────
 #define WARP_SIZE 32
 
