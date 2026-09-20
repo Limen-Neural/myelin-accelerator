@@ -135,11 +135,16 @@ pub fn routing_entropy(probs: &[f32], n_nodes: usize, n_routes: usize) -> (f32, 
 }
 
 /// Top-k route indices for one row (higher score, then lower index).
+/// NaN scores rank as `-inf` so they cannot outrank a finite value.
 pub fn top_k_indices(scores: &[f32], top_k: usize) -> Vec<i32> {
     if top_k == 0 {
         return Vec::new();
     }
-    let mut pairs: Vec<(f32, usize)> = scores.iter().enumerate().map(|(i, &s)| (s, i)).collect();
+    let mut pairs: Vec<(f32, usize)> = scores
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| (if s.is_nan() { f32::NEG_INFINITY } else { s }, i))
+        .collect();
     pairs.sort_by(|a, b| {
         b.0.partial_cmp(&a.0)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -478,6 +483,12 @@ mod tests {
         assert!((p[0] - 0.0).abs() < 1e-6);
         assert!((p[1] - 1.0).abs() < 1e-6);
         assert_eq!(top_k_indices(&p, 2), vec![1, 0]);
+    }
+
+    #[test]
+    fn top_k_ranks_nan_below_finite() {
+        assert_eq!(top_k_indices(&[0.1, f32::NAN, 0.9], 2), vec![2, 0]);
+        assert_eq!(top_k_indices(&[f32::NAN, f32::NAN], 2), vec![0, 1]);
     }
 
     #[test]
