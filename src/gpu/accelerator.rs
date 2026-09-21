@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::bitpacking::TERNARY_VALUES_PER_WORD;
+#[cfg(feature = "saaq")]
 use crate::gif::{GIF_ADAPTATION_SCALE, GIF_BLOCK_SIZE, SnapshotChannels, gif_saaq_grid};
 use crate::gpu::context::GpuContext;
 use crate::gpu::error::{GpuError, GpuResult};
+#[cfg(feature = "saaq")]
 use crate::gpu::ffi;
 use crate::gpu::kernel::KernelModule;
 use crate::gpu::memory::GpuBuffer;
@@ -17,10 +19,14 @@ use tracing::warn;
 
 const SATSOLVER_BLOCK_SIZE: u32 = 256;
 const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
+#[cfg(feature = "saaq")]
 const TEMPORAL_BLOCK_SIZE: u32 = GIF_BLOCK_SIZE;
+#[cfg(feature = "saaq")]
 const TEMPORAL_SHARED_MEM_BYTES: u32 = 0;
+#[cfg(feature = "saaq")]
 const SNAPSHOT_CHANNELS: usize = 4;
 
+#[cfg(feature = "saaq")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SynapsePrecision {
     None,
@@ -28,6 +34,7 @@ enum SynapsePrecision {
     F16,
 }
 
+#[cfg(feature = "saaq")]
 struct TemporalState {
     neuron_count: usize,
     n_inputs: usize,
@@ -51,6 +58,7 @@ pub struct GpuAccelerator {
     _ctx: Option<GpuContext>,
     modules: Option<KernelModule>,
     stream: Option<Stream>,
+    #[cfg(feature = "saaq")]
     temporal_state: Option<TemporalState>,
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
@@ -63,7 +71,10 @@ impl GpuAccelerator {
                 let modules = match KernelModule::load() {
                     Ok(modules) => Some(modules),
                     Err(e) => {
+                        #[cfg(feature = "saaq")]
                         warn!("[GPU] fatbin/PTX load failed (shim-only if stream is up): {e}");
+                        #[cfg(not(feature = "saaq"))]
+                        warn!("[GPU] fatbin/PTX load failed (CPU fallback): {e}");
                         None
                     }
                 };
@@ -78,6 +89,7 @@ impl GpuAccelerator {
                     _ctx: Some(ctx),
                     modules,
                     stream,
+                    #[cfg(feature = "saaq")]
                     temporal_state: None,
                     aux_partial_scores: RefCell::new(None),
                     aux_partial_walkers: RefCell::new(None),
@@ -89,6 +101,7 @@ impl GpuAccelerator {
                     _ctx: None,
                     modules: None,
                     stream: None,
+                    #[cfg(feature = "saaq")]
                     temporal_state: None,
                     aux_partial_scores: RefCell::new(None),
                     aux_partial_walkers: RefCell::new(None),
@@ -99,9 +112,9 @@ impl GpuAccelerator {
 
     /// `true` when a CUDA context and stream exist.
     ///
-    /// Fatbin/PTX helpers still require [`Self::kernels`] / [`Self::kernels_ready`];
-    /// the C-ABI shim path (F16 GIF + SAAQ) can run with context+stream alone
-    /// if module load failed.
+    /// Fatbin/PTX helpers still require [`Self::kernels`] / [`Self::kernels_ready`].
+    /// With `--features saaq`, the C-ABI shim path (F16 GIF + SAAQ) can run
+    /// with context+stream alone if module load failed.
     pub fn is_ready(&self) -> bool {
         self._ctx.is_some() && self.stream.is_some()
     }
@@ -111,6 +124,7 @@ impl GpuAccelerator {
         self.is_ready() && self.modules.is_some()
     }
 
+    #[cfg(feature = "saaq")]
     fn has_context(&self) -> bool {
         self._ctx.is_some()
     }
@@ -158,6 +172,7 @@ impl GpuAccelerator {
         gpu_error
     }
 
+    #[cfg(feature = "saaq")]
     fn temporal_grid(neuron_count: usize) -> GpuResult<u32> {
         gif_saaq_grid(neuron_count).map_err(GpuError::LaunchFailed)
     }
@@ -167,10 +182,17 @@ impl GpuAccelerator {
             return Err(GpuError::NoGpu);
         }
         self.modules.as_ref().ok_or_else(|| {
-            GpuError::ModuleLoadFailed(
-                "fatbin/PTX modules are not loaded; C-ABI shim launches may still work when is_ready()"
-                    .into(),
-            )
+            #[cfg(feature = "saaq")]
+            {
+                GpuError::ModuleLoadFailed(
+                    "fatbin/PTX modules are not loaded; C-ABI shim launches may still work when is_ready()"
+                        .into(),
+                )
+            }
+            #[cfg(not(feature = "saaq"))]
+            {
+                GpuError::ModuleLoadFailed("fatbin/PTX modules are not loaded".into())
+            }
         })
     }
 
@@ -185,6 +207,7 @@ impl GpuAccelerator {
     ///
     /// Uses full connectivity (`n_inputs == neuron_count`). Reallocates when
     /// the count changes. Production corinth-canal size is 2048.
+    #[cfg(feature = "saaq")]
     pub fn ensure_temporal_state(&mut self, neuron_count: usize) -> GpuResult<()> {
         if !self.has_context() {
             return Err(GpuError::NoGpu);
@@ -212,6 +235,7 @@ impl GpuAccelerator {
     ///
     /// The next [`Self::gif_step_weighted_tick`] (f32 or f16) adds that current
     /// to the synaptic drive so telemetry projection changes GIF dynamics.
+    #[cfg(feature = "saaq")]
     pub fn project_snapshot_current(
         &mut self,
         snapshot: SnapshotChannels,
@@ -252,6 +276,7 @@ impl GpuAccelerator {
     /// Download the current GIF spike vector.
     ///
     /// `neuron_count` must equal the resident temporal size.
+    #[cfg(feature = "saaq")]
     pub fn temporal_spikes_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<u32>> {
         if !self.has_context() {
             return Err(GpuError::NoGpu);
@@ -267,6 +292,7 @@ impl GpuAccelerator {
     /// Download the current GIF membrane vector.
     ///
     /// `neuron_count` must equal the resident temporal size.
+    #[cfg(feature = "saaq")]
     pub fn temporal_membrane_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<f32>> {
         if !self.has_context() {
             return Err(GpuError::NoGpu);
@@ -282,6 +308,7 @@ impl GpuAccelerator {
     /// Download the current GIF adaptation vector.
     ///
     /// `neuron_count` must equal the resident temporal size.
+    #[cfg(feature = "saaq")]
     pub fn temporal_adaptation_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<f32>> {
         if !self.has_context() {
             return Err(GpuError::NoGpu);
@@ -295,6 +322,7 @@ impl GpuAccelerator {
     }
 
     /// Upload a per-neuron (or per-input) vector into the resident `input_spikes` buffer.
+    #[cfg(feature = "saaq")]
     pub fn upload_temporal_input_spikes(&mut self, input_spikes: &[f32]) -> GpuResult<()> {
         if !self.has_context() {
             return Err(GpuError::NoGpu);
@@ -317,11 +345,13 @@ impl GpuAccelerator {
     }
 
     /// Load an f32 synapse matrix. Signature defaults to `"host-f32"`.
+    #[cfg(feature = "saaq")]
     pub fn load_synapse_weights(&mut self, weights: &[f32]) -> GpuResult<()> {
         self.load_synapse_weights_named("host-f32", weights)
     }
 
     /// Load an f32 synapse matrix, skipping the upload when `signature` is already resident.
+    #[cfg(feature = "saaq")]
     pub fn load_synapse_weights_named(
         &mut self,
         signature: &str,
@@ -359,6 +389,7 @@ impl GpuAccelerator {
     }
 
     /// Load an IEEE f16 synapse matrix from host `u16` bits.
+    #[cfg(feature = "saaq")]
     pub fn load_synapse_weights_f16_registered(
         &mut self,
         signature: &str,
@@ -409,6 +440,7 @@ impl GpuAccelerator {
     /// One GIF-weighted tick, then on-device SAAQ selection.
     ///
     /// Returns the best-walker index. Requires synapse weights to be loaded.
+    #[cfg(feature = "saaq")]
     pub fn gif_step_weighted_tick(&mut self, neuron_count: usize) -> GpuResult<u32> {
         self.ensure_temporal_state(neuron_count)?;
 
@@ -496,6 +528,7 @@ impl GpuAccelerator {
     }
 
     /// Zero resident GIF state (membrane, adaptation, spikes, inputs, SAAQ winner).
+    #[cfg(feature = "saaq")]
     pub fn reset_temporal_state(&mut self) -> GpuResult<()> {
         if !self.has_context() {
             return Err(GpuError::NoGpu);
@@ -558,6 +591,7 @@ impl GpuAccelerator {
     }
 
     /// Currently loaded synapse signature, if any.
+    #[cfg(feature = "saaq")]
     pub fn synapse_signature(&self) -> Option<&str> {
         self.temporal_state
             .as_ref()
@@ -567,6 +601,7 @@ impl GpuAccelerator {
     /// On-device SAAQ two-pass reduction over resident membrane/adaptation.
     ///
     /// Public so LIM-955 can profile the unfused baseline independently of GIF.
+    #[cfg(feature = "saaq")]
     pub fn saaq_find_best_walker(&mut self, neuron_count: usize) -> GpuResult<u32> {
         self.ensure_temporal_state(neuron_count)?;
 
@@ -607,6 +642,7 @@ impl GpuAccelerator {
         Ok(best[0])
     }
 
+    #[cfg(feature = "saaq")]
     fn build_temporal_state(neuron_count: usize) -> GpuResult<TemporalState> {
         let n_inputs = neuron_count;
         let weight_size = neuron_count * n_inputs;
@@ -1090,6 +1126,7 @@ impl GpuAccelerator {
         Ok(())
     }
 
+    #[cfg(feature = "saaq")]
     fn require_state_neuron_count(state: &TemporalState, neuron_count: usize) -> GpuResult<()> {
         if state.neuron_count != neuron_count {
             return Err(GpuError::MemoryError(format!(
@@ -1126,7 +1163,7 @@ impl Default for GpuAccelerator {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "saaq"))]
 mod tests {
     use super::*;
     use crate::gif::{GIF_ADAPTATION_SCALE, project_snapshot_current, saaq_find_best_walker};

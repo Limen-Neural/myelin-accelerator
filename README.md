@@ -2,7 +2,7 @@
 
 Blackwell-first CUDA kernels for neuromorphic inference, SAT search, and routing-heavy GPU workloads on RTX 5080-class hardware.
 
-This repo is the **low-level compute layer** behind the stack: CUDA fatbin/PTX modules, Rust bindings, the C-ABI `myelin_shim` for Blackwell-critical GIF/SAAQ launches, and the launch paths that keep the GPU busy instead of serializing work through one thread at a time.
+This repo is the **low-level compute layer** behind the stack: CUDA fatbin/PTX modules, Rust bindings, launch paths that keep the GPU busy instead of serializing work through one thread at a time, and (behind `--features saaq`) an experimental C-ABI `myelin_shim` for GIF/SAAQ launches.
 
 **Backend scope and public API:** see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — what belongs here vs higher-level experiment/orchestration repos.
 
@@ -16,7 +16,7 @@ This repo is the **low-level compute layer** behind the stack: CUDA fatbin/PTX m
 - Host **binary/ternary bitpacking** + group scales + CPU ref matmul: `src/bitpacking.rs`.
 - Scalar **CPU oracles** for public kernel paths + seeded mismatch reporting: `src/oracle.rs`.
 - Device **ternary GEMV/GEMM** (group-scaled, optional zero-skip): `cu/ternary_gemm.cu` — see [docs/TERNARY.md](docs/TERNARY.md).
-- GIF / SAAQ temporal path (`gif_step_weighted`, `gif_step_weighted_f16`, `saaq_find_best_walker`) plus `myelin_shim` C-ABI launches.
+- Optional **experimental** GIF / SAAQ temporal path (`--features saaq`): `gif_step_weighted`, `gif_step_weighted_f16`, `saaq_find_best_walker`, plus `myelin_shim` C-ABI launches when also using `cuda`. Not on `default`; not part of the crates.io Tier-1 surface.
 - Fatbin (sm_120 SASS + compute_120 PTX) with PTX-JIT fallback and a consumer-installed launch-failure hook (no `sentry` dependency).
 
 ## Module map
@@ -28,11 +28,11 @@ This repo is the **low-level compute layer** behind the stack: CUDA fatbin/PTX m
 | `src/oracle.rs` | Scalar CPU oracles + seed/shape mismatch helpers | yes (`oracle`) |
 | `src/gpu/` | CUDA context, fatbin/PTX load, buffers, launches | via re-exports when `cuda` |
 | `src/gpu_stub.rs` | CPU-safe stand-ins without toolkit | used when `cuda` off |
-| `src/gif.rs` | GIF/SAAQ constants + CPU reference | yes (`gif`) |
+| `src/gif.rs` | Experimental GIF/SAAQ constants + CPU reference | `--features saaq` (`gif`) |
 | `src/launch_hook.rs` | Launch-failure callback | yes |
-| `cu/*.cu` | Device kernels (spiking, GIF/SAAQ, similarity, SAT, ternary) | via fatbin/PTX + wrappers |
+| `cu/*.cu` | Device kernels (spiking, similarity, SAT, ternary; GIF/SAAQ if `saaq`) | via fatbin/PTX + wrappers |
 | `examples/benchmark.rs` | Latency / GPU info harness | feature `bench` (+ `cuda` for GPU) |
-| `build.rs` / `CMakeLists.txt` | `nvcc -ptx` sidecar + fatbin; C ABI shim | build-only |
+| `build.rs` / `CMakeLists.txt` | `nvcc -ptx` sidecar + fatbin; C ABI shim if `saaq` | build-only |
 | `docs/ARCHITECTURE.md` | Ownership + API boundary | docs |
 | `docs/TERNARY.md` | Ternary encoding, scales, GOZ1 interop, kernels | docs |
 
@@ -40,13 +40,14 @@ This repo is the **low-level compute layer** behind the stack: CUDA fatbin/PTX m
 
 | Feature | Meaning |
 |---------|---------|
-| *(default)* | Stub GPU API; no `nvcc` |
+| *(default)* | Stub GPU API; no `nvcc`; no SAAQ/GIF |
 | `cuda` | Real GPU path (`cust`, `nvtx`) |
+| `saaq` | Experimental GIF/SAAQ host + device path (opt-in; pair with `cuda` for GPU) |
 | `bench` | Benchmark example serde deps |
 
 ### Public symbols (crate root)
 
-`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError`, `SnapshotChannels`, `set_launch_failure_hook` — plus the `bitpacking`, `gif`, and `oracle` modules. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError`, `set_launch_failure_hook` — plus the `bitpacking` and `oracle` modules. With `--features saaq`: `SnapshotChannels` and the `gif` module. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## What Changed
 
@@ -69,6 +70,10 @@ This repo is the **low-level compute layer** behind the stack: CUDA fatbin/PTX m
 myelin-accelerator = "0.3.0"
 # Optional GPU:
 # myelin-accelerator = { version = "0.3.0", features = ["cuda"] }
+# Experimental GIF/SAAQ (not default / not crates.io Tier-1):
+# myelin-accelerator = { version = "0.3.0", features = ["saaq"] }
+# GPU + GIF/SAAQ:
+# myelin-accelerator = { version = "0.3.0", features = ["cuda", "saaq"] }
 ```
 
 ```rust
@@ -76,7 +81,7 @@ use myelin_accelerator::{GpuAccelerator, bitpacking};
 
 let gpu = GpuAccelerator::new();
 if gpu.is_ready() {
-    // context + stream present (C-ABI shim may work even if modules failed)
+    // context + stream present
 }
 if gpu.kernels_ready() {
     // fatbin/PTX wrappers are also available
@@ -89,6 +94,7 @@ CPU-safe checks:
 
 ```bash
 cargo test --locked
+cargo test --locked --features saaq
 cargo build --locked --no-default-features
 ```
 

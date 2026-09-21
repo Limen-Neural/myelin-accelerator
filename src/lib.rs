@@ -3,6 +3,7 @@
 
 // myelin-accelerator: safe Rust FFI wrappers around CUDA spiking-network kernels.
 pub mod bitpacking;
+#[cfg(feature = "saaq")]
 pub mod gif;
 pub mod launch_hook;
 pub mod oracle;
@@ -20,6 +21,7 @@ pub use gpu::{GpuAccelerator, GpuBuffer, GpuContext, GpuError, KernelModule};
 #[cfg(not(feature = "cuda"))]
 pub use gpu_stub::{GpuAccelerator, GpuBuffer, GpuContext, GpuError, KernelModule};
 
+#[cfg(feature = "saaq")]
 pub use gif::SnapshotChannels;
 pub use launch_hook::{
     LaunchFailure, LaunchFailureHook, LaunchType, clear_launch_failure_hook,

@@ -4,9 +4,10 @@
 // ════════════════════════════════════════════════════════════════════
 //  gpu/ffi.rs — C ABI shim wrappers for Blackwell-critical kernels
 //
-//  Most kernels still launch through fatbin/PTX in kernel.rs. The two
-//  latency-critical Blackwell paths below launch through a linked CUDA
-//  shim so Rust can pass raw driver handles into a runtime `<<<>>>` call.
+//  Compiled only with `--features saaq`. Most kernels still launch through
+//  fatbin/PTX in kernel.rs. The two latency-critical Blackwell GIF/SAAQ
+//  paths below launch through a linked CUDA shim so Rust can pass raw
+//  driver handles into a runtime `<<<>>>` call.
 // ════════════════════════════════════════════════════════════════════
 
 use crate::gpu::error::{GpuError, GpuResult};

@@ -49,6 +49,7 @@ fn main() {
     }
 
     let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
+    let saaq_feature_enabled = env::var("CARGO_FEATURE_SAAQ").is_ok();
     if !cuda_feature_enabled {
         emit_stub_ptx(&out_dir);
         println!("cargo:warning=cuda feature not enabled; wrote stub PTX files");
@@ -77,7 +78,14 @@ fn main() {
     for &(cu_name, ptx_name) in KERNELS {
         let source = cu_dir.join(cu_name);
         let output = out_dir.join(ptx_name);
-        compile_to_ptx(&nvcc_path, &cu_dir, &source, &output, &arch);
+        compile_to_ptx(
+            &nvcc_path,
+            &cu_dir,
+            &source,
+            &output,
+            &arch,
+            &nvcc_feature_defines(cu_name, saaq_feature_enabled),
+        );
         // sm_120 + PTX < 9.2 is invalid. Explicit overrides are applied for
         // non-Blackwell arches; on Blackwell, clamp any override below the floor.
         if let Some(ref ver) = ptx_version_override {
@@ -109,12 +117,23 @@ fn main() {
     for &(cu_name, fatbin_name) in FATBINS {
         let source = cu_dir.join(cu_name);
         let output = out_dir.join(fatbin_name);
-        compile_to_fatbin(&nvcc_path, &cu_dir, &source, &output, &arch);
+        compile_to_fatbin(
+            &nvcc_path,
+            &cu_dir,
+            &source,
+            &output,
+            &arch,
+            &nvcc_feature_defines(cu_name, saaq_feature_enabled),
+        );
         println!("cargo:warning=compiled {cu_name} -> {fatbin_name} ({arch} SASS + PTX fallback)");
     }
 
-    build_myelin_shim(&nvcc_path, &cu_dir, &out_dir, &arch);
-    emit_cuda_runtime_linking(&nvcc_path);
+    if saaq_feature_enabled {
+        build_myelin_shim(&nvcc_path, &cu_dir, &out_dir, &arch);
+        emit_cuda_runtime_linking(&nvcc_path);
+    } else {
+        println!("cargo:warning=saaq feature off; skipped myelin_shim.cu and cudart link");
+    }
 }
 
 fn find_nvcc() -> Option<PathBuf> {
@@ -196,7 +215,22 @@ fn nvcc_version(nvcc: &Path) -> Option<String> {
         .and_then(|s| s.lines().last().map(|l| l.trim().to_string()))
 }
 
-fn compile_to_ptx(nvcc: &Path, cu_dir: &Path, source: &Path, output: &Path, arch: &str) {
+fn nvcc_feature_defines(cu_name: &str, saaq_feature_enabled: bool) -> Vec<String> {
+    let mut defines = Vec::new();
+    if saaq_feature_enabled && cu_name == "spiking_network.cu" {
+        defines.push("-DMYELIN_SAAQ".to_string());
+    }
+    defines
+}
+
+fn compile_to_ptx(
+    nvcc: &Path,
+    cu_dir: &Path,
+    source: &Path,
+    output: &Path,
+    arch: &str,
+    extra_args: &[String],
+) {
     let threads_raw = env::var("MYELIN_NVCC_THREADS").unwrap_or_else(|_| "0".to_string());
     let threads = threads_raw.parse::<usize>().unwrap_or_else(|_| {
         panic!("MYELIN_NVCC_THREADS must be a non-negative integer, got \"{threads_raw}\"")
@@ -233,6 +267,9 @@ fn compile_to_ptx(nvcc: &Path, cu_dir: &Path, source: &Path, output: &Path, arch
         .arg("-o")
         .arg(output)
         .arg(source);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
     if cfg!(unix) {
         cmd.arg("-Xcompiler").arg("-fno-builtin");
     }
@@ -260,7 +297,14 @@ fn arch_gencode_parts(arch: &str) -> (String, String) {
     (format!("compute_{digits}"), format!("sm_{digits}"))
 }
 
-fn compile_to_fatbin(nvcc: &Path, cu_dir: &Path, source: &Path, output: &Path, arch: &str) {
+fn compile_to_fatbin(
+    nvcc: &Path,
+    cu_dir: &Path,
+    source: &Path,
+    output: &Path,
+    arch: &str,
+    extra_args: &[String],
+) {
     let threads_raw = env::var("MYELIN_NVCC_THREADS").unwrap_or_else(|_| "0".to_string());
     let threads = threads_raw.parse::<usize>().unwrap_or_else(|_| {
         panic!("MYELIN_NVCC_THREADS must be a non-negative integer, got \"{threads_raw}\"")
@@ -285,6 +329,9 @@ fn compile_to_fatbin(nvcc: &Path, cu_dir: &Path, source: &Path, output: &Path, a
         .arg("-o")
         .arg(output)
         .arg(source);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
     if cfg!(unix) {
         cmd.arg("-Xcompiler").arg("-fno-builtin");
     }
@@ -329,7 +376,8 @@ fn build_myelin_shim(nvcc: &Path, cu_dir: &Path, out_dir: &Path, arch: &str) {
         .arg("--threads")
         .arg(threads.to_string());
     nvcc_common_host_flags(&mut cmd);
-    cmd.arg("-I")
+    cmd.arg("-DMYELIN_SAAQ")
+        .arg("-I")
         .arg(cu_dir)
         .arg("-Xcompiler")
         .arg("-fPIC")

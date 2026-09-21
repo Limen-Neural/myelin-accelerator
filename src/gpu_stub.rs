@@ -1,6 +1,7 @@
 // Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(feature = "saaq")]
 use crate::gif::SnapshotChannels;
 use std::fmt;
 
@@ -205,54 +206,67 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn ensure_temporal_state(&mut self, _: usize) -> GpuResult<()> {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn project_snapshot_current(&mut self, _: SnapshotChannels, _: usize) -> GpuResult<()> {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn gif_step_weighted_tick(&mut self, _: usize) -> GpuResult<u32> {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn reset_temporal_state(&mut self) -> GpuResult<()> {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn load_synapse_weights(&mut self, _: &[f32]) -> GpuResult<()> {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn load_synapse_weights_named(&mut self, _: &str, _: &[f32]) -> GpuResult<()> {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn load_synapse_weights_f16_registered(&mut self, _: &str, _: &[u16]) -> GpuResult<()> {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn synapse_signature(&self) -> Option<&str> {
         None
     }
 
+    #[cfg(feature = "saaq")]
     pub fn temporal_spikes_to_vec(&self, _: usize) -> GpuResult<Vec<u32>> {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn temporal_membrane_to_vec(&self, _: usize) -> GpuResult<Vec<f32>> {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn temporal_adaptation_to_vec(&self, _: usize) -> GpuResult<Vec<f32>> {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn upload_temporal_input_spikes(&mut self, _: &[f32]) -> GpuResult<()> {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn saaq_find_best_walker(&mut self, _: usize) -> GpuResult<u32> {
         Err(GpuError::NoGpu)
     }
@@ -332,6 +346,7 @@ impl Default for GpuAccelerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "saaq")]
     use crate::gif::SnapshotChannels;
 
     // ── GpuError Display ────────────────────────────────────────────────────
@@ -634,6 +649,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "saaq")]
     #[test]
     fn accelerator_temporal_methods_return_no_gpu() {
         let mut acc = GpuAccelerator::new();

@@ -25,7 +25,7 @@ local quality/benchmark harness. Not a research orchestrator.
 | CUDA kernels | `cu/*.cu`, shared headers (`cu/common.cuh`), `sm_120`-tuned reductions |
 | PTX / fatbin build path | `build.rs` (`nvcc -ptx` sidecar + `-fatbin` SASS with PTX fallback), CMake `cuda_kernels` target, embedded images |
 | Safe GPU FFI | `GpuContext`, `KernelModule`, `GpuBuffer`, launch wrappers |
-| Feature gates | `cuda` (cust + nvtx), `bench` (serde JSON/CSV harness) |
+| Feature gates | `cuda` (cust + nvtx), `saaq` (experimental GIF/SAAQ), `bench` (serde JSON/CSV harness) |
 | CPU-safe stub | `src/gpu_stub.rs` when `cuda` is off (CI / sandboxes) |
 | Host packing utilities | Binary / ternary bitpacking (`src/bitpacking.rs`) — host-side layout helpers that match future device kernels |
 | CPU oracles | Scalar reference implementations (`src/oracle.rs`) for differential tests against public kernel wrappers |
@@ -78,15 +78,15 @@ paths.
 myelin-accelerator/
 ├── cu/                          # First-party CUDA device sources
 │   ├── common.cuh
-│   ├── spiking_network.cu       # Poisson, LIF, GIF, SAAQ, STDP, reduce passes
-│   ├── myelin_shim.cu / .h      # C-ABI runtime launches for f16 GIF + SAAQ
+│   ├── spiking_network.cu       # Poisson, LIF, STDP, reduce; GIF/SAAQ if MYELIN_SAAQ
+│   ├── myelin_shim.cu / .h      # C-ABI launches for f16 GIF + SAAQ (`saaq` + `cuda`)
 │   ├── vector_similarity.cu     # Cosine batched + top-k routing
 │   ├── satsolver.cu             # Parallel SAT walkers + reduces
 │   └── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
 ├── src/
 │   ├── lib.rs                   # Crate root; public re-exports
 │   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
-│   ├── gif.rs                   # GIF/SAAQ constants + CPU reference kernels
+│   ├── gif.rs                   # GIF/SAAQ constants + CPU refs (`feature = "saaq"`)
 │   ├── launch_hook.rs           # Consumer-installed launch-failure callback
 │   ├── oracle.rs                # Scalar CPU oracles + seeded compare helpers
 │   ├── gpu_stub.rs              # CPU-safe stand-ins (no cuda feature)
@@ -94,10 +94,10 @@ myelin-accelerator/
 │       ├── mod.rs               # Internal module tree + re-exports
 │       ├── context.rs           # Device / primary context
 │       ├── kernel.rs            # Fatbin embed + PTX fallback + Function map
-│       ├── ffi.rs               # C ABI wrappers for myelin_shim
+│       ├── ffi.rs               # C ABI wrappers for myelin_shim (`feature = "saaq"`)
 │       ├── memory.rs            # GpuBuffer
 │       ├── error.rs             # GpuError / GpuResult
-│       └── accelerator.rs       # High-level launch wrappers + TemporalState
+│       └── accelerator.rs       # High-level launch wrappers; TemporalState if `saaq`
 ├── examples/benchmark.rs        # Optional bench harness (feature = "bench")
 ├── build.rs                     # nvcc → PTX into OUT_DIR
 ├── CMakeLists.txt               # CLion/CTest quality gate (nvcc -ptx)
@@ -110,8 +110,9 @@ myelin-accelerator/
 
 | Feature | Effect |
 |---------|--------|
-| *(default empty)* | Stub GPU API; no `nvcc` required |
+| *(default empty)* | Stub GPU API; no `nvcc` required; **no** GIF/SAAQ public surface |
 | `cuda` | Real `src/gpu/*`, `cust`, optional `nvtx` profiling ranges |
+| `saaq` | Experimental GIF/SAAQ modules, TemporalState APIs, and (with `cuda`) `myelin_shim` + GIF/SAAQ device kernels. **Not** on `default`. May split to its own crate later. |
 | `bench` | Serde deps for `examples/benchmark` (pair with `cuda` for GPU) |
 
 ---
@@ -129,11 +130,16 @@ Re-exported from `src/lib.rs` (names available with or without `cuda` via stub):
 | `GpuBuffer` | Device buffer helper |
 | `KernelModule` | Loaded fatbin/PTX modules + `get_function` |
 | `GpuError` | Error type re-exported at the crate root |
-| `SnapshotChannels` | 4-channel input to `project_snapshot_current` |
 | `set_launch_failure_hook` | Consumer-installed launch-failure reporter (no `sentry` dep) |
 | `bitpacking` module | Host packing APIs (`pack_ternary`, `pack_binary`, …) |
-| `gif` module | GIF/SAAQ constants and CPU reference kernels |
 | `oracle` module | Named CPU oracles + seed/shape mismatch reporting |
+
+With **`--features saaq`** (experimental; not crates.io default):
+
+| Symbol | Role |
+|--------|------|
+| `SnapshotChannels` | 4-channel input to `project_snapshot_current` |
+| `gif` module | GIF/SAAQ constants and CPU reference kernels |
 
 `GpuResult<T>` (`type` alias for `Result<T, GpuError>`) is **not** re-exported
 from the crate root today. Use `Result<_, myelin_accelerator::GpuError>` at the
@@ -146,11 +152,14 @@ internal files.
 
 These are the **ergonomic** wrappers currently implemented:
 
-- Lifecycle: `new`, `is_ready` (context+stream; C-ABI shim may run if modules failed), `kernels_ready`, `kernels` (returns `ModuleLoadFailed` rather than `NoGpu` when a context exists but fatbin/PTX did not load), `synchronize`
+- Lifecycle: `new`, `is_ready` (context+stream), `kernels_ready`, `kernels` (returns `ModuleLoadFailed` rather than `NoGpu` when a context exists but fatbin/PTX did not load), `synchronize`
 - SAT: `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
 - Spiking: `poisson_encode` / `_async`
-- GIF / SAAQ temporal: `ensure_temporal_state`, `gif_step_weighted_tick`, `project_snapshot_current`, `reset_temporal_state`, `load_synapse_weights_named`, `load_synapse_weights_f16_registered`, `synapse_signature`, `temporal_spikes_to_vec`, `temporal_membrane_to_vec`, `temporal_adaptation_to_vec`, `upload_temporal_input_spikes`, `saaq_find_best_walker`
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
+
+With **`--features saaq`**:
+
+- GIF / SAAQ temporal: `ensure_temporal_state`, `gif_step_weighted_tick`, `project_snapshot_current`, `reset_temporal_state`, `load_synapse_weights_named`, `load_synapse_weights_f16_registered`, `synapse_signature`, `temporal_spikes_to_vec`, `temporal_membrane_to_vec`, `temporal_adaptation_to_vec`, `upload_temporal_input_spikes`, `saaq_find_best_walker` (C-ABI shim may run when `is_ready()` even if `kernels_ready()` is false)
 
 Scalar CPU oracles for the wrappers above, plus `cosine_similarity_batched` (loaded, not yet wrapped), live in `src/oracle.rs`.
 
@@ -164,7 +173,8 @@ consumers share.
 
 | PTX module | Symbols |
 |------------|---------|
-| `spiking_network` | `poisson_encode`, `project_snapshot_current`, `lif_step`, `lif_step_weighted`, `gif_step_weighted`, `gif_step_weighted_f16`, `spike_rate`, `reset_membrane`, `stdp_update`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2`, `saaq_find_best_walker`, `saaq_reduce_partials_f16` |
+| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `spike_rate`, `reset_membrane`, `stdp_update`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` |
+| `spiking_network` (`saaq`) | plus `project_snapshot_current`, `gif_step_weighted`, `gif_step_weighted_f16`, `saaq_find_best_walker`, `saaq_reduce_partials_f16` |
 | `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` |
 | `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass1`, `satsolver_best_reduce_pass2` |
 | `ternary_gemm` | `ternary_gemv`, `ternary_gemm` |
@@ -182,7 +192,7 @@ consumers share.
 
 | Path | Purpose |
 |------|---------|
-| CPU CI | `cargo test --locked`, `cargo build --no-default-features` |
+| CPU CI | `cargo test --locked`, `cargo test --features saaq`, `cargo build --no-default-features` |
 | GPU local / self-hosted | `cargo test --features cuda -- --ignored`, benchmark example |
 | CLion | CMake CXX-only + `nvcc -ptx` custom target — **not** CMake native `CUDA` language |
 

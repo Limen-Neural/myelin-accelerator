@@ -43,7 +43,10 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy (no CUDA)
-        run: cargo clippy --locked --no-default-features -- -D warnings
+        run: cargo clippy --locked --no-default-features --tests -- -D warnings
+
+      - name: Clippy (experimental saaq, no CUDA)
+        run: cargo clippy --locked --features saaq --tests -- -D warnings
 
   # ── CPU-only tests & builds ────────────────────────────────────────────────
   cpu-checks:
@@ -62,6 +65,9 @@ jobs:
 
       - name: Cargo test
         run: cargo test --locked
+
+      - name: Cargo test (experimental saaq)
+        run: cargo test --locked --features saaq
 
       - name: Cargo build without default features
         run: cargo build --locked --no-default-features
@@ -172,12 +178,47 @@ jobs:
                         saaq_find_best_walker saaq_reduce_partials_f16; do
             if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
                 "$ptx_dir/spiking_network_sm_120.ptx"; then
-              echo "✓ spiking_network PTX: $kernel"
+              echo "::error::SAAQ/GIF kernel $kernel compiled without --features saaq"
+              exit 1
+            fi
+            echo "✓ spiking_network PTX has no $kernel (saaq off)"
+          done
+
+      - name: Build (debug, features cuda,saaq)
+        shell: bash
+        run: |
+          source "$HOME/.cargo/env"
+          cargo build --locked --features cuda,saaq
+
+      - name: Clippy (features cuda,saaq)
+        shell: bash
+        run: |
+          source "$HOME/.cargo/env"
+          rustup component add clippy
+          cargo clippy --locked --features cuda,saaq --tests -- -D warnings
+
+      - name: Verify GIF/SAAQ PTX present with saaq
+        shell: bash
+        run: |
+          set -euo pipefail
+          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
+          if [ -z "$ptx_dir" ]; then
+            echo "::error::Could not find PTX output directory after cuda,saaq build"
+            exit 1
+          fi
+          for kernel in project_snapshot_current gif_step_weighted gif_step_weighted_f16 \
+                        saaq_find_best_walker saaq_reduce_partials_f16; do
+            if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
+                "$ptx_dir/spiking_network_sm_120.ptx"; then
+              echo "✓ spiking_network PTX (saaq): $kernel"
             else
-              echo "::error::Missing kernel entry: $kernel"
+              echo "::error::Missing kernel entry with saaq: $kernel"
               exit 1
             fi
           done
+          if ! ls "$ptx_dir"/libmyelin_shim.a "$ptx_dir"/myelin_shim.o 2>/dev/null | grep -q .; then
+            echo "::warning::Did not find myelin_shim.o / libmyelin_shim.a in $ptx_dir (cc may place the archive under OUT_DIR parent)"
+          fi
 
       - name: Offline ptxas assemble (sm_120)
         shell: bash
@@ -246,17 +287,26 @@ jobs:
       - name: Build (debug)
         run: cargo build --locked --features cuda
 
+      - name: Build (debug, cuda+saaq)
+        run: cargo build --locked --features cuda,saaq
+
       - name: Build (release)
         run: cargo build --locked --features cuda --release
 
       - name: Clippy with CUDA feature
-        run: cargo clippy --locked --features cuda -- -D warnings
+        run: cargo clippy --locked --features cuda --tests -- -D warnings
+
+      - name: Clippy with CUDA + saaq
+        run: cargo clippy --locked --features cuda,saaq --tests -- -D warnings
 
       - name: Test (debug, CUDA feature, non-ignored)
         run: cargo test --locked --features cuda
 
+      - name: Test (debug, CUDA + saaq, non-ignored)
+        run: cargo test --locked --features cuda,saaq
+
       - name: Test GPU goldens (ignored)
-        run: cargo test --locked --features cuda -- --ignored --nocapture
+        run: cargo test --locked --features cuda,saaq -- --ignored --nocapture
 
       - name: Verify PTX output is non-stub
         shell: bash
@@ -309,11 +359,11 @@ jobs:
             echo ""
             echo "Checking kernel entry points in $profile PTX files..."
 
-            for kernel in poisson_encode project_snapshot_current lif_step lif_step_weighted \
-                          gif_step_weighted gif_step_weighted_f16 spike_rate \
+            for kernel in poisson_encode lif_step lif_step_weighted \
+                          spike_rate \
                           reset_membrane stdp_update neuro_bias_logits \
                           membrane_dv_dt_reduce_pass1 routing_entropy_reduce_pass1 \
-                          latent_reduce_pass2 saaq_find_best_walker saaq_reduce_partials_f16; do
+                          latent_reduce_pass2; do
               if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
                   "$ptx_dir/spiking_network_sm_120.ptx"; then
                 echo "✓ $profile spiking_network: $kernel"
@@ -357,6 +407,27 @@ jobs:
           done
           echo ""
           echo "All kernel entry points verified for both debug and release."
+          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          for kernel in project_snapshot_current gif_step_weighted gif_step_weighted_f16 \
+                        saaq_find_best_walker saaq_reduce_partials_f16; do
+            if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
+                "$ptx_dir/spiking_network_sm_120.ptx"; then
+              echo "✓ debug (cuda,saaq) spiking_network: $kernel"
+            else
+              echo "::error::Missing SAAQ kernel entry in debug PTX: $kernel"
+              exit 1
+            fi
+          done
+          ptx_dir="$(ls -td target/release/build/myelin-accelerator-*/out | head -n1)"
+          for kernel in project_snapshot_current gif_step_weighted gif_step_weighted_f16 \
+                        saaq_find_best_walker saaq_reduce_partials_f16; do
+            if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
+                "$ptx_dir/spiking_network_sm_120.ptx"; then
+              echo "::error::SAAQ/GIF kernel $kernel present in release PTX without saaq"
+              exit 1
+            fi
+            echo "✓ release (cuda only) has no $kernel"
+          done
 
       - name: Offline ptxas assemble (sm_120)
         shell: bash

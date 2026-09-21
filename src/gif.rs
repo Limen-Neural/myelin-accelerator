@@ -3,6 +3,9 @@
 
 //! GIF / SAAQ host reference matching `cu/spiking_network.cu`.
 //!
+//! Experimental: compiled only with `--features saaq`. Not part of the
+//! default / crates.io Tier-1 public API.
+//!
 //! These constants and CPU kernels are the numerical reference for
 //! corinth-canal parity tests and for LIM-955 fusion work.
 

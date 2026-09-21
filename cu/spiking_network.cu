@@ -6,11 +6,11 @@
 //
 //  Kernels exported (name-exact for PTX symbol lookup in kernel.rs):
 //    poisson_encode       — rate-coded Poisson spike train
-//    project_snapshot_current — project 4-channel snapshot to per-neuron current
+//    project_snapshot_current — project 4-channel snapshot to per-neuron current (MYELIN_SAAQ)
 //    lif_step             — LIF neuron step (unweighted)
 //    lif_step_weighted    — LIF step with synaptic weight matrix
-//    gif_step_weighted    — GIF step with adaptation, dynamic threshold, f32 synapses
-//    gif_step_weighted_f16 — GIF step with f16 synapses (launched via myelin_shim)
+//    gif_step_weighted    — GIF step with adaptation, dynamic threshold, f32 synapses (MYELIN_SAAQ)
+//    gif_step_weighted_f16 — GIF step with f16 synapses via myelin_shim (MYELIN_SAAQ)
 //    spike_rate           — windowed firing-rate estimator
 //    reset_membrane       — reset membrane to resting potential
 //    stdp_update          — spike-timing-dependent plasticity
@@ -18,8 +18,8 @@
 //    membrane_dv_dt_reduce_pass1 — per-block reduction of |dv/dt|
 //    routing_entropy_reduce_pass1 — per-block reduction of routing entropy
 //    latent_reduce_pass2          — final reduction of pass1 partials
-//    saaq_find_best_walker        — SAAQ pass 1 argmax; one partial winner per block
-//    saaq_reduce_partials_f16     — SAAQ pass 2 over block partials; one u32 winner
+//    saaq_find_best_walker        — SAAQ pass 1 argmax; one partial winner per block (MYELIN_SAAQ)
+//    saaq_reduce_partials_f16     — SAAQ pass 2 over block partials; one u32 winner (MYELIN_SAAQ)
 //
 //  Parameters follow the 16-neuron / 16-channel architecture in
 //  neuro-spike-core/src/snn/engine.rs.
@@ -35,6 +35,7 @@
 #define LIF_RESET        0.0f    // reset potential after spike
 #define LIF_REFRACT_TICK 2       // integer ticks of absolute refractory period
 
+#ifdef MYELIN_SAAQ
 // ── GIF model constants (match SparseGifHiddenLayer / corinth-canal) ──
 #define GIF_LEAK             0.92f
 #define GIF_DRIVE_SCALE      0.75f
@@ -43,6 +44,7 @@
 #define GIF_ADAPTATION_DECAY 0.94f
 #define GIF_RESET_RATIO      0.35f
 #define GIF_ADAPTATION_TERM  0.05f
+#endif
 
 // Inactive-lane SAAQ score. Must match `SAAQ_SCORE_SENTINEL` in src/gif.rs.
 #define SAAQ_SCORE_SENTINEL (-INFINITY)
@@ -90,6 +92,7 @@ void poisson_encode(
 }
 
 // ════════════════════════════════════════════════════════════════════
+#ifdef MYELIN_SAAQ
 //  project_snapshot_current
 //
 //  Lightweight projection kernel that maps a 4-channel telemetry snapshot
@@ -142,6 +145,7 @@ void project_snapshot_current(
     float drive = 0.9f + channel * 0.45f + jitter;
     input_current[tid] = fmaxf(0.0f, drive);
 }
+#endif
 
 // ════════════════════════════════════════════════════════════════════
 //  lif_step
@@ -249,6 +253,7 @@ void lif_step_weighted(
     spikes_out[tid] = spike;
 }
 
+#ifdef MYELIN_SAAQ
 // ════════════════════════════════════════════════════════════════════
 //  gif_step_weighted
 //
@@ -382,6 +387,7 @@ void gif_step_weighted_f16(
     membrane[tid]   = v;
     spikes_out[tid] = spike;
 }
+#endif
 
 // ════════════════════════════════════════════════════════════════════
 //  spike_rate
@@ -691,6 +697,7 @@ void latent_reduce_pass2(
     }
 }
 
+#ifdef MYELIN_SAAQ
 // ════════════════════════════════════════════════════════════════════
 //  saaq_find_best_walker
 //
@@ -801,3 +808,4 @@ void saaq_reduce_partials_f16(
         best_walker_out[0] = (unsigned int)my_walker;
     }
 }
+#endif

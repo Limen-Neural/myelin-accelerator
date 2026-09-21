@@ -13,9 +13,9 @@
 //  path also fails we re-run cuModuleLoadDataEx with CU_JIT_LOG_VERBOSE
 //  and capture CU_JIT_ERROR_LOG_BUFFER / CU_JIT_INFO_LOG_BUFFER.
 //
-//  The Blackwell-critical F16 GIF and SAAQ paths launch through the
-//  C ABI shim in ffi.rs; their symbols are still registered here so
-//  consumers can profile the unfused baseline via get_function.
+//  The Blackwell-critical F16 GIF and SAAQ paths (feature `saaq`) launch
+//  through the C ABI shim in ffi.rs; their symbols are still registered here
+//  so consumers can profile the unfused baseline via get_function.
 // ════════════════════════════════════════════════════════════════════
 
 use crate::gpu::error::{GpuError, GpuResult};
@@ -47,6 +47,39 @@ static TERNARY_GEMM_FATBIN: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/ternary_gemm_sm_120.fatbin"));
 static TERNARY_GEMM_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/ternary_gemm_sm_120.ptx"));
 
+#[cfg(not(feature = "saaq"))]
+const SPIKING_NETWORK_SYMBOLS: &[&str] = &[
+    "poisson_encode",
+    "lif_step",
+    "lif_step_weighted",
+    "spike_rate",
+    "reset_membrane",
+    "stdp_update",
+    "neuro_bias_logits",
+    "membrane_dv_dt_reduce_pass1",
+    "routing_entropy_reduce_pass1",
+    "latent_reduce_pass2",
+];
+
+#[cfg(feature = "saaq")]
+const SPIKING_NETWORK_SYMBOLS: &[&str] = &[
+    "poisson_encode",
+    "project_snapshot_current",
+    "lif_step",
+    "lif_step_weighted",
+    "gif_step_weighted",
+    "gif_step_weighted_f16",
+    "spike_rate",
+    "reset_membrane",
+    "stdp_update",
+    "neuro_bias_logits",
+    "membrane_dv_dt_reduce_pass1",
+    "routing_entropy_reduce_pass1",
+    "latent_reduce_pass2",
+    "saaq_find_best_walker",
+    "saaq_reduce_partials_f16",
+];
+
 /// Manages compiled fatbin/PTX modules and kernel function handles.
 pub struct KernelModule {
     modules: HashMap<String, Module>,
@@ -75,23 +108,7 @@ impl KernelModule {
             SPIKING_NETWORK_FATBIN,
             SPIKING_NETWORK_PTX,
             "spiking_network",
-            &[
-                "poisson_encode",
-                "project_snapshot_current",
-                "lif_step",
-                "lif_step_weighted",
-                "gif_step_weighted",
-                "gif_step_weighted_f16",
-                "spike_rate",
-                "reset_membrane",
-                "stdp_update",
-                "neuro_bias_logits",
-                "membrane_dv_dt_reduce_pass1",
-                "routing_entropy_reduce_pass1",
-                "latent_reduce_pass2",
-                "saaq_find_best_walker",
-                "saaq_reduce_partials_f16",
-            ],
+            SPIKING_NETWORK_SYMBOLS,
         )?;
         Self::load_and_map(
             &mut modules,
@@ -303,8 +320,11 @@ mod tests {
 
         assert!(kernels.get_function("cosine_similarity_batched").is_ok());
         assert!(kernels.get_function("lif_step").is_ok());
-        assert!(kernels.get_function("gif_step_weighted").is_ok());
-        assert!(kernels.get_function("saaq_find_best_walker").is_ok());
+        #[cfg(feature = "saaq")]
+        {
+            assert!(kernels.get_function("gif_step_weighted").is_ok());
+            assert!(kernels.get_function("saaq_find_best_walker").is_ok());
+        }
         assert!(kernels.get_function("satsolver_step").is_ok());
         assert!(kernels.get_function("ternary_gemv").is_ok());
         assert!(kernels.get_function("ternary_gemm").is_ok());

@@ -6,7 +6,7 @@
 //! Corinth SAAQ fixtures that poke resident membrane buffers live as
 //! `#[ignore]` unit tests on `GpuAccelerator`.
 
-#![cfg(feature = "cuda")]
+#![cfg(all(feature = "cuda", feature = "saaq"))]
 
 use myelin_accelerator::gif::{GIF_ADAPTATION_SCALE, gif_step_weighted, saaq_find_best_walker};
 use myelin_accelerator::{GpuAccelerator, SnapshotChannels};
