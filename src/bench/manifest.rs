@@ -233,12 +233,86 @@ pub fn probe_power_clock() -> (Option<String>, PowerClockControls) {
     (uuid, power_clock)
 }
 
+/// True when `a` and `b` name the same filesystem path after resolving `.` /
+/// `..` and canonicalizing existing components. Used so `--output ./x` cannot
+/// clobber a `--baseline x` file via raw `Path` inequality.
+pub fn paths_refer_to_same_file(a: &Path, b: &Path) -> bool {
+    resolved_path(a) == resolved_path(b)
+}
+
+fn resolved_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let file_name = path.file_name();
+    if let Some(name) = file_name {
+        if parent.as_os_str().is_empty() {
+            if let Ok(cwd) = std::env::current_dir().and_then(|d| d.canonicalize()) {
+                return cwd.join(name);
+            }
+        } else if let Ok(parent_c) = parent.canonicalize() {
+            return parent_c.join(name);
+        }
+    }
+    lexical_absolute(path)
+}
+
+fn lexical_absolute(path: &Path) -> PathBuf {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let mut out = PathBuf::new();
+    for component in abs.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let _ = out.pop();
+            }
+            rest => out.push(rest.as_os_str()),
+        }
+    }
+    out
+}
+
+fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("manifest.json"));
+    let tmp = dir.join(format!(
+        ".{}.tmp.{}",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    if let Err(err) = std::fs::write(&tmp, contents) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
+    }
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(err)
+        }
+    }
+}
+
 /// Write a redacted, key-sorted pretty JSON manifest. Never used as a baseline overwrite helper.
+/// Bytes land in a same-directory temp file and are renamed into place so an
+/// interrupt cannot leave a truncated JSON baseline.
 pub fn write_canonical_manifest(path: &Path, manifest: &BenchmarkManifest) -> std::io::Result<()> {
     let ctx = RedactionContext::from_env();
     let text = redact_and_canonicalize(manifest, &ctx)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, text)
+    write_atomic(path, text)
 }
 
 fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
@@ -384,5 +458,53 @@ mod tests {
             ]
         );
         assert_eq!(obj["schema_version"], MANIFEST_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn dotted_relative_paths_refer_to_same_file() {
+        assert!(paths_refer_to_same_file(
+            Path::new("./bench.manifest.json"),
+            Path::new("bench.manifest.json"),
+        ));
+        assert!(paths_refer_to_same_file(
+            Path::new("nested/../bench.manifest.json"),
+            Path::new("bench.manifest.json"),
+        ));
+        assert!(!paths_refer_to_same_file(
+            Path::new("a.manifest.json"),
+            Path::new("b.manifest.json"),
+        ));
+    }
+
+    #[test]
+    fn write_canonical_manifest_replaces_via_rename() {
+        let dir = std::env::temp_dir().join(format!(
+            "myelin-manifest-atomic-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("out.manifest.json");
+        std::fs::write(&path, "{truncated").expect("pre-existing truncated file");
+        let manifest = BenchmarkManifest::new(
+            RunTiming {
+                warmup: 0,
+                samples: 0,
+                seed: None,
+            },
+            vec![],
+        );
+        write_canonical_manifest(&path, &manifest).expect("atomic write");
+        let text = std::fs::read_to_string(&path).expect("read");
+        serde_json::from_str::<BenchmarkManifest>(&text).expect("complete JSON");
+        let leftover = std::fs::read_dir(&dir)
+            .expect("list")
+            .filter_map(|e| e.ok())
+            .count();
+        assert_eq!(leftover, 1, "temp sibling must be renamed away");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -50,7 +50,8 @@
 use myelin_accelerator::bench::{
     BenchmarkManifest, ComparisonCase, DeviceIdentity, ManifestCase, RedactionContext,
     RegressionBudget, RegressionClass, SampleSource, SampleStats, compare_one, comparison_report,
-    enforce_budget_requested, probe_power_clock, redact_and_canonicalize, write_canonical_manifest,
+    enforce_budget_requested, paths_refer_to_same_file, probe_power_clock, redact_and_canonicalize,
+    write_canonical_manifest,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -136,17 +137,11 @@ impl Config {
         }
         let mut budget = RegressionBudget::default();
         if let Some(relative) = raw.budget_relative {
-            if relative < 0.0 {
-                eprintln!("--budget-relative must be >= 0");
-                std::process::exit(1);
-            }
+            require_non_negative_finite("--budget-relative", relative);
             budget.relative = relative;
         }
         if let Some(abs_us) = raw.budget_abs_us {
-            if abs_us < 0.0 {
-                eprintln!("--budget-abs-us must be >= 0");
-                std::process::exit(1);
-            }
+            require_non_negative_finite("--budget-abs-us", abs_us);
             budget.min_absolute_us = abs_us;
         }
         if let Some(min_samples) = raw.min_samples {
@@ -157,10 +152,7 @@ impl Config {
             budget.min_samples = min_samples;
         }
         if let Some(noisy) = raw.noisy_dispersion {
-            if noisy < 0.0 {
-                eprintln!("--noisy-dispersion must be >= 0");
-                std::process::exit(1);
-            }
+            require_non_negative_finite("--noisy-dispersion", noisy);
             budget.noisy_relative_dispersion = noisy;
         }
         Config {
@@ -206,6 +198,13 @@ fn consume_usize(args: &[String], i: &mut usize, flag: &str) -> Option<usize> {
             eprintln!("{flag} requires a non-negative integer, got \"{raw}\"");
             None
         }
+    }
+}
+
+fn require_non_negative_finite(flag: &str, value: f64) {
+    if !value.is_finite() || value < 0.0 {
+        eprintln!("{flag} must be a finite number >= 0, got {value}");
+        std::process::exit(1);
     }
 }
 
@@ -859,6 +858,18 @@ fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
     );
     println!("{:-<110}", "");
 
+    let mut unmatched_baseline: Vec<&str> = Vec::new();
+    if config.enforce_budget {
+        for base in &rows {
+            if !current.iter().any(|c| c.name == base.name) {
+                unmatched_baseline.push(base.name.as_str());
+            }
+        }
+        for name in &unmatched_baseline {
+            eprintln!("[bench] Baseline case missing from current run: {name}");
+        }
+    }
+
     let mut cases: Vec<ComparisonCase> = Vec::new();
     for curr in current {
         let Some(base) = rows.iter().find(|r| r.name == curr.name) else {
@@ -890,8 +901,16 @@ fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
     let report = comparison_report(cases, config.budget.clone(), config.enforce_budget);
     write_comparison(&report, &config.output_prefix);
 
-    if config.enforce_budget && report.has_failure() {
-        eprintln!("[bench] Regression budget exceeded (enforcement enabled).");
+    if config.enforce_budget && (!unmatched_baseline.is_empty() || report.has_failure()) {
+        if !unmatched_baseline.is_empty() {
+            eprintln!(
+                "[bench] {} baseline case(s) missing from current run (enforcement enabled).",
+                unmatched_baseline.len()
+            );
+        }
+        if report.has_failure() {
+            eprintln!("[bench] Regression budget exceeded (enforcement enabled).");
+        }
         1
     } else {
         0
@@ -977,7 +996,9 @@ fn output_collides_with_baseline(prefix: &str, baseline: &str) -> bool {
         format!("{prefix}.comparison.json"),
     ];
     let base = Path::new(baseline);
-    outputs.iter().any(|p| Path::new(p) == base)
+    outputs
+        .iter()
+        .any(|p| paths_refer_to_same_file(Path::new(p), base))
 }
 
 fn write_comparison(report: &myelin_accelerator::bench::ComparisonReport, prefix: &str) {
@@ -1017,7 +1038,7 @@ fn device_from_gpu(info: Option<&GpuInfo>, uuid: Option<String>) -> DeviceIdenti
         compute_capability: sm_arch_to_cc(&info.sm_arch),
         sm_arch: Some(info.sm_arch.clone()),
         driver_version: Some(info.driver_version.clone()),
-        runtime_version: Some(info.driver_version.clone()),
+        runtime_version: None,
         toolchain_version: Some(info.cuda_version.clone()),
         vram_total_mb: Some(info.vram_total_mb),
     }
@@ -1150,10 +1171,11 @@ fn main() {
     manifest.power_clock = power_clock;
 
     let manifest_path = PathBuf::from(format!("{}.manifest.json", config.output_prefix));
-    match write_canonical_manifest(&manifest_path, &manifest) {
-        Ok(()) => println!("[bench] Manifest written to {}", manifest_path.display()),
-        Err(err) => eprintln!("[bench] Could not write manifest: {err}"),
+    if let Err(err) = write_canonical_manifest(&manifest_path, &manifest) {
+        eprintln!("[bench] Could not write manifest: {err}");
+        std::process::exit(1);
     }
+    println!("[bench] Manifest written to {}", manifest_path.display());
 
     let mut exit_code = 0;
     if config.baseline.is_some() {

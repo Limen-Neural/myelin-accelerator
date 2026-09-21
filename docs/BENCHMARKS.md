@@ -73,8 +73,9 @@ MYELIN_BENCH_ENFORCE_BUDGET=1 \
 ```
 
 Either the environment variable (`1` / `true` / `yes` / `on`) or
-`--enforce-budget` turns on process failure, and **only** `class=fail` fails
-the process. Do not set this in ordinary GitHub-hosted CPU CI.
+`--enforce-budget` turns on process failure. The process then exits 1 on
+`class=fail` **or** when a baseline case is missing from the current run.
+Do not set this in ordinary GitHub-hosted CPU CI.
 
 Defaults: 10% relative, 2 µs absolute, 8 samples, 0.25 relative MAD.
 
@@ -89,8 +90,9 @@ overwrite:
    `tests/fixtures/bench/baselines/<host>.manifest.json`.
 4. Commit that copy in a PR.
 
-Do not point `--output` at the committed baseline path. The harness will
-refuse to clobber a `--baseline` file.
+Do not point `--output` at the committed baseline path. The harness
+canonicalizes `--baseline` and every output path before comparing, so
+`./x` and `x` are treated as the same file.
 
 Checked-in classification fixtures live at:
 
