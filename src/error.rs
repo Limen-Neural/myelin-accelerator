@@ -76,12 +76,24 @@ impl GpuError {
 impl fmt::Display for GpuError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            GpuError::InitFailed(s) => write!(f, "GPU init failed: {s}"),
-            GpuError::ModuleLoadFailed(s) => write!(f, "PTX module load failed: {s}"),
-            GpuError::KernelNotFound(s) => write!(f, "Kernel not found: {s}"),
-            GpuError::MemoryError(s) => write!(f, "GPU memory error: {s}"),
-            GpuError::LaunchFailed(s) => write!(f, "Kernel launch failed: {s}"),
-            GpuError::CudaError(s) => write!(f, "CUDA error: {s}"),
+            GpuError::InitFailed(s) => {
+                write!(f, "GPU init failed: {}", sanitize_diagnostic(s))
+            }
+            GpuError::ModuleLoadFailed(s) => {
+                write!(f, "PTX module load failed: {}", sanitize_diagnostic(s))
+            }
+            GpuError::KernelNotFound(s) => {
+                write!(f, "Kernel not found: {}", sanitize_diagnostic(s))
+            }
+            GpuError::MemoryError(s) => {
+                write!(f, "GPU memory error: {}", sanitize_diagnostic(s))
+            }
+            GpuError::LaunchFailed(s) => {
+                write!(f, "Kernel launch failed: {}", sanitize_diagnostic(s))
+            }
+            GpuError::CudaError(s) => {
+                write!(f, "CUDA error: {}", sanitize_diagnostic(s))
+            }
             GpuError::NoGpu => {
                 #[cfg(feature = "cuda")]
                 {
@@ -224,5 +236,36 @@ mod tests {
             invalid.to_string(),
             "invalid input: file=<path> password=<redacted>"
         );
+
+        let payload = "token=supersecret /home/alice/key".to_string();
+        let cases = [
+            (
+                GpuError::InitFailed(payload.clone()),
+                "GPU init failed: token=<redacted> <path>",
+            ),
+            (
+                GpuError::ModuleLoadFailed(payload.clone()),
+                "PTX module load failed: token=<redacted> <path>",
+            ),
+            (
+                GpuError::KernelNotFound(payload.clone()),
+                "Kernel not found: token=<redacted> <path>",
+            ),
+            (
+                GpuError::MemoryError(payload.clone()),
+                "GPU memory error: token=<redacted> <path>",
+            ),
+            (
+                GpuError::LaunchFailed(payload.clone()),
+                "Kernel launch failed: token=<redacted> <path>",
+            ),
+            (
+                GpuError::CudaError(payload),
+                "CUDA error: token=<redacted> <path>",
+            ),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(err.to_string(), expected);
+        }
     }
 }
