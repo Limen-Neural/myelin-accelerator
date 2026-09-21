@@ -61,7 +61,11 @@ void poisson_encode(
 
     unsigned int rng = lcg_next(seed ^ (unsigned int)tid);
     float threshold = stimuli[tid];
-    threshold = fmaxf(0.0f, fminf(1.0f, threshold));
+    // Preserve fminf/fmaxf's documented single-NaN behavior even under
+    // --use_fast_math, which may reassociate the clamp and map NaN to 0.
+    threshold = isnan(threshold)
+        ? 1.0f
+        : fmaxf(0.0f, fminf(1.0f, threshold));
 
     rng = lcg_next(rng);
     float r = lcg_float(rng);

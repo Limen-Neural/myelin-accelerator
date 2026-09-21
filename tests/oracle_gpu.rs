@@ -41,6 +41,22 @@ fn poisson_encode_matches_oracle_golden() {
 
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
+fn poisson_encode_nan_rate_matches_oracle() {
+    let acc = require_gpu();
+    let stim = [f32::NAN];
+    let expected = poisson_encode_oracle(&stim, 0);
+    let d_stim = GpuBuffer::from_slice(&stim).unwrap();
+    let mut d_spikes = GpuBuffer::<u32>::alloc(stim.len()).unwrap();
+
+    acc.poisson_encode(&d_stim, &mut d_spikes, 0)
+        .expect("poisson_encode NaN rate");
+
+    let got = d_spikes.to_vec().unwrap();
+    assert_exact(&got, &expected, 0, "n=1 stim=NaN");
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
 fn poisson_encode_matches_oracle_seeded_boundaries() {
     let acc = require_gpu();
     for &seed in CASE_SEEDS {
@@ -134,6 +150,56 @@ fn satsolver_aux_reduce_best_matches_oracle_golden() {
     assert_exact(&flags, &expected.sat_flags, 0, "n_walkers=2 n_clauses=2");
     assert_exact(&best_score, &[expected.best_score], 0, "best_score");
     assert_exact(&best_walker, &[expected.best_walker], 0, "best_walker");
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn satsolver_aux_reduce_best_tie_across_blocks_prefers_lower_index() {
+    let acc = require_gpu();
+    let n_walkers = 257usize;
+    let n_vars = 1usize;
+    let n_clauses = 1usize;
+    let clause_len = 1usize;
+    let assignment = vec![0u8; n_walkers * n_vars];
+    let clauses = vec![0i32];
+    let mut scores = vec![7i32; n_walkers];
+    scores[11] = -9;
+    scores[256] = -9;
+    let expected = satsolver_aux_reduce_best_oracle(
+        &assignment,
+        &scores,
+        &clauses,
+        n_walkers,
+        n_vars,
+        n_clauses,
+        clause_len,
+    );
+
+    let d_asgn = GpuBuffer::from_slice(&assignment).unwrap();
+    let mut d_flags = GpuBuffer::<u8>::alloc(n_walkers * n_clauses).unwrap();
+    let d_scores = GpuBuffer::from_slice(&scores).unwrap();
+    let mut d_best_score = GpuBuffer::from_slice(&[i32::MAX]).unwrap();
+    let mut d_best_walker = GpuBuffer::from_slice(&[-1i32]).unwrap();
+    let d_clauses = GpuBuffer::from_slice(&clauses).unwrap();
+
+    acc.satsolver_aux_reduce_best(
+        &d_asgn,
+        &mut d_flags,
+        &d_scores,
+        &mut d_best_score,
+        &mut d_best_walker,
+        &d_clauses,
+        n_walkers as i32,
+        n_vars as i32,
+        n_clauses as i32,
+        clause_len as i32,
+    )
+    .expect("aux_reduce_best tied scores across blocks");
+
+    let best_score = d_best_score.to_vec().unwrap();
+    let best_walker = d_best_walker.to_vec().unwrap();
+    assert_exact(&best_score, &[expected.best_score], 0, "tied best_score");
+    assert_exact(&best_walker, &[expected.best_walker], 0, "tied best_walker");
 }
 
 #[test]
