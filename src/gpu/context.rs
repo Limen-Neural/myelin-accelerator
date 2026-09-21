@@ -96,10 +96,15 @@ fn query_compute_capability(device: &Device) -> Option<ComputeCapability> {
 }
 
 fn device_lookup_failure(error: cust::error::CudaError) -> GpuError {
-    GpuError::unavailable(
-        FallbackReason::DeviceUnavailable,
-        format!("get_device(0): {error:?}"),
-    )
+    match error {
+        cust::error::CudaError::NoDevice | cust::error::CudaError::InvalidDevice => {
+            GpuError::unavailable(
+                FallbackReason::DeviceUnavailable,
+                format!("get_device(0): {error:?}"),
+            )
+        }
+        _ => GpuError::CudaError(sanitize_diagnostic(&format!("get_device(0): {error:?}"))),
+    }
 }
 
 #[cfg(test)]
@@ -112,6 +117,15 @@ mod tests {
         assert_eq!(
             error.fallback_reason(),
             Some(FallbackReason::DeviceUnavailable)
+        );
+    }
+
+    #[test]
+    fn device_lookup_runtime_failure_stays_driver_runtime_failure() {
+        let error = device_lookup_failure(cust::error::CudaError::Deinitialized);
+        assert_eq!(
+            error.fallback_reason(),
+            Some(FallbackReason::DriverRuntimeFailure)
         );
     }
 }

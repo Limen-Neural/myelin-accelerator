@@ -514,8 +514,7 @@ fn is_user_path(lower: &str) -> bool {
         || lower.contains("/.aws/")
         || (lower.len() >= 3
             && lower.as_bytes()[1] == b':'
-            && (lower.as_bytes()[2] == b'\\' || lower.as_bytes()[2] == b'/')
-            && (lower.contains("\\users\\") || lower.contains("/users/")))
+            && (lower.as_bytes()[2] == b'\\' || lower.as_bytes()[2] == b'/'))
 }
 
 fn is_secret_key(key: &str) -> bool {
@@ -871,5 +870,13 @@ mod tests {
             "failed /workspace/alice/private.ptx file=/mnt/data/model.ptx system=/usr/local/cuda",
         );
         assert_eq!(clean, "failed <path> file=<path> system=<path>");
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_arbitrary_windows_drive_paths() {
+        let clean = sanitize_diagnostic(
+            r"failed C:\workspace\alice\private.ptx file=C:\builds\alice\secret.ptx",
+        );
+        assert_eq!(clean, "failed <path> file=<path>");
     }
 }
