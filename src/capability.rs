@@ -24,9 +24,10 @@
 //! | true | true | true | true | true | any unknown | `Cpu` | `kernel_specialization_unavailable` |
 //! | true | true | true | true | true | all `true` | `Cuda` | — |
 //!
-//! `stream_creation_failure` is a post-probe construction failure that keeps
-//! successful runtime, device, and kernel facts intact. `invalid_input` is a
-//! request-level reason (bad launch arguments), not a host-probe outcome.
+//! `invalid_input` is a request-level reason (bad launch arguments), not a
+//! host-probe outcome. Stream setup can still fail after a successful probe
+//! with `driver_runtime_failure` while leaving observed runtime/device/kernel
+//! facts intact.
 
 use std::fmt;
 
@@ -92,7 +93,7 @@ impl fmt::Display for ExecutionPolicy {
 pub enum FallbackReason {
     /// Built without the `cuda` Cargo feature (PTX/kernels not compiled in).
     CudaFeatureNotBuilt,
-    /// CUDA driver/runtime init or stream setup failed.
+    /// CUDA driver/runtime init or post-init stream setup failed.
     DriverRuntimeFailure,
     /// No accessible CUDA device.
     DeviceUnavailable,
@@ -100,8 +101,6 @@ pub enum FallbackReason {
     UnsupportedHardware,
     /// Required PTX family or kernel symbol is missing after JIT.
     KernelSpecializationUnavailable,
-    /// CUDA initialized and kernels loaded, but stream creation failed.
-    StreamCreationFailure,
     /// Caller-supplied launch arguments are invalid.
     InvalidInput,
 }
@@ -115,7 +114,6 @@ impl FallbackReason {
             Self::DeviceUnavailable => "device_unavailable",
             Self::UnsupportedHardware => "unsupported_hardware",
             Self::KernelSpecializationUnavailable => "kernel_specialization_unavailable",
-            Self::StreamCreationFailure => "stream_creation_failure",
             Self::InvalidInput => "invalid_input",
         }
     }
@@ -347,6 +345,30 @@ pub fn evaluate_capabilities(facts: &CapabilityFacts) -> CapabilityReport {
         kernels: facts.kernels,
         selected_backend,
         fallback,
+    }
+}
+
+/// Overlay a construction-time fallback onto observed [`CapabilityFacts`].
+///
+/// After every kernel family has JIT-loaded, `DriverRuntimeFailure` is treated
+/// as a later stream/setup failure: runtime and device stay available.
+pub(crate) fn apply_failure_to_facts(facts: &mut CapabilityFacts, reason: FallbackReason) {
+    match reason {
+        FallbackReason::CudaFeatureNotBuilt => {
+            facts.cuda_built = false;
+            facts.kernels = KernelAvailability::not_compiled();
+        }
+        FallbackReason::DriverRuntimeFailure => {
+            if !facts.kernels.all_runtime_available() {
+                facts.runtime_available = false;
+            }
+        }
+        FallbackReason::DeviceUnavailable => {
+            facts.device_available = false;
+        }
+        FallbackReason::UnsupportedHardware
+        | FallbackReason::KernelSpecializationUnavailable
+        | FallbackReason::InvalidInput => {}
     }
 }
 
@@ -912,15 +934,56 @@ mod tests {
                 "kernel_specialization_unavailable",
             ),
             (FallbackReason::InvalidInput, "invalid_input"),
-            (
-                FallbackReason::StreamCreationFailure,
-                "stream_creation_failure",
-            ),
         ];
         for (reason, code) in expected {
             assert_eq!(reason.code(), code);
             assert_eq!(reason.to_string(), code);
         }
+    }
+
+    #[test]
+    fn stream_setup_driver_failure_keeps_observed_runtime_and_device() {
+        let mut facts = facts(
+            true,
+            true,
+            true,
+            Some(ComputeCapability::REQUIRED),
+            KernelAvailability::all_available(),
+        );
+        apply_failure_to_facts(&mut facts, FallbackReason::DriverRuntimeFailure);
+
+        assert!(facts.runtime_available);
+        assert!(facts.device_available);
+        assert!(facts.kernels.all_runtime_available());
+
+        let mut report = evaluate_capabilities(&facts);
+        report.selected_backend = Backend::Cpu;
+        report.fallback = Some(FallbackRecord::cpu(
+            FallbackReason::DriverRuntimeFailure,
+            "stream creation failed",
+        ));
+
+        assert!(report.runtime_available);
+        assert!(report.device_available);
+        assert_eq!(report.selected_backend, Backend::Cpu);
+        assert!(!report.gpu_usable());
+        assert_eq!(
+            report.fallback.as_ref().map(|fb| fb.reason),
+            Some(FallbackReason::DriverRuntimeFailure)
+        );
+    }
+
+    #[test]
+    fn driver_runtime_failure_before_jit_still_clears_runtime() {
+        let mut facts = facts(
+            true,
+            true,
+            true,
+            Some(ComputeCapability::REQUIRED),
+            KernelAvailability::compiled_unverified(),
+        );
+        apply_failure_to_facts(&mut facts, FallbackReason::DriverRuntimeFailure);
+        assert!(!facts.runtime_available);
     }
 
     #[test]
