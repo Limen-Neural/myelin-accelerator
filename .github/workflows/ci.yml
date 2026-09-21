@@ -416,8 +416,6 @@ jobs:
                 exit 1
               fi
             done
-
-            done
           done
           echo ""
           echo "All kernel entry points verified for both debug and release."
