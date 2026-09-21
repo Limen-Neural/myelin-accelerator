@@ -4,7 +4,8 @@
 use crate::bitpacking::TERNARY_VALUES_PER_WORD;
 use crate::capability::{
     Backend, CapabilityFacts, CapabilityReport, ComputeCapability, ExecutionPolicy, FallbackReason,
-    FallbackRecord, KernelAvailability, evaluate_capabilities, sanitize_diagnostic,
+    FallbackRecord, KernelAvailability, apply_failure_to_facts, evaluate_capabilities,
+    sanitize_diagnostic,
 };
 use crate::gpu::context::GpuContext;
 use crate::gpu::error::{GpuError, GpuResult};
@@ -133,7 +134,7 @@ impl GpuAccelerator {
             Err(e) => {
                 return Err(InitFailure {
                     facts,
-                    reason: FallbackReason::StreamCreationFailure,
+                    reason: FallbackReason::DriverRuntimeFailure,
                     detail: format!("{e:?}"),
                 });
             }
@@ -766,25 +767,6 @@ fn capability_report_for_failure(
     report
 }
 
-fn apply_failure_to_facts(facts: &mut CapabilityFacts, reason: FallbackReason) {
-    match reason {
-        FallbackReason::CudaFeatureNotBuilt => {
-            facts.cuda_built = false;
-            facts.kernels = KernelAvailability::not_compiled();
-        }
-        FallbackReason::DriverRuntimeFailure => {
-            facts.runtime_available = false;
-        }
-        FallbackReason::DeviceUnavailable => {
-            facts.device_available = false;
-        }
-        FallbackReason::UnsupportedHardware => {}
-        FallbackReason::KernelSpecializationUnavailable => {}
-        FallbackReason::StreamCreationFailure => {}
-        FallbackReason::InvalidInput => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,30 +829,5 @@ mod tests {
         assert!(report.device_available);
         assert!(report.gpu_usable());
         assert_eq!(report.selected_backend, Backend::Cuda);
-    }
-
-    #[test]
-    fn stream_failure_preserves_verified_runtime_device_and_kernels() {
-        let facts = CapabilityFacts {
-            cuda_built: true,
-            runtime_available: true,
-            device_available: true,
-            compute_capability: Some(ComputeCapability::REQUIRED),
-            kernels: KernelAvailability::all_available(),
-        };
-
-        let report = capability_report_for_failure(
-            facts,
-            FallbackReason::StreamCreationFailure,
-            "stream creation failed",
-        );
-
-        assert!(report.runtime_available);
-        assert!(report.device_available);
-        assert!(report.kernels.all_runtime_available());
-        assert_eq!(
-            report.fallback.expect("fallback").reason,
-            FallbackReason::StreamCreationFailure
-        );
     }
 }

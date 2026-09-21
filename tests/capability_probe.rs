@@ -139,7 +139,6 @@ fn cuda_build_reports_compiled_and_gates_device_assertions() {
                 | FallbackReason::DeviceUnavailable
                 | FallbackReason::UnsupportedHardware
                 | FallbackReason::KernelSpecializationUnavailable
-                | FallbackReason::StreamCreationFailure
         ));
         assert!(GpuAccelerator::require_gpu().is_err());
     }
