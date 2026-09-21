@@ -63,11 +63,10 @@ impl GpuError {
                     Some(FallbackReason::CudaFeatureNotBuilt)
                 }
             }
-            Self::InitFailed(_) => Some(FallbackReason::DriverRuntimeFailure),
-            Self::ModuleLoadFailed(_) | Self::KernelNotFound(_) => {
-                Some(FallbackReason::KernelSpecializationUnavailable)
+            Self::InitFailed(_) | Self::ModuleLoadFailed(_) | Self::CudaError(_) => {
+                Some(FallbackReason::DriverRuntimeFailure)
             }
-            Self::CudaError(_) => Some(FallbackReason::DriverRuntimeFailure),
+            Self::KernelNotFound(_) => Some(FallbackReason::KernelSpecializationUnavailable),
             Self::MemoryError(_) | Self::LaunchFailed(_) => None,
         }
     }
@@ -182,6 +181,14 @@ mod tests {
             GpuError::CudaError("InvalidContext".into()).fallback_reason(),
             Some(FallbackReason::DriverRuntimeFailure)
         );
+        assert_eq!(
+            GpuError::ModuleLoadFailed("InvalidPtx".into()).fallback_reason(),
+            Some(FallbackReason::DriverRuntimeFailure)
+        );
+        assert_eq!(
+            GpuError::KernelNotFound("lif_step".into()).fallback_reason(),
+            Some(FallbackReason::KernelSpecializationUnavailable)
+        );
     }
 
     #[cfg(feature = "cuda")]
@@ -195,7 +202,7 @@ mod tests {
         );
         assert_eq!(
             GpuError::from(CudaError::InvalidPtx).fallback_reason(),
-            Some(FallbackReason::KernelSpecializationUnavailable)
+            Some(FallbackReason::DriverRuntimeFailure)
         );
         assert_eq!(
             GpuError::from(CudaError::InvalidContext).fallback_reason(),

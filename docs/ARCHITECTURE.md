@@ -145,8 +145,11 @@ internal files.
 Call `probe_capabilities()` (or `evaluate_capabilities` with mocked
 `CapabilityFacts`) for a typed snapshot: build-time CUDA support, driver
 runtime, device presence, compute capability, kernel-family availability, and
-the selected backend. Diagnostics are sanitized (no absolute user paths or
-secret assignments) and reason codes are stable snake_case tokens.
+the selected backend. The host probe is light: CUDA builds report compiled PTX
+with runtime family fields left unverified (`None`) until
+`GpuAccelerator` construction JIT-loads modules and checks required symbols.
+Diagnostics are sanitized (no absolute user paths or secret assignments) and
+reason codes are stable snake_case tokens.
 
 `GpuAccelerator` construction uses one policy:
 
