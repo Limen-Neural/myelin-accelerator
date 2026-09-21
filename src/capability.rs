@@ -490,7 +490,12 @@ pub fn sanitize_diagnostic(input: &str) -> String {
 
 fn redact_secret_sequence(tokens: &[&str]) -> Option<(Vec<String>, usize)> {
     let (_, core, suffix) = split_wrapping_punct(tokens[0]);
-    if core.contains('=') || json_assignment_parts(core).is_some() {
+    if core.contains('=')
+        || core
+            .split_once(':')
+            .is_some_and(|(_, value)| !value.is_empty())
+        || json_assignment_parts(core).is_some()
+    {
         return None;
     }
     let key = core
@@ -600,11 +605,23 @@ fn sanitize_token(tok: &str) -> String {
         let assignment_suffix = value_quote
             .and_then(|quote| suffix.strip_prefix(quote))
             .unwrap_or(suffix);
-        if is_secret_key(key) {
+        if is_secret_key(key.trim_start_matches('-')) {
             return format!("{prefix}{orig_key}=<redacted>{assignment_suffix}");
         }
         if is_user_path(bare_value) {
             return format!("{prefix}{orig_key}=<path>{assignment_suffix}");
+        }
+    }
+    if let Some((key, value)) = lower.split_once(':')
+        && !value.is_empty()
+    {
+        let orig_key = core.split_once(':').map(|(key, _)| key).unwrap_or(core);
+        let normalized_key = key.trim_start_matches('-');
+        if is_secret_key(normalized_key) {
+            return format!("{prefix}{orig_key}:<redacted>{suffix}");
+        }
+        if is_user_path(value) {
+            return format!("{prefix}{orig_key}:<path>{suffix}");
         }
     }
     tok.to_string()
@@ -1201,6 +1218,8 @@ mod tests {
                 "AWS_SECRET_ACCESS_KEY = abc ok",
                 "AWS_SECRET_ACCESS_KEY = <redacted> ok",
             ),
+            ("token:hunter2 ok", "token:<redacted> ok"),
+            ("api-key:supersecret ok", "api-key:<redacted> ok"),
         ];
 
         for (input, expected) in cases {
