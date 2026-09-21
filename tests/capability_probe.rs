@@ -143,3 +143,37 @@ fn cuda_build_reports_compiled_and_gates_device_assertions() {
         assert!(GpuAccelerator::require_gpu().is_err());
     }
 }
+
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "requires a CUDA device and driver"]
+fn probe_preserves_the_callers_current_cuda_context() {
+    use cust::context::legacy::{Context, ContextFlags};
+    use cust::device::Device;
+    use std::ptr;
+
+    cust::init(cust::CudaFlags::empty()).expect("CUDA driver initializes");
+    let device = Device::get_device(0).expect("CUDA device 0 is available");
+    let caller_context = Context::create_and_push(ContextFlags::SCHED_AUTO, device)
+        .expect("caller context can be created");
+
+    let current_context = || {
+        let mut context = ptr::null_mut();
+        // SAFETY: CUDA is initialized and `context` points to writable storage.
+        unsafe {
+            assert_eq!(
+                cust::sys::cuCtxGetCurrent(&mut context),
+                cust::sys::CUresult::CUDA_SUCCESS,
+                "current CUDA context can be queried"
+            );
+        }
+        context
+    };
+
+    let before = current_context();
+    assert!(!before.is_null(), "test must start with a current context");
+    let _ = probe_capabilities();
+    assert_eq!(current_context(), before);
+
+    drop(caller_context);
+}

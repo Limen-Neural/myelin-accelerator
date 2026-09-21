@@ -330,7 +330,35 @@ impl CapabilityReport {
 /// report instead of probing repeatedly.
 #[must_use]
 pub fn probe_capabilities() -> CapabilityReport {
+    #[cfg(feature = "cuda")]
+    let _restore_current_context = CurrentContextRestore::capture();
     crate::GpuAccelerator::new().capabilities().clone()
+}
+
+#[cfg(feature = "cuda")]
+struct CurrentContextRestore(Option<cust::context::legacy::UnownedContext>);
+
+#[cfg(feature = "cuda")]
+impl CurrentContextRestore {
+    fn capture() -> Self {
+        use cust::context::legacy::CurrentContext;
+
+        let current = cust::init(cust::CudaFlags::empty())
+            .and_then(|()| CurrentContext::get_current())
+            .ok();
+        Self(current)
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Drop for CurrentContextRestore {
+    fn drop(&mut self) {
+        use cust::context::legacy::CurrentContext;
+
+        if let Some(context) = &self.0 {
+            let _ = CurrentContext::set_current(context);
+        }
+    }
 }
 
 /// Pure decision function over [`CapabilityFacts`] (mocked tests welcome).
@@ -443,6 +471,11 @@ pub fn sanitize_diagnostic(input: &str) -> String {
             index += consumed;
             continue;
         }
+        if let Some((redacted, consumed)) = redact_secret_sequence(&tokens[index..]) {
+            out.extend(redacted);
+            index += consumed;
+            continue;
+        }
         if json_secret_key_without_value(tokens[index]) && index + 1 < tokens.len() {
             out.push(sanitize_token(tokens[index]));
             out.push(redact_following_value_token(tokens[index + 1]));
@@ -453,6 +486,56 @@ pub fn sanitize_diagnostic(input: &str) -> String {
         index += 1;
     }
     out.join(" ")
+}
+
+fn redact_secret_sequence(tokens: &[&str]) -> Option<(Vec<String>, usize)> {
+    let (_, core, suffix) = split_wrapping_punct(tokens[0]);
+    if core.contains('=') || json_assignment_parts(core).is_some() {
+        return None;
+    }
+    let key = core
+        .trim_end_matches(':')
+        .trim_matches(|ch| matches!(ch, '"' | '\''))
+        .trim_start_matches('-');
+    if key.is_empty()
+        || key.chars().any(char::is_whitespace)
+        || !is_secret_key(&key.to_ascii_lowercase())
+    {
+        return None;
+    }
+
+    let key_has_separator = core.ends_with(':') || suffix.contains(':');
+    if key_has_separator {
+        let value = tokens.get(1)?;
+        return Some((
+            vec![
+                sanitize_token(tokens[0]),
+                redact_following_value_token(value),
+            ],
+            2,
+        ));
+    }
+
+    if matches!(tokens.get(1).copied(), Some("=" | ":")) {
+        let value = tokens.get(2)?;
+        return Some((
+            vec![
+                sanitize_token(tokens[0]),
+                sanitize_token(tokens[1]),
+                redact_following_value_token(value),
+            ],
+            3,
+        ));
+    }
+
+    let value = tokens.get(1)?;
+    Some((
+        vec![
+            sanitize_token(tokens[0]),
+            redact_following_value_token(value),
+        ],
+        2,
+    ))
 }
 
 fn diagnostic_tokens(input: &str) -> Vec<&str> {
@@ -1106,6 +1189,27 @@ mod tests {
             clean,
             "AWS_SECRET_ACCESS_KEY=<redacted> MY_API_KEY=<redacted> service_authorization=<redacted> AWS_ACCESS_KEY_ID=<redacted> x-api-key=<redacted>"
         );
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_separated_credentials() {
+        let cases = [
+            ("password = hunter2 ok", "password = <redacted> ok"),
+            ("token: hunter2 ok", "token: <redacted> ok"),
+            ("--api-key hunter2 ok", "--api-key <redacted> ok"),
+            (
+                "AWS_SECRET_ACCESS_KEY = abc ok",
+                "AWS_SECRET_ACCESS_KEY = <redacted> ok",
+            ),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(sanitize_diagnostic(input), expected, "input={input}");
+            assert!(
+                !sanitize_diagnostic(input).contains("hunter2"),
+                "input={input}"
+            );
+        }
     }
 
     #[test]
