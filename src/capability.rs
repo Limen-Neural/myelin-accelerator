@@ -412,11 +412,25 @@ pub fn sanitize_diagnostic(input: &str) -> String {
     if input.is_empty() {
         return String::new();
     }
-    diagnostic_tokens(input)
-        .into_iter()
-        .map(sanitize_token)
-        .collect::<Vec<_>>()
-        .join(" ")
+    let tokens = diagnostic_tokens(input);
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut index = 0;
+    while index < tokens.len() {
+        if let Some((redacted, consumed)) = redact_authorization_sequence(&tokens[index..]) {
+            out.extend(redacted);
+            index += consumed;
+            continue;
+        }
+        if json_secret_key_without_value(tokens[index]) && index + 1 < tokens.len() {
+            out.push(sanitize_token(tokens[index]));
+            out.push(redact_following_value_token(tokens[index + 1]));
+            index += 2;
+            continue;
+        }
+        out.push(sanitize_token(tokens[index]));
+        index += 1;
+    }
+    out.join(" ")
 }
 
 fn diagnostic_tokens(input: &str) -> Vec<&str> {
@@ -466,6 +480,12 @@ fn sanitize_token(tok: &str) -> String {
     if is_user_path(&lower) {
         return format!("{prefix}<path>{suffix}");
     }
+    if let Some(redacted) = redact_authorization_core(core) {
+        return format!("{prefix}{redacted}{suffix}");
+    }
+    if let Some(redacted) = redact_json_assignment(core) {
+        return format!("{prefix}{redacted}{suffix}");
+    }
     if let Some((key, value)) = lower.split_once('=') {
         let orig_key = core.split_once('=').map(|(k, _)| k).unwrap_or(core);
         let value_quote = value.chars().next().filter(|ch| matches!(ch, '"' | '\''));
@@ -483,6 +503,145 @@ fn sanitize_token(tok: &str) -> String {
         }
     }
     tok.to_string()
+}
+
+fn redact_authorization_sequence(tokens: &[&str]) -> Option<(Vec<String>, usize)> {
+    let (header_prefix, header_core, header_suffix) = split_wrapping_punct(tokens[0]);
+    if !authorization_header_token(header_core, header_suffix) {
+        return None;
+    }
+    if redact_authorization_core(header_core).is_some() {
+        return None;
+    }
+    if tokens.len() < 2 || !is_http_auth_scheme_token(tokens[1]) {
+        return None;
+    }
+    let mut redacted = vec![
+        format!("{header_prefix}{header_core}{header_suffix}"),
+        sanitize_token(tokens[1]),
+    ];
+    if tokens.len() >= 3 && !json_secret_key_without_value(tokens[2]) {
+        let (_, scheme_core, _) = split_wrapping_punct(tokens[1]);
+        if scheme_core.split_whitespace().nth(1).is_none() {
+            redacted.push(redact_following_value_token(tokens[2]));
+            return Some((redacted, 3));
+        }
+    }
+    Some((redacted, 2))
+}
+
+fn authorization_header_token(core: &str, suffix: &str) -> bool {
+    let lower = core.to_ascii_lowercase();
+    if lower == "authorization" {
+        return suffix.starts_with(':');
+    }
+    lower
+        .strip_prefix("authorization:")
+        .map(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        .unwrap_or(false)
+}
+
+fn is_http_auth_scheme_token(tok: &str) -> bool {
+    let (_, core, _) = split_wrapping_punct(tok);
+    let scheme = core
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '\''))
+        .find(|part| !part.is_empty())
+        .unwrap_or(core);
+    scheme.eq_ignore_ascii_case("bearer") || scheme.eq_ignore_ascii_case("basic")
+}
+
+fn redact_authorization_core(core: &str) -> Option<String> {
+    let lower = core.to_ascii_lowercase();
+    const HEADER: &str = "authorization:";
+    let after_header = lower.strip_prefix(HEADER)?;
+    let trim_len = after_header.len() - after_header.trim_start().len();
+    let rest_lower = after_header.trim_start();
+    for scheme in ["bearer", "basic"] {
+        let Some(after_scheme) = rest_lower.strip_prefix(scheme) else {
+            continue;
+        };
+        if after_scheme.is_empty() {
+            return None;
+        }
+        let sep = after_scheme.chars().next()?;
+        if !(sep.is_whitespace() || matches!(sep, '"' | '\'')) {
+            continue;
+        }
+        let prefix_len = HEADER.len() + trim_len + scheme.len();
+        let orig_prefix = &core[..prefix_len];
+        if sep == '"' {
+            return Some(format!("{orig_prefix}\"<redacted>\""));
+        }
+        if sep == '\'' {
+            return Some(format!("{orig_prefix}'<redacted>'"));
+        }
+        return Some(format!("{orig_prefix} <redacted>"));
+    }
+    None
+}
+
+fn json_assignment_parts(core: &str) -> Option<(&str, &'static str, &str)> {
+    const SEPARATORS: [&str; 6] = [r#"":""#, "':'", r#"":'"#, r#"':""#, r#"":"#, "':"];
+    for sep in SEPARATORS {
+        if let Some((key, value)) = core.split_once(sep) {
+            if key.is_empty() || key.chars().any(char::is_whitespace) {
+                continue;
+            }
+            return Some((key, sep, value));
+        }
+    }
+    None
+}
+
+fn redact_json_assignment(core: &str) -> Option<String> {
+    let (key, sep, value) = json_assignment_parts(core)?;
+    let key_lower = key
+        .trim_matches(|ch| matches!(ch, '"' | '\''))
+        .to_ascii_lowercase();
+    let (bare_value, remainder) = split_json_value(value, sep);
+    let replacement = if is_secret_key(&key_lower) {
+        "<redacted>"
+    } else if is_user_path(&bare_value.to_ascii_lowercase()) {
+        "<path>"
+    } else {
+        return None;
+    };
+    Some(format!("{key}{sep}{replacement}{remainder}"))
+}
+
+fn split_json_value<'a>(value: &'a str, sep: &str) -> (&'a str, &'a str) {
+    if let Some(quote) = sep.chars().last().filter(|ch| matches!(ch, '"' | '\''))
+        && let Some(idx) = value.find(quote)
+    {
+        return (&value[..idx], &value[idx..]);
+    }
+    (value, "")
+}
+
+fn json_secret_key_without_value(tok: &str) -> bool {
+    let (_, core, suffix) = split_wrapping_punct(tok);
+    if json_assignment_parts(core).is_some() {
+        return false;
+    }
+    let had_colon = suffix.contains(':') || core.ends_with(':');
+    if !had_colon {
+        return false;
+    }
+    let key = core
+        .trim_end_matches(':')
+        .trim_matches(|ch| matches!(ch, '"' | '\''));
+    if key.is_empty() || key.chars().any(char::is_whitespace) {
+        return false;
+    }
+    is_secret_key(&key.to_ascii_lowercase())
+}
+
+fn redact_following_value_token(tok: &str) -> String {
+    let (prefix, core, suffix) = split_wrapping_punct(tok);
+    if is_user_path(&core.to_ascii_lowercase()) {
+        return format!("{prefix}<path>{suffix}");
+    }
+    format!("{prefix}<redacted>{suffix}")
 }
 
 fn split_wrapping_punct(tok: &str) -> (&str, &str, &str) {
@@ -878,5 +1037,61 @@ mod tests {
             r"failed C:\workspace\alice\private.ptx file=C:\builds\alice\secret.ptx",
         );
         assert_eq!(clean, "failed <path> file=<path>");
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_http_authorization_headers() {
+        let cases = [
+            (
+                "probe Authorization: Bearer supersecret ok",
+                "probe Authorization: Bearer <redacted> ok",
+            ),
+            (
+                "probe Authorization: Basic dXNlcjpwYXNz ok",
+                "probe Authorization: Basic <redacted> ok",
+            ),
+            (
+                r#"probe "Authorization: Bearer supersecret" ok"#,
+                r#"probe "Authorization: Bearer <redacted>" ok"#,
+            ),
+            (
+                "probe authorization: bearer SUPERSECRET ok",
+                "probe authorization: bearer <redacted> ok",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(sanitize_diagnostic(input), expected, "input={input}");
+            assert!(
+                !sanitize_diagnostic(input)
+                    .to_ascii_lowercase()
+                    .contains("supersecret"),
+                "input={input}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_json_credential_fields() {
+        let cases = [
+            (
+                r#"{"authToken":"supersecret","ok":true}"#,
+                r#"{"authToken":"<redacted>","ok":true}"#,
+            ),
+            (
+                r#"{"password":"hunter2"} tail"#,
+                r#"{"password":"<redacted>"} tail"#,
+            ),
+            (
+                r#"{"authToken": "supersecret"} tail"#,
+                r#"{"authToken": "<redacted>"} tail"#,
+            ),
+            (
+                r#"{"file":"/home/alice/private.ptx"}"#,
+                r#"{"file":"<path>"}"#,
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(sanitize_diagnostic(input), expected, "input={input}");
+        }
     }
 }
