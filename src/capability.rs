@@ -796,6 +796,7 @@ fn split_wrapping_punct(tok: &str) -> (&str, &str, &str) {
 
 fn is_user_path(lower: &str) -> bool {
     lower.starts_with('/')
+        || lower.starts_with(r"\\")
         || lower.contains("/.ssh/")
         || lower.contains("/.aws/")
         || (lower.len() >= 3
@@ -1243,6 +1244,12 @@ mod tests {
                 r"cache=D:/builds/alice/cache.bin leftover",
                 "cache=<path> leftover",
             ),
+            (
+                r"failed \\server\share\alice\private.ptx ok",
+                "failed <path> ok",
+            ),
+            (r"file=\\server\share\alice\private.ptx", "file=<path>"),
+            (r"device=\\?\C:\private.ptx", "device=<path>"),
             (
                 r#"module="C:\workspace\alice\private.ptx" tail"#,
                 "module=<path> tail",
