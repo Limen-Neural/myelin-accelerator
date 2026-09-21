@@ -426,7 +426,11 @@ fn diagnostic_tokens(input: &str) -> Vec<&str> {
         match quote {
             Some(open) if ch == open => quote = None,
             Some(_) => {}
-            None if matches!(ch, '"' | '\'') => quote = Some(ch),
+            None if matches!(ch, '"' | '\'')
+                && quote_opens_group(input, start.expect("token start is set"), index) =>
+            {
+                quote = Some(ch);
+            }
             None if ch.is_whitespace() => {
                 if let Some(token_start) = start.take() {
                     tokens.push(&input[token_start..index]);
@@ -440,6 +444,11 @@ fn diagnostic_tokens(input: &str) -> Vec<&str> {
         tokens.push(&input[token_start..]);
     }
     tokens
+}
+
+fn quote_opens_group(input: &str, token_start: usize, quote_index: usize) -> bool {
+    let before_quote = &input[token_start..quote_index];
+    before_quote.ends_with('=') || before_quote.chars().all(|ch| matches!(ch, '(' | '[' | '{'))
 }
 
 fn sanitize_token(tok: &str) -> String {
@@ -820,5 +829,13 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(sanitize_diagnostic(input), expected, "input={input}");
         }
+    }
+
+    #[test]
+    fn sanitize_diagnostic_does_not_treat_contractions_as_quotes() {
+        assert_eq!(
+            sanitize_diagnostic("driver can't load /home/alice/private.ptx"),
+            "driver can't load <path>"
+        );
     }
 }
