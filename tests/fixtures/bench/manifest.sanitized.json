@@ -6,7 +6,7 @@
         "n": 256
       },
       "kernel_variant": "host-bitpack",
-      "mad_us": 0.0,
+      "mad_us": 0.03,
       "max_us": 1.25,
       "mean_us": 1.2,
       "median_us": 1.2,
@@ -15,7 +15,7 @@
       "p50_us": 1.2,
       "p95_us": 1.25,
       "p99_us": 1.25,
-      "relative_dispersion": 0.0,
+      "relative_dispersion": 0.025,
       "samples": 8,
       "samples_us": [1.15, 1.16, 1.18, 1.2, 1.2, 1.22, 1.24, 1.25],
       "seed": null,
@@ -45,7 +45,7 @@
   },
   "run": {
     "samples": 8,
-    "seed": 42,
+    "seed": null,
     "warmup": 2
   },
   "toolchain": {

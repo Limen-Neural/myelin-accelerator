@@ -73,5 +73,9 @@ mod tests {
         assert_eq!(keys, vec!["a", "api_token", "nested", "z"]);
         assert_eq!(obj["z"], json!("$HOME/.cargo/bin/nvcc"));
         assert_eq!(obj["api_token"], json!("$REDACTED"));
+        assert_eq!(
+            obj["nested"],
+            json!({ "a": "alice-only-path-skip", "b": 1 })
+        );
     }
 }

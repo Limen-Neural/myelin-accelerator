@@ -1157,9 +1157,6 @@ fn main() {
         std::process::exit(1);
     }
 
-    write_json(&report, &config.output_prefix);
-    write_csv(&results, &config.output_prefix);
-
     let (uuid, power_clock) = probe_power_clock();
     let cases: Vec<ManifestCase> = captures.into_iter().map(|c| c.case).collect();
     let mut manifest = BenchmarkManifest::new(
@@ -1175,6 +1172,9 @@ fn main() {
         manifest.device.toolchain_version = manifest.toolchain.nvcc.clone();
     }
     manifest.power_clock = power_clock;
+
+    write_json(&report, &config.output_prefix);
+    write_csv(&results, &config.output_prefix);
 
     let manifest_path = PathBuf::from(format!("{}.manifest.json", config.output_prefix));
     if let Err(err) = write_canonical_manifest(&manifest_path, &manifest) {

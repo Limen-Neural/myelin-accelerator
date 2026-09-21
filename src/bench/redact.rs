@@ -21,9 +21,9 @@ impl RedactionContext {
             .or_else(|| std::env::var("USERPROFILE").ok().filter(|s| !s.is_empty()));
         let user = std::env::var("USER")
             .ok()
-            .or_else(|| std::env::var("USERNAME").ok())
-            .or_else(|| std::env::var("LOGNAME").ok())
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var("USERNAME").ok().filter(|s| !s.is_empty()))
+            .or_else(|| std::env::var("LOGNAME").ok().filter(|s| !s.is_empty()));
         Self { home, user }
     }
 
@@ -36,7 +36,7 @@ impl RedactionContext {
             s = s.replace(home, "$HOME");
         }
         if let Some(user) = self.user.as_deref()
-            && user.len() >= 2
+            && !user.is_empty()
         {
             for prefix in ["/home/", "/Users/", "C:\\Users\\", "C:/Users/"] {
                 s = s.replace(&format!("{prefix}{user}"), "$HOME");
@@ -44,7 +44,11 @@ impl RedactionContext {
             s = replace_path_component(&s, user, "$USER");
         }
         s = redact_secret_tokens(&s);
-        normalize_slashes(&s)
+        if looks_like_windows_path(&s) {
+            normalize_slashes(&s)
+        } else {
+            s
+        }
     }
 }
 
@@ -205,6 +209,17 @@ fn normalize_slashes(input: &str) -> String {
     out
 }
 
+fn looks_like_windows_path(input: &str) -> bool {
+    input.starts_with("\\\\")
+        || input.contains("$HOME\\")
+        || input
+            .as_bytes()
+            .windows(3)
+            .any(|window| {
+                window[0].is_ascii_alphabetic() && window[1] == b':' && window[2] == b'\\'
+            })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +246,25 @@ mod tests {
         assert_eq!(ctx.redact_str("/tmp/alice/out"), "/tmp/$USER/out");
         // Do not rewrite the username inside unrelated words.
         assert_eq!(ctx.redact_str("malice"), "malice");
+    }
+
+    #[test]
+    fn redacts_single_character_user_path_component() {
+        let ctx = RedactionContext {
+            home: None,
+            user: Some("x".into()),
+        };
+        assert_eq!(ctx.redact_str("/tmp/x/out"), "/tmp/$USER/out");
+    }
+
+    #[test]
+    fn preserves_non_path_slashes_and_backslashes() {
+        let ctx = alice();
+        assert_eq!(
+            ctx.redact_str("https://example.com/a//b"),
+            "https://example.com/a//b"
+        );
+        assert_eq!(ctx.redact_str(r"escaped\\value"), r"escaped\\value");
     }
 
     #[test]

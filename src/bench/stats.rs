@@ -14,7 +14,9 @@ pub struct SampleStats {
     pub median: f64,
     /// Median absolute deviation from the median.
     pub mad: f64,
-    /// `mad / median` when `|median|` is meaningful; otherwise 0.
+    /// `mad / |median|` when the median is meaningful. Saturates at
+    /// `f64::MAX` when the median is effectively zero and MAD is nonzero so
+    /// manifests remain valid JSON while comparisons still treat the run as noisy.
     pub relative_dispersion: f64,
     pub min: f64,
     pub max: f64,
@@ -56,7 +58,7 @@ pub fn sample_stats(samples: &[f64]) -> SampleStats {
     let relative_dispersion = if median.abs() > 1e-12 {
         mad / median.abs()
     } else if mad > 0.0 {
-        f64::INFINITY
+        f64::MAX
     } else {
         0.0
     };
@@ -129,5 +131,14 @@ mod tests {
         assert_eq!(s.median, 5.0);
         assert_eq!(s.mad, 0.0);
         assert_eq!(s.relative_dispersion, 0.0);
+    }
+
+    #[test]
+    fn zero_median_dispersion_is_finite_and_json_safe() {
+        let s = sample_stats(&[-1.0, 0.0, 1.0]);
+        assert_eq!(s.median, 0.0);
+        assert_eq!(s.mad, 1.0);
+        assert_eq!(s.relative_dispersion, f64::MAX);
+        assert!(s.relative_dispersion.is_finite());
     }
 }
