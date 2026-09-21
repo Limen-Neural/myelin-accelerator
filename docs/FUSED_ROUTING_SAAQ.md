@@ -1,5 +1,11 @@
 # Fused routing and SAAQ kernels (GH #14)
 
+**Experimental.** Host APIs (`src/fused.rs`) and device kernels
+(`cu/fused_routing_saaq.cu`, unfused SAAQ in `cu/spiking_network.cu`) are
+compiled only with **`--features saaq`**. That flag is **not** in `default`
+and is not part of the crates.io Tier-1 surface. GPU launches also need
+`cuda` (`--features cuda,saaq`).
+
 Reusable device primitives that combine **routing softmax**, **entropy
 reduction**, **top-k selection**, and **SAAQ walker selection** so the full
 probability matrix never has to hit VRAM.
@@ -82,8 +88,9 @@ stage that re-reads the probability matrix.
 
 ## Analytical traffic (committed)
 
-Source: `myelin_accelerator::fused::{traffic_unfused, traffic_fused}`.
-Regenerate with `cargo test --locked fused::tests::committed_traffic_artifacts_match_model`.
+Source: `myelin_accelerator::fused::{traffic_unfused, traffic_fused}`
+(`--features saaq`).
+Regenerate with `cargo test --locked --features saaq fused::tests::committed_traffic_artifacts_match_model`.
 
 | n_nodes | n_routes | top_k | Unfused bytes | Fused bytes | Saved |
 |---------|----------|-------|---------------|-------------|-------|
@@ -97,7 +104,7 @@ Exact figures live in the JSON/CSV so they cannot drift from the model.
 Host wall-clock in `examples/benchmark.rs` is **not** the fusion quality
 gate (the CPU reference allocates per-row softmax buffers). The device
 question is VRAM bytes and kernel launches; GPU latency needs
-`--features bench,cuda` on an RTX 5080.
+`--features bench,cuda,saaq` on an RTX 5080.
 
 ### Occupancy model
 
@@ -107,7 +114,7 @@ question is VRAM bytes and kernel launches; GPU latency needs
 
 ```bash
 ncu --set full -o fused_saaq \
-  cargo run --example benchmark --profile bench --features bench,cuda
+  cargo run --example benchmark --profile bench --features bench,cuda,saaq
 ```
 
 Compare `routing_entropy_reduce_pass1` vs `routing_saaq_fused_pass1`, and
@@ -117,7 +124,7 @@ Compare `routing_entropy_reduce_pass1` vs `routing_saaq_fused_pass1`, and
 
 ## API
 
-Host (always available):
+Host (`--features saaq`):
 
 ```rust
 use myelin_accelerator::fused::{
@@ -125,7 +132,7 @@ use myelin_accelerator::fused::{
 };
 ```
 
-Device (`cuda` feature), telemetry stays on the GPU until `to_vec` of the
+Device (`cuda` + `saaq`), telemetry stays on the GPU until `to_vec` of the
 three scalar buffers:
 
 ```rust

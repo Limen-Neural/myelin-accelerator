@@ -15,8 +15,8 @@
 //    membrane_dv_dt_reduce_pass1 — per-block reduction of |dv/dt|
 //    routing_entropy_reduce_pass1 — per-block reduction of routing entropy
 //    latent_reduce_pass2          — final reduction of pass1 partials
-//    saaq_find_best_walker        — SAAQ pass 1 argmax; one (score, walker) per block
-//    saaq_reduce_partials_f16     — SAAQ pass 2; writes a single u32 best_walker
+//    saaq_find_best_walker        — SAAQ pass 1 (compiled with -DMYELIN_SAAQ)
+//    saaq_reduce_partials_f16     — SAAQ pass 2 (compiled with -DMYELIN_SAAQ)
 //
 //  Parameters follow the 16-neuron / 16-channel architecture in
 //  neuro-spike-core/src/snn/engine.rs.
@@ -488,6 +488,7 @@ void latent_reduce_pass2(
     }
 }
 
+#ifdef MYELIN_SAAQ
 // ════════════════════════════════════════════════════════════════════
 //  saaq_find_best_walker
 //
@@ -631,3 +632,4 @@ void saaq_reduce_partials_f16(
         }
     }
 }
+#endif // MYELIN_SAAQ

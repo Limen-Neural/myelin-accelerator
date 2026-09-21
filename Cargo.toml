@@ -16,6 +16,9 @@ default = []
 # nvtx ranges under the cuda feature (kernel load + ternary launch wrappers).
 cuda = ["dep:cust", "dep:nvtx"]
 bench = ["dep:serde", "dep:serde_json"]
+# Experimental fused routing / SAAQ kernels (host refs + device path).
+# Not on default; not part of the crates.io Tier-1 surface. Pair with `cuda` for GPU.
+saaq = []
 
 [dependencies]
 cust      = { version = "0.3.2", optional = true }

@@ -20,8 +20,9 @@ const KERNELS: &[(&str, &str)] = &[
     ("vector_similarity.cu", "vector_similarity_sm_120.ptx"),
     ("satsolver.cu", "satsolver_sm_120.ptx"),
     ("ternary_gemm.cu", "ternary_gemm_sm_120.ptx"),
-    ("fused_routing_saaq.cu", "fused_routing_saaq_sm_120.ptx"),
 ];
+
+const SAAQ_KERNELS: &[(&str, &str)] = &[("fused_routing_saaq.cu", "fused_routing_saaq_sm_120.ptx")];
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
@@ -39,8 +40,12 @@ fn main() {
     for &(cu_name, _) in KERNELS {
         println!("cargo:rerun-if-changed=cu/{cu_name}");
     }
+    for &(cu_name, _) in SAAQ_KERNELS {
+        println!("cargo:rerun-if-changed=cu/{cu_name}");
+    }
 
     let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
+    let saaq_feature_enabled = env::var("CARGO_FEATURE_SAAQ").is_ok();
     if !cuda_feature_enabled {
         emit_stub_ptx(&out_dir);
         println!("cargo:warning=cuda feature not enabled; wrote stub PTX files");
@@ -66,10 +71,24 @@ fn main() {
         None => println!("cargo:warning=using nvcc at {}", nvcc_path.display()),
     }
 
-    for &(cu_name, ptx_name) in KERNELS {
+    let mut kernels: Vec<(&str, &str)> = KERNELS.to_vec();
+    if saaq_feature_enabled {
+        kernels.extend(SAAQ_KERNELS);
+    } else {
+        println!("cargo:warning=saaq feature off; skipped fused_routing_saaq.cu");
+    }
+
+    for &(cu_name, ptx_name) in &kernels {
         let source = cu_dir.join(cu_name);
         let output = out_dir.join(ptx_name);
-        compile_to_ptx(&nvcc_path, &cu_dir, &source, &output, &arch);
+        compile_to_ptx(
+            &nvcc_path,
+            &cu_dir,
+            &source,
+            &output,
+            &arch,
+            &nvcc_feature_defines(cu_name, saaq_feature_enabled),
+        );
         // sm_120 + PTX < 9.2 is invalid. Explicit overrides are applied for
         // non-Blackwell arches; on Blackwell, clamp any override below the floor.
         if let Some(ref ver) = ptx_version_override {
@@ -159,7 +178,24 @@ fn nvcc_version(nvcc: &Path) -> Option<String> {
         .and_then(|s| s.lines().last().map(|l| l.trim().to_string()))
 }
 
-fn compile_to_ptx(nvcc: &Path, cu_dir: &Path, source: &Path, output: &Path, arch: &str) {
+fn nvcc_feature_defines(cu_name: &str, saaq_feature_enabled: bool) -> Vec<String> {
+    let mut defines = Vec::new();
+    if saaq_feature_enabled
+        && (cu_name == "spiking_network.cu" || cu_name == "fused_routing_saaq.cu")
+    {
+        defines.push("-DMYELIN_SAAQ".to_string());
+    }
+    defines
+}
+
+fn compile_to_ptx(
+    nvcc: &Path,
+    cu_dir: &Path,
+    source: &Path,
+    output: &Path,
+    arch: &str,
+    extra_args: &[String],
+) {
     let threads_raw = env::var("MYELIN_NVCC_THREADS").unwrap_or_else(|_| "0".to_string());
     let threads = threads_raw.parse::<usize>().unwrap_or_else(|_| {
         panic!("MYELIN_NVCC_THREADS must be a non-negative integer, got \"{threads_raw}\"")
@@ -196,6 +232,9 @@ fn compile_to_ptx(nvcc: &Path, cu_dir: &Path, source: &Path, output: &Path, arch
         .arg("-o")
         .arg(output)
         .arg(source);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
     if cfg!(unix) {
         cmd.arg("-Xcompiler").arg("-fno-builtin");
     }

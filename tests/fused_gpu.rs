@@ -3,7 +3,7 @@
 
 //! GPU goldens for fused routing / SAAQ kernels (requires CUDA + sm_120 driver).
 
-#![cfg(feature = "cuda")]
+#![cfg(all(feature = "cuda", feature = "saaq"))]
 
 use myelin_accelerator::fused::{
     GIF_ADAPTATION_SCALE, RoutingSaaqInput, entropy_row, fused_routing_saaq, saaq_best_walker,

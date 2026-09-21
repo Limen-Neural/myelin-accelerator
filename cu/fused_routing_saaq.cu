@@ -4,6 +4,9 @@
 // ════════════════════════════════════════════════════════════════════
 //  fused_routing_saaq.cu — fused routing / entropy / SAAQ selection
 //
+//  Experimental: compiled only with Cargo `--features saaq` (or CMake
+//  -DMYELIN_SAAQ=ON). Not part of the default / crates.io Tier-1 surface.
+//
 //  Kernels exported (name-exact for PTX symbol lookup in kernel.rs):
 //    routing_softmax              — unfused baseline: logits → probabilities
 //    saaq_select_fused            — single-block SAAQ argmax (no partials)

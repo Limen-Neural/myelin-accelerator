@@ -338,6 +338,7 @@ fn bench_bitpacking(config: &Config) -> Vec<BenchmarkResult> {
     results.extend(bench_binary_unpack(config));
     results.extend(bench_ternary_pack(config));
     results.extend(bench_ternary_unpack(config));
+    #[cfg(feature = "saaq")]
     results.extend(bench_fused_host(config));
     results
 }
@@ -458,6 +459,7 @@ fn ternary_pattern(n: usize) -> Vec<i8> {
         .collect()
 }
 
+#[cfg(feature = "saaq")]
 fn bench_fused_host(config: &Config) -> Vec<BenchmarkResult> {
     use myelin_accelerator::fused::{
         GIF_ADAPTATION_SCALE, RoutingSaaqInput, fused_routing_saaq, routing_entropy,
@@ -580,6 +582,7 @@ fn bench_gpu_kernels(config: &Config) -> Vec<BenchmarkResult> {
 
     // Packed ternary GEMV / GEMM (group-scaled)
     results.extend(bench_ternary_gpu(&acc, config));
+    #[cfg(feature = "saaq")]
     results.extend(bench_fused_routing_saaq_gpu(&acc, config));
 
     results
@@ -706,7 +709,7 @@ fn bench_ternary_gpu(
     results
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", feature = "saaq"))]
 fn bench_fused_routing_saaq_gpu(
     acc: &myelin_accelerator::GpuAccelerator,
     config: &Config,

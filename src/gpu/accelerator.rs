@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::bitpacking::TERNARY_VALUES_PER_WORD;
+#[cfg(feature = "saaq")]
 use crate::fused::MAX_FUSED_TOP_K;
 use crate::gpu::context::GpuContext;
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::kernel::KernelModule;
 use crate::gpu::memory::GpuBuffer;
 use cust::launch;
+#[cfg(feature = "saaq")]
 use cust::memory::DeviceCopy;
 use cust::stream::{Stream, StreamFlags};
 use nvtx::{range_pop, range_push};
@@ -16,6 +18,7 @@ use tracing::warn;
 
 const SATSOLVER_BLOCK_SIZE: u32 = 256;
 const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
+#[cfg(feature = "saaq")]
 const REDUCE_BLOCK_SIZE: u32 = 256;
 
 pub struct GpuAccelerator {
@@ -24,9 +27,13 @@ pub struct GpuAccelerator {
     stream: Option<Stream>,
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
+    #[cfg(feature = "saaq")]
     aux_entropy_partial_sum: RefCell<Option<GpuBuffer<f32>>>,
+    #[cfg(feature = "saaq")]
     aux_entropy_partial_max: RefCell<Option<GpuBuffer<f32>>>,
+    #[cfg(feature = "saaq")]
     aux_saaq_partial_scores: RefCell<Option<GpuBuffer<f32>>>,
+    #[cfg(feature = "saaq")]
     aux_saaq_partial_walkers: RefCell<Option<GpuBuffer<u32>>>,
 }
 
@@ -42,9 +49,13 @@ impl GpuAccelerator {
             stream,
             aux_partial_scores: RefCell::new(None),
             aux_partial_walkers: RefCell::new(None),
+            #[cfg(feature = "saaq")]
             aux_entropy_partial_sum: RefCell::new(None),
+            #[cfg(feature = "saaq")]
             aux_entropy_partial_max: RefCell::new(None),
+            #[cfg(feature = "saaq")]
             aux_saaq_partial_scores: RefCell::new(None),
+            #[cfg(feature = "saaq")]
             aux_saaq_partial_walkers: RefCell::new(None),
         }
     }
@@ -548,6 +559,22 @@ impl GpuAccelerator {
         Ok(())
     }
 
+    fn expect_len(name: &str, actual: usize, minimum: usize) -> GpuResult<()> {
+        if actual < minimum {
+            return Err(GpuError::MemoryError(format!(
+                "{name} too small: need at least {minimum} elements, got {actual}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn ceil_div_u32(value: u32, divisor: u32) -> u32 {
+        value.div_ceil(divisor)
+    }
+}
+
+#[cfg(feature = "saaq")]
+impl GpuAccelerator {
     /// Unfused two-pass SAAQ argmax (`saaq_find_best_walker` + pass 2).
     pub fn saaq_select(
         &self,
@@ -991,19 +1018,6 @@ impl GpuAccelerator {
             *slot = Some(GpuBuffer::<T>::alloc(len)?);
         }
         Ok(())
-    }
-
-    fn expect_len(name: &str, actual: usize, minimum: usize) -> GpuResult<()> {
-        if actual < minimum {
-            return Err(GpuError::MemoryError(format!(
-                "{name} too small: need at least {minimum} elements, got {actual}"
-            )));
-        }
-        Ok(())
-    }
-
-    fn ceil_div_u32(value: u32, divisor: u32) -> u32 {
-        value.div_ceil(divisor)
     }
 }
 

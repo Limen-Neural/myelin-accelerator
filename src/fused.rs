@@ -3,9 +3,10 @@
 
 //! Host reference and VRAM-traffic model for fused routing + SAAQ kernels.
 //!
+//! Experimental: compiled only with `--features saaq` (pair with `cuda` for GPU).
 //! Device kernels live in `cu/fused_routing_saaq.cu` and the unfused SAAQ
-//! baseline in `cu/spiking_network.cu`. This module is CPU-safe so CI can
-//! check numerical parity and traffic reduction without a GPU.
+//! baseline in `cu/spiking_network.cu` (`-DMYELIN_SAAQ`). This module is
+//! CPU-safe so CI can check numerical parity and traffic reduction without a GPU.
 
 /// Matches `GIF_ADAPTATION_SCALE` in corinth-canal / `spiking_network.cu`.
 pub const GIF_ADAPTATION_SCALE: f32 = 0.22;

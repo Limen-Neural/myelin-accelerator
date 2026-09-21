@@ -16,7 +16,7 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 - Host **binary/ternary bitpacking** + group scales + CPU ref matmul: `src/bitpacking.rs`.
 - Scalar **CPU oracles** for public kernel paths + seeded mismatch reporting: `src/oracle.rs`.
 - Device **ternary GEMV/GEMM** (group-scaled, optional zero-skip): `cu/ternary_gemm.cu` — see [docs/TERNARY.md](docs/TERNARY.md).
-- **Fused routing / SAAQ** (softmax + entropy + top-k + walker select without materializing the routing matrix): `cu/fused_routing_saaq.cu` — see [docs/FUSED_ROUTING_SAAQ.md](docs/FUSED_ROUTING_SAAQ.md).
+- Optional **experimental** fused routing / SAAQ (`--features saaq`): `cu/fused_routing_saaq.cu` — softmax + entropy + top-k + walker select without materializing the routing matrix. Not on `default`; not part of the crates.io Tier-1 surface. Pair with `cuda` for GPU. See [docs/FUSED_ROUTING_SAAQ.md](docs/FUSED_ROUTING_SAAQ.md).
 
 ## Module map
 
@@ -27,25 +27,26 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 | `src/oracle.rs` | Scalar CPU oracles + seed/shape mismatch helpers | yes (`oracle`) |
 | `src/gpu/` | CUDA context, PTX load, buffers, launches | via re-exports when `cuda` |
 | `src/gpu_stub.rs` | CPU-safe stand-ins without toolkit | used when `cuda` off |
-| `cu/*.cu` | Device kernels (spiking, similarity, SAT, ternary) | via PTX + wrappers |
-| `examples/benchmark.rs` | Latency / GPU info harness | feature `bench` (+ `cuda` for GPU) |
+| `cu/*.cu` | Device kernels (spiking, similarity, SAT, ternary; fused SAAQ if `saaq`) | via PTX + wrappers |
+| `examples/benchmark.rs` | Latency / GPU info harness | feature `bench` (+ `cuda` for GPU; + `saaq` for fused rows) |
 | `build.rs` / `CMakeLists.txt` | `nvcc -ptx` quality path | build-only |
-| `src/fused.rs` | Host fused routing / SAAQ API and VRAM traffic model | yes |
+| `src/fused.rs` | Host fused routing / SAAQ API and VRAM traffic model | `--features saaq` (`fused`) |
 | `docs/ARCHITECTURE.md` | Ownership + API boundary | docs |
 | `docs/TERNARY.md` | Ternary encoding, scales, GOZ1 interop, kernels | docs |
-| `docs/FUSED_ROUTING_SAAQ.md` | Fused routing / SAAQ kernels + VRAM traffic model | docs |
+| `docs/FUSED_ROUTING_SAAQ.md` | Experimental fused routing / SAAQ (behind `saaq`) | docs |
 
 ### Features
 
 | Feature | Meaning |
 |---------|---------|
-| *(default)* | Stub GPU API; no `nvcc` |
+| *(default)* | Stub GPU API; no `nvcc`; no fused SAAQ |
 | `cuda` | Real GPU path (`cust`, `nvtx`) |
+| `saaq` | Experimental fused routing / SAAQ (opt-in; pair with `cuda` for GPU) |
 | `bench` | Benchmark example serde deps |
 
 ### Public symbols (crate root)
 
-`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError` — plus the `bitpacking` and `fused` modules. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError` — plus the `bitpacking` module. With `--features saaq`: the `fused` module. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## What Changed
 
@@ -68,6 +69,10 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 myelin-accelerator = "0.2.0"
 # Optional GPU:
 # myelin-accelerator = { version = "0.2.0", features = ["cuda"] }
+# Experimental fused routing / SAAQ (not default / not crates.io Tier-1):
+# myelin-accelerator = { version = "0.2.0", features = ["saaq"] }
+# GPU + fused SAAQ:
+# myelin-accelerator = { version = "0.2.0", features = ["cuda", "saaq"] }
 ```
 
 ```rust
@@ -85,6 +90,7 @@ CPU-safe checks:
 
 ```bash
 cargo test --locked
+cargo test --locked --features saaq
 cargo build --locked --no-default-features
 ```
 

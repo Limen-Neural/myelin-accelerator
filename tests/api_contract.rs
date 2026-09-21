@@ -197,30 +197,33 @@ mod stub_contract {
                 .is_err()
         );
 
-        let membrane = GpuBuffer::<f32>::alloc(4).unwrap();
-        let adaptation = GpuBuffer::<f32>::alloc(4).unwrap();
-        let mut walker = GpuBuffer::<u32>::alloc(1).unwrap();
-        assert!(
-            acc.saaq_select(&membrane, &adaptation, &mut walker, 0.22)
+        #[cfg(feature = "saaq")]
+        {
+            let membrane = GpuBuffer::<f32>::alloc(4).unwrap();
+            let adaptation = GpuBuffer::<f32>::alloc(4).unwrap();
+            let mut walker = GpuBuffer::<u32>::alloc(1).unwrap();
+            assert!(
+                acc.saaq_select(&membrane, &adaptation, &mut walker, 0.22)
+                    .is_err()
+            );
+            assert!(
+                acc.routing_saaq_fused(
+                    &GpuBuffer::<f32>::alloc(8).unwrap(),
+                    &membrane,
+                    &adaptation,
+                    &mut GpuBuffer::<i32>::alloc(8).unwrap(),
+                    &mut GpuBuffer::<f32>::alloc(1).unwrap(),
+                    &mut GpuBuffer::<f32>::alloc(1).unwrap(),
+                    &mut walker,
+                    2,
+                    4,
+                    2,
+                    0.22,
+                    true,
+                )
                 .is_err()
-        );
-        assert!(
-            acc.routing_saaq_fused(
-                &GpuBuffer::<f32>::alloc(8).unwrap(),
-                &membrane,
-                &adaptation,
-                &mut GpuBuffer::<i32>::alloc(8).unwrap(),
-                &mut GpuBuffer::<f32>::alloc(1).unwrap(),
-                &mut GpuBuffer::<f32>::alloc(1).unwrap(),
-                &mut walker,
-                2,
-                4,
-                2,
-                0.22,
-                true,
-            )
-            .is_err()
-        );
+            );
+        }
     }
 
     #[test]
@@ -273,4 +276,10 @@ mod stub_contract {
         fn check<T: std::error::Error>() {}
         check::<GpuError>();
     }
+}
+
+#[cfg(feature = "saaq")]
+#[test]
+fn fused_host_api_is_exported_with_saaq() {
+    assert!((myelin_accelerator::fused::GIF_ADAPTATION_SCALE - 0.22).abs() < 1e-6);
 }

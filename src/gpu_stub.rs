@@ -257,6 +257,7 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn saaq_select(
         &self,
         _: &GpuBuffer<f32>,
@@ -267,6 +268,7 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn saaq_select_async(
         &self,
         _: &GpuBuffer<f32>,
@@ -277,6 +279,7 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn saaq_select_fused(
         &self,
         _: &GpuBuffer<f32>,
@@ -287,6 +290,7 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn saaq_select_fused_async(
         &self,
         _: &GpuBuffer<f32>,
@@ -297,6 +301,7 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn routing_entropy_reduce(
         &self,
         _: &GpuBuffer<f32>,
@@ -308,6 +313,7 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn routing_entropy_reduce_async(
         &self,
         _: &GpuBuffer<f32>,
@@ -319,6 +325,7 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn routing_softmax(
         &self,
         _: &GpuBuffer<f32>,
@@ -330,6 +337,7 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     pub fn routing_softmax_async(
         &self,
         _: &GpuBuffer<f32>,
@@ -341,6 +349,7 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     #[allow(clippy::too_many_arguments)]
     pub fn routing_saaq_fused(
         &self,
@@ -360,6 +369,7 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    #[cfg(feature = "saaq")]
     #[allow(clippy::too_many_arguments)]
     pub fn routing_saaq_fused_async(
         &self,
@@ -691,6 +701,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "saaq")]
     #[test]
     fn accelerator_saaq_and_fused_routing_return_no_gpu() {
         let acc = GpuAccelerator::new();
