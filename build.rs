@@ -26,7 +26,12 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let cu_dir = manifest_dir.join("cu");
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
-    let arch = env::var("MYELIN_CUDA_ARCH").unwrap_or_else(|_| "sm_120".to_string());
+    let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
+    let arch = if cuda_feature_enabled {
+        env::var("MYELIN_CUDA_ARCH").unwrap_or_else(|_| "sm_120".to_string())
+    } else {
+        "sm_120".to_string()
+    };
     let (arch_major, arch_minor) = compute_capability_from_arch(&arch).unwrap_or_else(|| {
         panic!("MYELIN_CUDA_ARCH must look like sm_120 or compute_120, got \"{arch}\"")
     });
@@ -49,7 +54,6 @@ fn main() {
         println!("cargo:rerun-if-changed=cu/{cu_name}");
     }
 
-    let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
     if !cuda_feature_enabled {
         emit_stub_ptx(&out_dir);
         println!("cargo:warning=cuda feature not enabled; wrote stub PTX files");
