@@ -92,9 +92,16 @@ impl fmt::Display for GpuError {
                 }
             }
             GpuError::Unavailable { reason, detail } => {
-                write!(f, "GPU unavailable ({}): {detail}", reason.code())
+                write!(
+                    f,
+                    "GPU unavailable ({}): {}",
+                    reason.code(),
+                    sanitize_diagnostic(detail)
+                )
             }
-            GpuError::InvalidInput(s) => write!(f, "invalid input: {s}"),
+            GpuError::InvalidInput(s) => {
+                write!(f, "invalid input: {}", sanitize_diagnostic(s))
+            }
         }
     }
 }
@@ -151,5 +158,25 @@ mod tests {
             }
             other => panic!("expected Unavailable, got {other}"),
         }
+    }
+
+    #[test]
+    fn display_sanitizes_public_variant_payloads() {
+        let unavailable = GpuError::Unavailable {
+            reason: FallbackReason::DriverRuntimeFailure,
+            detail: "module=/home/alice/private.ptx token=secret".to_string(),
+        };
+        let invalid = GpuError::InvalidInput(
+            "file=\"/Users/bob/My Models/input.bin\" password=hunter2".to_string(),
+        );
+
+        assert_eq!(
+            unavailable.to_string(),
+            "GPU unavailable (driver_runtime_failure): module=<path> token=<redacted>"
+        );
+        assert_eq!(
+            invalid.to_string(),
+            "invalid input: file=<path> password=<redacted>"
+        );
     }
 }

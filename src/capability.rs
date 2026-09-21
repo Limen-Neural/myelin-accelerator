@@ -12,16 +12,17 @@
 //!
 //! Decision table (first matching row wins):
 //!
-//! | `cuda_built` | runtime | device | CC ≥ 12.0 | kernel runtime | selected | reason |
-//! |--------------|---------|--------|-----------|----------------|----------|--------|
-//! | false | * | * | * | * | `Cpu` | `cuda_feature_not_built` |
-//! | true | false | * | * | * | `Cpu` | `driver_runtime_failure` |
-//! | true | true | false | * | * | `Cpu` | `device_unavailable` |
-//! | true | true | true | missing | * | `Cpu` | `driver_runtime_failure` |
-//! | true | true | true | false | * | `Cpu` | `unsupported_hardware` |
-//! | true | true | true | true | any `false` | `Cpu` | `kernel_specialization_unavailable` |
-//! | true | true | true | true | any unknown | `Cpu` | `kernel_specialization_unavailable` |
-//! | true | true | true | true | all `true` | `Cuda` | — |
+//! | `cuda_built` | runtime | device | CC ≥ 12.0 | PTX compiled | kernel runtime | selected | reason |
+//! |--------------|---------|--------|-----------|--------------|----------------|----------|--------|
+//! | false | * | * | * | * | * | `Cpu` | `cuda_feature_not_built` |
+//! | true | false | * | * | * | * | `Cpu` | `driver_runtime_failure` |
+//! | true | true | false | * | * | * | `Cpu` | `device_unavailable` |
+//! | true | true | true | missing | * | * | `Cpu` | `driver_runtime_failure` |
+//! | true | true | true | false | * | * | `Cpu` | `unsupported_hardware` |
+//! | true | true | true | true | false | * | `Cpu` | `cuda_feature_not_built` |
+//! | true | true | true | true | true | any `false` | `Cpu` | `kernel_specialization_unavailable` |
+//! | true | true | true | true | true | any unknown | `Cpu` | `kernel_specialization_unavailable` |
+//! | true | true | true | true | true | all `true` | `Cuda` | — |
 //!
 //! `invalid_input` is a request-level reason (bad launch arguments), not a
 //! host-probe outcome.
@@ -321,6 +322,10 @@ impl CapabilityReport {
 ///
 /// A CUDA backend is reported usable only after constructing an accelerator
 /// has verified every required kernel family.
+///
+/// With the `cuda` feature and an available GPU, every call creates a CUDA
+/// context and loads/JIT-validates all four PTX modules. Cache the returned
+/// report instead of probing repeatedly.
 #[must_use]
 pub fn probe_capabilities() -> CapabilityReport {
     crate::GpuAccelerator::new().capabilities().clone()

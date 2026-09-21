@@ -134,8 +134,7 @@ impl GpuAccelerator {
             }
         };
 
-        facts.kernels = KernelAvailability::all_available();
-        let capabilities = evaluate_capabilities(&facts);
+        let capabilities = capability_report_for_success(facts);
         Ok(Self {
             _ctx: Some(ctx),
             modules: Some(modules),
@@ -743,6 +742,13 @@ fn classify_context_failure(facts: &CapabilityFacts, error: &GpuError) -> Fallba
         .unwrap_or_else(|| classify_init_failure(facts))
 }
 
+fn capability_report_for_success(mut facts: CapabilityFacts) -> CapabilityReport {
+    facts.runtime_available = true;
+    facts.device_available = true;
+    facts.kernels = KernelAvailability::all_available();
+    evaluate_capabilities(&facts)
+}
+
 fn capability_report_for_failure(
     mut facts: CapabilityFacts,
     reason: FallbackReason,
@@ -819,5 +825,23 @@ mod tests {
             classify_context_failure(&facts, &error),
             FallbackReason::DeviceUnavailable
         );
+    }
+
+    #[test]
+    fn successful_initialization_overrides_stale_negative_facts() {
+        let facts = CapabilityFacts {
+            cuda_built: true,
+            runtime_available: false,
+            device_available: false,
+            compute_capability: Some(ComputeCapability::REQUIRED),
+            kernels: KernelAvailability::compiled_unverified(),
+        };
+
+        let report = capability_report_for_success(facts);
+
+        assert!(report.runtime_available);
+        assert!(report.device_available);
+        assert!(report.gpu_usable());
+        assert_eq!(report.selected_backend, Backend::Cuda);
     }
 }
