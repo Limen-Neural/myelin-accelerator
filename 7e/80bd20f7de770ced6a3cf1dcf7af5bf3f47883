@@ -1,0 +1,41 @@
+tests/capability_probe.rs
+  s_2e936c8275887f::t_7dd377bd9f44e6 142
+src/gpu_stub.rs
+  s_2e936c8275887f::t_60276f535e4eaf 24-28
+  s_2e936c8275887f::t_3c13ce59c37879 314-319
+src/error.rs
+  s_2e936c8275887f::t_1bed0a443b46e3 115-127
+  s_2e936c8275887f::t_3c13ce59c37879 59,70-71
+  s_2e936c8275887f::t_b0b5beb31e77cf 175-193
+  s_2e936c8275887f::t_60276f535e4eaf 162-174
+src/capability.rs
+  s_2e936c8275887f::t_7dd377bd9f44e6 27-29
+  s_2e936c8275887f::t_0be8acd8224669 757-760
+  s_2e936c8275887f::t_60276f535e4eaf 856-874
+  s_2e936c8275887f::t_3c13ce59c37879 512,535-540
+  s_2e936c8275887f::t_6efaa11ce4e228 103-104,118
+src/gpu/accelerator.rs
+  s_2e936c8275887f::t_0be8acd8224669 851-875
+  s_2e936c8275887f::t_0a85c960457ec9 782
+  s_2e936c8275887f::t_6efaa11ce4e228 114,116-121,124-125,130,136,783
+src/gpu/kernel.rs
+  s_2e936c8275887f::t_4355de6c0e474c 230-254
+  s_2e936c8275887f::t_6ce9b5bc3b2b61 12,14,43-47,67,69,86-94,100-108,122-130,136-142,156-158,184,191-192,194,199-222
+  s_2e936c8275887f::t_7dd377bd9f44e6 54-57,64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7e80bd20f7de770ced6a3cf1dcf7af5bf3f47883",
+  "prompts": {},
+  "sessions": {
+    "s_2e936c8275887f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c474-16c9-7241-89e4-7f6b425b2e5c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
