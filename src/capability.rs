@@ -20,7 +20,7 @@
 //! | true | true | true | missing | * | `Cpu` | `driver_runtime_failure` |
 //! | true | true | true | false | * | `Cpu` | `unsupported_hardware` |
 //! | true | true | true | true | any `false` | `Cpu` | `kernel_specialization_unavailable` |
-//! | true | true | true | true | unknown/any `false` | `Cpu` | `kernel_specialization_unavailable` |
+//! | true | true | true | true | any unknown | `Cpu` | `kernel_specialization_unavailable` |
 //! | true | true | true | true | all `true` | `Cuda` | — |
 //!
 //! `invalid_input` is a request-level reason (bad launch arguments), not a
@@ -403,11 +403,43 @@ pub fn sanitize_diagnostic(input: &str) -> String {
     if input.is_empty() {
         return String::new();
     }
-    input
-        .split_whitespace()
+    diagnostic_tokens(input)
+        .into_iter()
         .map(sanitize_token)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn diagnostic_tokens(input: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+
+    for (index, ch) in input.char_indices() {
+        if start.is_none() {
+            if ch.is_whitespace() {
+                continue;
+            }
+            start = Some(index);
+        }
+
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if matches!(ch, '"' | '\'') => quote = Some(ch),
+            None if ch.is_whitespace() => {
+                if let Some(token_start) = start.take() {
+                    tokens.push(&input[token_start..index]);
+                }
+            }
+            None => {}
+        }
+    }
+
+    if let Some(token_start) = start {
+        tokens.push(&input[token_start..]);
+    }
+    tokens
 }
 
 fn sanitize_token(tok: &str) -> String {
@@ -418,11 +450,18 @@ fn sanitize_token(tok: &str) -> String {
     }
     if let Some((key, value)) = lower.split_once('=') {
         let orig_key = core.split_once('=').map(|(k, _)| k).unwrap_or(core);
+        let value_quote = value.chars().next().filter(|ch| matches!(ch, '"' | '\''));
+        let bare_value = value_quote
+            .and_then(|quote| value.strip_prefix(quote))
+            .unwrap_or(value);
+        let assignment_suffix = value_quote
+            .and_then(|quote| suffix.strip_prefix(quote))
+            .unwrap_or(suffix);
         if is_secret_key(key) {
-            return format!("{prefix}{orig_key}=<redacted>{suffix}");
+            return format!("{prefix}{orig_key}=<redacted>{assignment_suffix}");
         }
-        if is_user_path(value) {
-            return format!("{prefix}{orig_key}=<path>{suffix}");
+        if is_user_path(bare_value) {
+            return format!("{prefix}{orig_key}=<path>{assignment_suffix}");
         }
     }
     tok.to_string()
@@ -759,5 +798,27 @@ mod tests {
             "path=/home/alice/private.ptx file=/Users/bob/key cache=C:\\Users\\eve\\cache.bin",
         );
         assert_eq!(clean, "path=<path> file=<path> cache=<path>");
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_quoted_assignment_paths() {
+        let cases = [
+            (
+                r#"module="/home/alice/private.ptx" tail"#,
+                "module=<path> tail",
+            ),
+            (
+                r#"module="/home/alice/My Models/private.ptx" tail"#,
+                "module=<path> tail",
+            ),
+            (
+                r#"file='C:\Users\bob\private.ptx' tail"#,
+                "file=<path> tail",
+            ),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(sanitize_diagnostic(input), expected, "input={input}");
+        }
     }
 }

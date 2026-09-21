@@ -80,7 +80,7 @@ impl GpuAccelerator {
         let ctx = match GpuContext::init() {
             Ok(ctx) => ctx,
             Err(e) => {
-                let reason = classify_init_failure(&facts);
+                let reason = classify_context_failure(&facts, &e);
                 return Err(InitFailure {
                     facts,
                     reason,
@@ -737,6 +737,12 @@ fn classify_init_failure(facts: &CapabilityFacts) -> FallbackReason {
     }
 }
 
+fn classify_context_failure(facts: &CapabilityFacts, error: &GpuError) -> FallbackReason {
+    error
+        .fallback_reason()
+        .unwrap_or_else(|| classify_init_failure(facts))
+}
+
 fn capability_report_for_failure(
     mut facts: CapabilityFacts,
     reason: FallbackReason,
@@ -795,5 +801,23 @@ mod tests {
             FallbackReason::KernelSpecializationUnavailable
         );
         assert_eq!(fallback.detail, "PTX load failed module=<path> InvalidPtx");
+    }
+
+    #[test]
+    fn typed_context_failure_reason_takes_precedence_over_stale_facts() {
+        let facts = CapabilityFacts {
+            cuda_built: true,
+            runtime_available: true,
+            device_available: true,
+            compute_capability: Some(ComputeCapability::REQUIRED),
+            kernels: KernelAvailability::compiled_unverified(),
+        };
+        let error =
+            GpuError::unavailable(FallbackReason::DeviceUnavailable, "get_device(0): NoDevice");
+
+        assert_eq!(
+            classify_context_failure(&facts, &error),
+            FallbackReason::DeviceUnavailable
+        );
     }
 }
