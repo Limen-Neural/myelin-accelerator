@@ -48,10 +48,10 @@
 //! ```
 
 use myelin_accelerator::bench::{
-    BenchmarkManifest, ComparisonCase, DeviceIdentity, ManifestCase, RedactionContext,
-    RegressionBudget, RegressionClass, SampleSource, SampleStats, compare_one, comparison_report,
-    enforce_budget_requested, paths_refer_to_same_file, probe_power_clock, redact_and_canonicalize,
-    write_canonical_manifest,
+    BenchmarkManifest, ComparisonCase, DeviceIdentity, MANIFEST_SCHEMA_VERSION, ManifestCase,
+    RedactionContext, RegressionBudget, RegressionClass, SampleSource, SampleStats, compare_one,
+    comparison_report, enforce_budget_requested, paths_refer_to_same_file, probe_power_clock,
+    redact_and_canonicalize, write_canonical_manifest,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -935,6 +935,12 @@ impl BaselineRow {
 
 fn load_baseline_rows(data: &str) -> Result<Vec<BaselineRow>, String> {
     if let Ok(manifest) = serde_json::from_str::<BenchmarkManifest>(data) {
+        if manifest.schema_version != MANIFEST_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported benchmark manifest schema version {}; supported version is {}",
+                manifest.schema_version, MANIFEST_SCHEMA_VERSION
+            ));
+        }
         return Ok(manifest
             .cases
             .into_iter()
@@ -1160,7 +1166,7 @@ fn main() {
         myelin_accelerator::bench::RunTiming {
             warmup: config.warmup,
             samples: config.iterations,
-            seed: Some(42),
+            seed: None,
         },
         cases,
     );

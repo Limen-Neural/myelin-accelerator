@@ -39,6 +39,9 @@ fn main() {
         println!("cargo:rerun-if-changed=cu/{cu_name}");
     }
 
+    let opt_level = env::var("OPT_LEVEL").unwrap_or_else(|_| "unknown".to_string());
+    println!("cargo:rustc-env=OPT_LEVEL={opt_level}");
+
     let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
     if !cuda_feature_enabled {
         emit_stub_ptx(&out_dir);

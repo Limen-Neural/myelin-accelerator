@@ -94,27 +94,9 @@ fn fixture_classification_is_deterministic() {
     assert!(!report.enforced);
     assert!(!parse_enforce_flag(None));
 
-    let expected_classes: Vec<_> = fixture.cases.iter().map(|c| c.expected_class).collect();
-    let report_classes: Vec<_> = report.cases.iter().map(|c| c.class).collect();
-    assert_eq!(report_classes, expected_classes);
-
-    let snapshot = fixture.report;
-    let names: Vec<_> = snapshot["cases"]
-        .as_array()
-        .expect("report.cases")
-        .iter()
-        .map(|c| c["class"].as_str().unwrap().to_string())
-        .collect();
     assert_eq!(
-        names,
-        expected_classes
-            .iter()
-            .map(|c| serde_json::to_value(c)
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_string())
-            .collect::<Vec<_>>()
+        serde_json::to_value(&report).expect("serialize comparison report"),
+        fixture.report
     );
 }
 
