@@ -529,6 +529,18 @@ fn sanitize_token(tok: &str) -> String {
 
 fn redact_authorization_sequence(tokens: &[&str]) -> Option<(Vec<String>, usize)> {
     let (header_prefix, header_core, header_suffix) = split_wrapping_punct(tokens[0]);
+    if attached_authorization_scheme(header_core) {
+        if tokens.len() < 2 {
+            return None;
+        }
+        return Some((
+            vec![
+                format!("{header_prefix}{header_core}{header_suffix}"),
+                redact_following_value_token(tokens[1]),
+            ],
+            2,
+        ));
+    }
     if !authorization_header_token(header_core, header_suffix) {
         return None;
     }
@@ -550,6 +562,12 @@ fn redact_authorization_sequence(tokens: &[&str]) -> Option<(Vec<String>, usize)
         }
     }
     Some((redacted, 2))
+}
+
+fn attached_authorization_scheme(core: &str) -> bool {
+    core.to_ascii_lowercase()
+        .strip_prefix("authorization:")
+        .is_some_and(|rest| matches!(rest, "bearer" | "basic"))
 }
 
 fn authorization_header_token(core: &str, suffix: &str) -> bool {
@@ -1144,6 +1162,14 @@ mod tests {
             (
                 "probe authorization: bearer SUPERSECRET ok",
                 "probe authorization: bearer <redacted> ok",
+            ),
+            (
+                "probe Authorization:Bearer supersecret ok",
+                "probe Authorization:Bearer <redacted> ok",
+            ),
+            (
+                "probe Authorization:Basic dXNlcjpwYXNz ok",
+                "probe Authorization:Basic <redacted> ok",
             ),
         ];
         for (input, expected) in cases {
