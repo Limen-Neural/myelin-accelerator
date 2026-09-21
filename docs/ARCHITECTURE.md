@@ -25,7 +25,7 @@ local quality/benchmark harness. Not a research orchestrator.
 | CUDA kernels | `cu/*.cu`, shared headers (`cu/common.cuh`), `sm_120`-tuned reductions |
 | PTX build path | `build.rs` (`nvcc -ptx`), CMake `cuda_kernels` target, embedded PTX |
 | Safe GPU FFI | `GpuContext`, `KernelModule`, `GpuBuffer`, launch wrappers |
-| Feature gates | `cuda` (cust + nvtx), `bench` (serde JSON/CSV harness) |
+| Feature gates | `cuda` (cust + nvtx), `saaq` (experimental fused routing / SAAQ), `bench` (serde JSON/CSV harness) |
 | CPU-safe stub | `src/gpu_stub.rs` when `cuda` is off (CI / sandboxes) |
 | Host packing utilities | Binary / ternary bitpacking (`src/bitpacking.rs`) — host-side layout helpers that match future device kernels |
 | CPU oracles | Scalar reference implementations (`src/oracle.rs`) for differential tests against public kernel wrappers |
@@ -81,10 +81,12 @@ myelin-accelerator/
 │   ├── spiking_network.cu       # Poisson, LIF, STDP, reduce passes
 │   ├── vector_similarity.cu     # Cosine batched + top-k routing
 │   ├── satsolver.cu             # Parallel SAT walkers + reduces
-│   └── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
+│   ├── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
+│   └── fused_routing_saaq.cu   # Fused softmax + entropy + SAAQ (`saaq` / MYELIN_SAAQ)
 ├── src/
 │   ├── lib.rs                   # Crate root; public re-exports
 │   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
+│   ├── fused.rs                # Host fused routing / SAAQ (`feature = "saaq"`)
 │   ├── oracle.rs                # Scalar CPU oracles + seeded compare helpers
 │   ├── gpu_stub.rs              # CPU-safe stand-ins (no cuda feature)
 │   └── gpu/                     # Real CUDA path (feature = "cuda")
@@ -99,15 +101,17 @@ myelin-accelerator/
 ├── CMakeLists.txt               # CLion/CTest quality gate (nvcc -ptx)
 └── docs/
     ├── ARCHITECTURE.md          # This file
-    └── TERNARY.md               # Ternary encoding, scales, GOZ1, kernels
+    ├── TERNARY.md               # Ternary encoding, scales, GOZ1, kernels
+    └── FUSED_ROUTING_SAAQ.md    # Fused routing / SAAQ kernels + traffic model
 ```
 
 ### Cargo features
 
 | Feature | Effect |
 |---------|--------|
-| *(default empty)* | Stub GPU API; no `nvcc` required |
+| *(default empty)* | Stub GPU API; no `nvcc` required; **no** fused SAAQ public surface |
 | `cuda` | Real `src/gpu/*`, `cust`, optional `nvtx` profiling ranges |
+| `saaq` | Experimental fused routing / SAAQ host module and (with `cuda`) SAAQ + fused device kernels. **Not** on `default`. |
 | `bench` | Serde deps for `examples/benchmark` (pair with `cuda` for GPU) |
 
 ---
@@ -128,6 +132,12 @@ Re-exported from `src/lib.rs` (names available with or without `cuda` via stub):
 | `bitpacking` module | Host packing APIs (`pack_ternary`, `pack_binary`, …) |
 | `oracle` module | Named CPU oracles + seed/shape mismatch reporting |
 
+With **`--features saaq`** (experimental; not crates.io default):
+
+| Symbol | Role |
+|--------|------|
+| `fused` module | Host fused routing / SAAQ reference + VRAM traffic model |
+
 `GpuResult<T>` (`type` alias for `Result<T, GpuError>`) is **not** re-exported
 from the crate root today. Use `Result<_, myelin_accelerator::GpuError>` at the
 boundary, or `myelin_accelerator::gpu::GpuResult` if you want the alias (via the
@@ -144,6 +154,10 @@ These are the **ergonomic** wrappers currently implemented:
 - Spiking: `poisson_encode` / `_async`
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
 
+With **`--features saaq`**:
+
+- Routing / SAAQ: `routing_softmax` / `_async`, `routing_entropy_reduce` / `_async`, `saaq_select` / `_async`, `saaq_select_fused` / `_async`, `routing_saaq_fused` / `_async` (see [FUSED_ROUTING_SAAQ.md](FUSED_ROUTING_SAAQ.md))
+
 Scalar CPU oracles for the wrappers above, plus `cosine_similarity_batched` (loaded, not yet wrapped), live in `src/oracle.rs`.
 
 Additional kernels may be **loaded** in `KernelModule` and still lack a
@@ -157,6 +171,8 @@ consumers share.
 | PTX module | Symbols |
 |------------|---------|
 | `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `spike_rate`, `reset_membrane`, `stdp_update`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` |
+| `spiking_network` (`saaq`) | plus `saaq_find_best_walker`, `saaq_reduce_partials_f16` |
+| `fused_routing_saaq` (`saaq`) | `routing_softmax`, `saaq_select_fused`, `routing_saaq_fused_pass1`, `fused_telemetry_reduce_pass2` |
 | `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` |
 | `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass1`, `satsolver_best_reduce_pass2` |
 | `ternary_gemm` | `ternary_gemv`, `ternary_gemm` |
@@ -174,7 +190,7 @@ consumers share.
 
 | Path | Purpose |
 |------|---------|
-| CPU CI | `cargo test --locked`, `cargo build --no-default-features` |
+| CPU CI | `cargo test --locked`, `cargo test --features saaq`, `cargo build --no-default-features` |
 | GPU local / self-hosted | `cargo test --features cuda -- --ignored`, benchmark example |
 | CLion | CMake CXX-only + `nvcc -ptx` custom target — **not** CMake native `CUDA` language |
 
@@ -210,7 +226,7 @@ When proposing a feature, answer:
 Tracked elsewhere but **in-boundary** if they stay low-level:
 
 - Packed ternary device kernels `ternary_gemv` / `ternary_gemm` (GH #9 / [LIM-890](https://linear.app/rpd-34/issue/LIM-890)) — host + device live in `src/bitpacking.rs`, `cu/ternary_gemm.cu`, `docs/TERNARY.md`
-- Fused routing / SAAQ kernels (GH #14 / [LIM-891](https://linear.app/rpd-34/issue/LIM-891)) — only generic device code + benches
+- Fused routing / SAAQ kernels (GH #14 / [LIM-891](https://linear.app/rpd-34/issue/LIM-891)) — `cu/fused_routing_saaq.cu`, `src/fused.rs`, [docs/FUSED_ROUTING_SAAQ.md](FUSED_ROUTING_SAAQ.md), behind `--features saaq`
 - More `GpuAccelerator` wrappers for already-loaded symbols
 - Wider public surface for bitpacking + device kernel parity docs
 

@@ -3,6 +3,8 @@
 
 // myelin-accelerator: safe Rust FFI wrappers around CUDA spiking-network kernels.
 pub mod bitpacking;
+#[cfg(feature = "saaq")]
+pub mod fused;
 pub mod oracle;
 
 #[cfg(not(feature = "cuda"))]
