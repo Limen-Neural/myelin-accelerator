@@ -1,11 +1,11 @@
 // Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::capability::evaluate_capabilities;
 pub use crate::capability::{
     Backend, CapabilityFacts, CapabilityReport, ComputeCapability, ExecutionPolicy, FallbackReason,
     FallbackRecord, KernelAvailability,
 };
+use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
 pub use crate::error::{GpuError, GpuResult};
 
 pub(crate) fn host_facts() -> CapabilityFacts {
@@ -122,7 +122,9 @@ impl GpuAccelerator {
 
     /// Construct under an explicit execution policy.
     pub fn with_policy(policy: ExecutionPolicy) -> GpuResult<Self> {
-        let capabilities = evaluate_capabilities(&host_facts());
+        let mut facts = host_facts();
+        apply_failure_to_facts(&mut facts, FallbackReason::CudaFeatureNotBuilt);
+        let capabilities = evaluate_capabilities(&facts);
         match policy {
             ExecutionPolicy::PreferGpu => Ok(Self { capabilities }),
             ExecutionPolicy::RequireGpu => {
