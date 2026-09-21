@@ -128,12 +128,18 @@ mod tests {
 
     #[test]
     fn non_absence_device_lookup_maps_to_driver_runtime_failure() {
-        let error = device_lookup_failure(cust::error::CudaError::InvalidContext);
-        assert_eq!(
-            error.fallback_reason(),
-            Some(FallbackReason::DriverRuntimeFailure)
-        );
-        assert!(matches!(error, GpuError::InitFailed(_)));
+        for cuda_error in [
+            cust::error::CudaError::Deinitialized,
+            cust::error::CudaError::InvalidContext,
+        ] {
+            let error = device_lookup_failure(cuda_error);
+            assert_eq!(
+                error.fallback_reason(),
+                Some(FallbackReason::DriverRuntimeFailure),
+                "{cuda_error:?}"
+            );
+            assert!(matches!(error, GpuError::InitFailed(_)), "{cuda_error:?}");
+        }
     }
 
     #[test]

@@ -700,8 +700,9 @@ fn is_user_path(lower: &str) -> bool {
 }
 
 fn is_secret_key(key: &str) -> bool {
+    let key = key.replace('-', "_");
     matches!(
-        key,
+        key.as_str(),
         "token"
             | "password"
             | "secret"
@@ -719,6 +720,9 @@ fn is_secret_key(key: &str) -> bool {
         || key.ends_with("credential")
         || key.ends_with("authorization")
         || key.contains("_secret_")
+        || key.contains("_access_key")
+        || key.contains("_api_key")
+        || key.contains("_secret_key")
 }
 
 #[cfg(test)]
@@ -1079,11 +1083,11 @@ mod tests {
     #[test]
     fn sanitize_diagnostic_redacts_namespaced_credentials() {
         let clean = sanitize_diagnostic(
-            "AWS_SECRET_ACCESS_KEY=abc MY_API_KEY=def service_authorization=ghi",
+            "AWS_SECRET_ACCESS_KEY=abc MY_API_KEY=def service_authorization=ghi AWS_ACCESS_KEY_ID=AKIA x-api-key=xyz",
         );
         assert_eq!(
             clean,
-            "AWS_SECRET_ACCESS_KEY=<redacted> MY_API_KEY=<redacted> service_authorization=<redacted>"
+            "AWS_SECRET_ACCESS_KEY=<redacted> MY_API_KEY=<redacted> service_authorization=<redacted> AWS_ACCESS_KEY_ID=<redacted> x-api-key=<redacted>"
         );
     }
 
