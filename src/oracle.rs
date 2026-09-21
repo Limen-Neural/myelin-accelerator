@@ -77,7 +77,10 @@ pub fn poisson_encode_oracle(stimuli: &[f32], seed: u32) -> Vec<u32> {
     let mut spikes = vec![0u32; n];
     for i in 0..n {
         let mut rng = lcg_next(seed ^ (i as u32));
-        let threshold = stimuli[i].clamp(0.0, 1.0);
+        // Match CUDA `fminf`/`fmaxf`: NaN is ignored, so a NaN rate becomes 1.0.
+        // Rust `clamp` leaves NaN and `r < NaN` is always false.
+        #[allow(clippy::manual_clamp)]
+        let threshold = stimuli[i].min(1.0).max(0.0);
         rng = lcg_next(rng);
         let r = lcg_unit(rng);
         spikes[i] = u32::from(r < threshold);
@@ -224,6 +227,9 @@ fn eval_clause(asgn: &[u8], clause: &[i32]) -> u8 {
     for &lit in clause {
         let encoded = lit as u32;
         let var = (encoded >> 1) as usize;
+        if var >= asgn.len() {
+            continue;
+        }
         let neg = encoded & 1;
         let val = u32::from(asgn[var]) ^ neg;
         if val != 0 {
@@ -451,6 +457,7 @@ pub struct CaseRng {
 }
 
 impl CaseRng {
+    /// Create a generator from an explicit seed (replayable from mismatch logs).
     #[must_use]
     pub fn new(seed: u64) -> Self {
         Self { state: seed }
@@ -464,6 +471,7 @@ impl CaseRng {
         z ^ (z >> 31)
     }
 
+    /// Next 32-bit value from the SplitMix64 stream.
     #[must_use]
     pub fn next_u32(&mut self) -> u32 {
         self.mix() as u32
@@ -484,6 +492,7 @@ impl CaseRng {
         (u as f32) / 16_777_216.0
     }
 
+    /// Next trit in `{-1, 0, +1}`.
     #[must_use]
     pub fn next_trit(&mut self) -> i8 {
         match self.mix() % 3 {
@@ -493,10 +502,40 @@ impl CaseRng {
         }
     }
 
+    /// Next bit as `0` or `1`.
     #[must_use]
     pub fn next_bit(&mut self) -> u8 {
         (self.mix() & 1) as u8
     }
+}
+
+/// Pin clamp / signed-zero edges shared by CPU and GPU Poisson suites.
+pub fn pin_poisson_boundary_stimuli(stim: &mut [f32]) {
+    let n = stim.len();
+    if n > 0 {
+        stim[0] = 0.0;
+    }
+    if n > 1 {
+        stim[1] = 1.0;
+    }
+    if n > 2 {
+        stim[2] = -0.0;
+    }
+    if n > 3 {
+        stim[3] = 1.5;
+    }
+}
+
+/// Fill SAT walker scores, forcing an extreme negative at `n_walkers / 2`.
+pub fn fill_sat_scores(rng: &mut CaseRng, n_walkers: usize) -> Vec<i32> {
+    let mut scores = vec![0i32; n_walkers];
+    for (w, score) in scores.iter_mut().enumerate() {
+        *score = (rng.next_u32() % 17) as i32;
+        if w == n_walkers / 2 {
+            *score = i32::MIN / 4;
+        }
+    }
+    scores
 }
 
 /// Lengths that sit off warp (32) and launch-block (256) multiples.

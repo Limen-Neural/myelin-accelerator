@@ -8,8 +8,9 @@
 use myelin_accelerator::bitpacking::{pack_ternary_matrix, uniform_group_scales};
 use myelin_accelerator::oracle::{
     BOUNDARY_LENS, CASE_SEEDS, CaseRng, TERNARY_ABS_TOL, TERNARY_REL_TOL, assert_exact, assert_f32,
-    poisson_encode_oracle, satsolver_aux_reduce_best_oracle, satsolver_extract_oracle,
-    ternary_gemm_oracle, ternary_gemv_oracle,
+    fill_sat_scores, pin_poisson_boundary_stimuli, poisson_encode_oracle,
+    satsolver_aux_reduce_best_oracle, satsolver_extract_oracle, ternary_gemm_oracle,
+    ternary_gemv_oracle,
 };
 use myelin_accelerator::{GpuAccelerator, GpuBuffer};
 
@@ -53,11 +54,7 @@ fn poisson_encode_matches_oracle_seeded_boundaries() {
             for rate in &mut stim {
                 *rate = rng.next_rate_f32();
             }
-            if n > 2 {
-                stim[0] = 0.0;
-                stim[1] = 1.0;
-                stim[2] = -0.0;
-            }
+            pin_poisson_boundary_stimuli(&mut stim);
             let expected = poisson_encode_oracle(&stim, seed as u32);
             let d_stim = GpuBuffer::from_slice(&stim).unwrap();
             let mut d_spikes = GpuBuffer::<u32>::alloc(n).unwrap();
@@ -152,10 +149,7 @@ fn satsolver_aux_reduce_best_matches_oracle_seeded() {
             for slot in &mut assignment {
                 *slot = rng.next_bit();
             }
-            let mut scores = vec![0i32; n_walkers];
-            for score in &mut scores {
-                *score = (rng.next_u32() % 17) as i32;
-            }
+            let scores = fill_sat_scores(&mut rng, n_walkers);
             let mut clauses = vec![0i32; n_clauses * clause_len];
             for c in 0..n_clauses {
                 for l in 0..clause_len {
@@ -353,4 +347,15 @@ fn ternary_empty_k_matches_oracle_zeros() {
         .expect("empty-K gemv");
     let got = y.to_vec().unwrap();
     assert_f32(&got, &expected, 0.0, 0.0, 0, "m=4 k=0");
+
+    let n = 2usize;
+    let expected_c = ternary_gemm_oracle(&[], &[], &[], m, 0, n, 1, false);
+    let b = GpuBuffer::<f32>::alloc(0).unwrap();
+    let mut c = GpuBuffer::from_slice(&vec![9.0f32; m * n]).unwrap();
+    acc.ternary_gemm(
+        &packed, &scales, &b, &mut c, m as i32, 0, n as i32, 1, false,
+    )
+    .expect("empty-K gemm");
+    let got_c = c.to_vec().unwrap();
+    assert_f32(&got_c, &expected_c, 0.0, 0.0, 0, "m=4 k=0 n=2");
 }

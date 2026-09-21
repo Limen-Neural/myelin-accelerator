@@ -6,16 +6,124 @@
 //! Runs in CPU-only CI (`cargo test --locked`). GPU comparison lives in
 //! `tests/oracle_gpu.rs` and is capability-gated.
 
+#![allow(clippy::needless_range_loop, clippy::manual_clamp)]
+
 use myelin_accelerator::bitpacking::{
     pack_ternary_matrix, ternary_gemm_ref, ternary_gemv_ref, uniform_group_scales,
 };
 use myelin_accelerator::oracle::{
     BOUNDARY_LENS, CASE_SEEDS, COSINE_ABS_TOL, COSINE_REL_TOL, CaseRng, SHIP_EPS, TERNARY_ABS_TOL,
     TERNARY_REL_TOL, assert_exact, assert_f32, check_exact, check_f32,
-    cosine_similarity_batched_oracle, f32_close, lcg_next, lcg_unit, poisson_encode_oracle,
-    satsolver_aux_reduce_best_oracle, satsolver_extract_oracle, ternary_gemm_oracle,
-    ternary_gemv_oracle,
+    cosine_similarity_batched_oracle, f32_close, fill_sat_scores, lcg_next, lcg_unit,
+    pin_poisson_boundary_stimuli, poisson_encode_oracle, satsolver_aux_reduce_best_oracle,
+    satsolver_extract_oracle, ternary_gemm_oracle, ternary_gemv_oracle,
 };
+
+/// Independent Poisson reference: same NR LCG constants, written in the test.
+fn poisson_from_lcg(stimuli: &[f32], seed: u32) -> Vec<u32> {
+    stimuli
+        .iter()
+        .enumerate()
+        .map(|(i, &stim)| {
+            let mut state = seed ^ (i as u32);
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let threshold = stim.min(1.0).max(0.0);
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let r = (state >> 8) as f32 * (1.0 / 16_777_216.0);
+            u32::from(r < threshold)
+        })
+        .collect()
+}
+
+/// Independent cosine: scalar dots, `eps` written here (not imported).
+fn cosine_from_dots(
+    queries: &[f32],
+    keys: &[f32],
+    n_queries: usize,
+    n_keys: usize,
+    dim: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; n_queries * n_keys];
+    for q in 0..n_queries {
+        for k in 0..n_keys {
+            let mut dot = 0.0f32;
+            let mut nq = 0.0f32;
+            let mut nk = 0.0f32;
+            for d in 0..dim {
+                let qi = queries[q * dim + d];
+                let ki = keys[k * dim + d];
+                dot += qi * ki;
+                nq += qi * qi;
+                nk += ki * ki;
+            }
+            out[q * n_keys + k] = dot / (nq.sqrt() * nk.sqrt() + 1.0e-8);
+        }
+    }
+    out
+}
+
+/// Independent SAT reduce from the CNF layout (does not call the oracle).
+fn sat_reduce_from_formula(
+    assignment: &[u8],
+    scores: &[i32],
+    clauses: &[i32],
+    n_walkers: usize,
+    n_vars: usize,
+    n_clauses: usize,
+    clause_len: usize,
+) -> (Vec<u8>, i32, i32) {
+    let mut flags = vec![0u8; n_walkers * n_clauses];
+    for w in 0..n_walkers {
+        let asgn = &assignment[w * n_vars..w * n_vars + n_vars];
+        for c in 0..n_clauses {
+            let mut sat = 0u8;
+            for l in 0..clause_len {
+                let lit = clauses[c * clause_len + l] as u32;
+                let var = (lit >> 1) as usize;
+                if var >= asgn.len() {
+                    continue;
+                }
+                if (u32::from(asgn[var]) ^ (lit & 1)) != 0 {
+                    sat = 1;
+                    break;
+                }
+            }
+            flags[w * n_clauses + c] = sat;
+        }
+    }
+    let mut best_score = scores[0];
+    let mut best_walker = 0i32;
+    for (w, &s) in scores.iter().enumerate().skip(1) {
+        if s < best_score || (s == best_score && (w as i32) < best_walker) {
+            best_score = s;
+            best_walker = w as i32;
+        }
+    }
+    (flags, best_score, best_walker)
+}
+
+/// GEMV from unpacked trits (bypasses packed-word decode).
+fn gemv_from_trits(
+    weights: &[i8],
+    scales: &[f32],
+    x: &[f32],
+    m: usize,
+    k: usize,
+    group: usize,
+) -> Vec<f32> {
+    let gpr = k.div_ceil(group);
+    let mut y = vec![0.0f32; m];
+    for row in 0..m {
+        let mut acc = 0.0f32;
+        for kk in 0..k {
+            let w = weights[row * k + kk] as f32;
+            let s = scales[row * gpr + kk / group];
+            acc += w * s * x[kk];
+        }
+        y[row] = acc;
+    }
+    y
+}
 
 // ── LCG / encoding goldens ──────────────────────────────────────────────────
 
@@ -69,8 +177,45 @@ fn poisson_encode_empty_and_clamp_and_signed_zero() {
     let spikes = poisson_encode_oracle(&[-1.0, -0.0, 2.0, 1.0], 0);
     assert_eq!(spikes[0], 0, "negative rate clamps to 0");
     assert_eq!(spikes[1], 0, "signed zero does not fire");
-    assert_eq!(spikes[2], poisson_encode_oracle(&[1.0], 2)[0]);
-    assert_eq!(spikes[3], poisson_encode_oracle(&[1.0], 3)[0]);
+    assert_eq!(spikes[2], poisson_from_lcg(&[1.0], 2)[0]);
+    assert_eq!(spikes[3], poisson_from_lcg(&[1.0], 3)[0]);
+}
+
+#[test]
+fn poisson_encode_nan_rate_matches_cuda_minmax() {
+    // CUDA fminf/fmaxf ignore NaN, so the clamped threshold is 1.0 and r < 1 always fires.
+    let spikes = poisson_encode_oracle(&[f32::NAN], 0);
+    assert_exact(&spikes, &[1], 0, "n=1 stim=NaN");
+    assert_exact(
+        &spikes,
+        &poisson_from_lcg(&[f32::NAN], 0),
+        0,
+        "n=1 stim=NaN lcg",
+    );
+}
+
+#[test]
+fn case_rng_same_seed_same_sequence() {
+    let mut a = CaseRng::new(42);
+    let mut b = CaseRng::new(42);
+    let seq_a: Vec<u32> = (0..8).map(|_| a.next_u32()).collect();
+    let seq_b: Vec<u32> = (0..8).map(|_| b.next_u32()).collect();
+    assert_exact(&seq_a, &seq_b, 42, "same seed");
+    assert_exact(
+        &seq_a,
+        &[
+            803_958_421,
+            2_993_090_819,
+            319_790_930,
+            239_788_948,
+            608_707_570,
+            1_015_077_638,
+            1_161_260_381,
+            2_661_167_012,
+        ],
+        42,
+        "golden sequence",
+    );
 }
 
 #[test]
@@ -82,30 +227,14 @@ fn poisson_encode_boundary_lengths_and_seeds() {
             for rate in &mut stim {
                 *rate = rng.next_rate_f32();
             }
-            if n > 0 {
-                stim[0] = 0.0;
-            }
-            if n > 1 {
-                stim[1] = 1.0;
-            }
-            if n > 2 {
-                stim[2] = -0.0;
-            }
-            if n > 3 {
-                stim[3] = 1.5;
-            }
+            pin_poisson_boundary_stimuli(&mut stim);
             let spikes = poisson_encode_oracle(&stim, seed as u32);
             assert_eq!(spikes.len(), n, "seed={seed} n={n} truncated spikes");
             for &s in &spikes {
                 assert!(s == 0 || s == 1, "seed={seed} n={n} non-binary spike");
             }
             let shape = format!("n={n}");
-            assert_exact(
-                &spikes,
-                &poisson_encode_oracle(&stim, seed as u32),
-                seed,
-                &shape,
-            );
+            assert_exact(&spikes, &poisson_from_lcg(&stim, seed as u32), seed, &shape);
         }
     }
 }
@@ -182,8 +311,15 @@ fn cosine_similarity_seeded_and_non_multiples() {
             for &v in &out {
                 assert!(v.is_finite(), "seed={seed} {shape} non-finite cosine {v}");
             }
-            let again = cosine_similarity_batched_oracle(&queries, &keys, nq, nk, dim);
-            assert_f32(&out, &again, 0.0, 0.0, seed, &shape);
+            let expected = cosine_from_dots(&queries, &keys, nq, nk, dim);
+            assert_f32(
+                &out,
+                &expected,
+                COSINE_ABS_TOL,
+                COSINE_REL_TOL,
+                seed,
+                &shape,
+            );
         }
     }
 }
@@ -287,13 +423,7 @@ fn satsolver_seeded_walkers_not_block_multiples() {
             for slot in &mut assignment {
                 *slot = rng.next_bit();
             }
-            let mut scores = vec![0i32; n_walkers];
-            for (w, score) in scores.iter_mut().enumerate() {
-                *score = (rng.next_u32() % 17) as i32;
-                if w == n_walkers / 2 {
-                    *score = i32::MIN / 4;
-                }
-            }
+            let scores = fill_sat_scores(&mut rng, n_walkers);
             let mut clauses = vec![0i32; n_clauses * clause_len];
             for c in 0..n_clauses {
                 for l in 0..clause_len {
@@ -326,7 +456,7 @@ fn satsolver_seeded_walkers_not_block_multiples() {
                 n_vars,
                 "seed={seed} {shape} extract truncated"
             );
-            let again = satsolver_aux_reduce_best_oracle(
+            let (exp_flags, exp_score, exp_walker) = sat_reduce_from_formula(
                 &assignment,
                 &scores,
                 &clauses,
@@ -335,7 +465,9 @@ fn satsolver_seeded_walkers_not_block_multiples() {
                 n_clauses,
                 clause_len,
             );
-            assert_eq!(got, again);
+            assert_exact(&got.sat_flags, &exp_flags, seed, &shape);
+            assert_eq!(got.best_score, exp_score, "seed={seed} {shape}");
+            assert_eq!(got.best_walker, exp_walker, "seed={seed} {shape}");
         }
     }
 }
@@ -389,6 +521,31 @@ fn ternary_gemm_oracle_golden_matches_gemv_columns() {
 }
 
 #[test]
+fn ternary_gemv_oracle_packed_word_specified() {
+    // One row, four trits in a single word, LSB-first:
+    // +1, 0, -1, +1 → codes 01 00 10 01 → bits 7..0 = 0b0110_0001 = 0x61.
+    let packed = [0x61u32];
+    let scales = [2.0f32];
+    let x = [1.0f32, 2.0, 3.0, 4.0];
+    let y = ternary_gemv_oracle(&packed, &scales, &x, 1, 4, 4, false);
+    // 2*(1*1 + 0*2 + (-1)*3 + 1*4) = 4
+    assert_f32(&y, &[4.0], 1e-6, 0.0, 0, "packed-word m=1 k=4");
+}
+
+#[test]
+fn satsolver_aux_oob_literal_does_not_panic() {
+    let assignment = vec![1u8, 0];
+    let scores = vec![1i32];
+    // var = 99 (literal 198) is out of range; remaining literal x0 is sat.
+    let clauses = vec![198, 0];
+    let got = satsolver_aux_reduce_best_oracle(&assignment, &scores, &clauses, 1, 2, 1, 2);
+    assert_exact(&got.sat_flags, &[1], 0, "oob literal skipped");
+    let all_oob = vec![-1i32];
+    let got = satsolver_aux_reduce_best_oracle(&assignment, &scores, &all_oob, 1, 2, 1, 1);
+    assert_exact(&got.sat_flags, &[0], 0, "all-oob clause unsat");
+}
+
+#[test]
 fn ternary_oracles_empty_k_zero_output() {
     let y = ternary_gemv_oracle(&[], &[], &[], 4, 0, 1, false);
     assert_f32(&y, &[0.0; 4], 0.0, 0.0, 0, "m=4 k=0");
@@ -431,6 +588,8 @@ fn ternary_oracles_k_not_multiple_of_16_and_extreme_values() {
             let shape = format!("m={m} k={k} group={group}");
             assert_eq!(y.len(), m, "seed={seed} {shape}");
             assert_f32(&y, &y_skip, TERNARY_ABS_TOL, TERNARY_REL_TOL, seed, &shape);
+            let from_trits = gemv_from_trits(&weights, &scales, &x, m, k, group);
+            assert_f32(&y, &from_trits, 0.0, 0.0, seed, &shape);
             let host = ternary_gemv_ref(&packed, &scales, &x, m, k, group, false);
             assert_f32(&y, &host, 0.0, 0.0, seed, &shape);
 
