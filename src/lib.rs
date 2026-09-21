@@ -5,6 +5,7 @@
 pub mod bitpacking;
 pub mod capability;
 mod error;
+pub mod oracle;
 
 #[cfg(not(feature = "cuda"))]
 pub mod gpu_stub;

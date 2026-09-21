@@ -28,6 +28,7 @@ local quality/benchmark harness. Not a research orchestrator.
 | Feature gates | `cuda` (cust + nvtx), `bench` (serde JSON/CSV harness) |
 | CPU-safe stub | `src/gpu_stub.rs` when `cuda` is off (CI / sandboxes) |
 | Host packing utilities | Binary / ternary bitpacking (`src/bitpacking.rs`) — host-side layout helpers that match future device kernels |
+| CPU oracles | Scalar reference implementations (`src/oracle.rs`) for differential tests against public kernel wrappers |
 | Launch / stream helpers | Default streams, aux buffers for multi-pass reductions |
 | Local QA | CTest matrix, GPU `#[ignore]` tests, `examples/benchmark.rs` |
 | Kernel-level telemetry primitives | On-device reduce passes (entropy, membrane stats) that stay generic |
@@ -86,6 +87,7 @@ myelin-accelerator/
 │   ├── capability.rs            # Probe types, decision table, sanitizer
 │   ├── error.rs                 # GpuError / GpuResult (CUDA + stub)
 │   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
+│   ├── oracle.rs                # Scalar CPU oracles + seeded compare helpers
 │   ├── gpu_stub.rs              # CPU-safe stand-ins (no cuda feature)
 │   └── gpu/                     # Real CUDA path (feature = "cuda")
 │       ├── mod.rs               # Internal module tree + re-exports
@@ -129,6 +131,7 @@ Re-exported from `src/lib.rs` (names available with or without `cuda` via stub):
 | `ExecutionPolicy` | `PreferGpu` (recorded CPU fallback) or `RequireGpu` (fail closed) |
 | `FallbackReason` / `FallbackRecord` | Stable reason codes + selected implementation |
 | `bitpacking` module | Host packing APIs (`pack_ternary`, `pack_binary`, …) |
+| `oracle` module | Named CPU oracles + seed/shape mismatch reporting |
 
 `GpuResult<T>` (`type` alias for `Result<T, GpuError>`) is **not** re-exported
 from the crate root today. Use `Result<_, myelin_accelerator::GpuError>` at the
@@ -165,6 +168,8 @@ These are the **ergonomic** wrappers currently implemented:
 - SAT: `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
 - Spiking: `poisson_encode` / `_async`
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
+
+Scalar CPU oracles for the wrappers above, plus `cosine_similarity_batched` (loaded, not yet wrapped), live in `src/oracle.rs`.
 
 Additional kernels may be **loaded** in `KernelModule` and still lack a
 dedicated `GpuAccelerator` method. Advanced callers can use
