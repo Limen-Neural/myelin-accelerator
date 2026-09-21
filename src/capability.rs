@@ -352,6 +352,7 @@ pub fn evaluate_capabilities(facts: &CapabilityFacts) -> CapabilityReport {
 ///
 /// After every kernel family has JIT-loaded, `DriverRuntimeFailure` is treated
 /// as a later stream/setup failure: runtime and device stay available.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub(crate) fn apply_failure_to_facts(facts: &mut CapabilityFacts, reason: FallbackReason) {
     match reason {
         FallbackReason::CudaFeatureNotBuilt => {
