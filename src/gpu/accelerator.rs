@@ -7,7 +7,7 @@ use crate::capability::{
     FallbackRecord, KernelAvailability, apply_failure_to_facts, evaluate_capabilities,
     sanitize_diagnostic,
 };
-use crate::gpu::context::GpuContext;
+use crate::gpu::context::{CurrentContextGuard, GpuContext};
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::kernel::KernelModule;
 use crate::gpu::memory::GpuBuffer;
@@ -76,6 +76,7 @@ impl GpuAccelerator {
     }
 
     fn try_init_gpu() -> Result<Self, InitFailure> {
+        let current_context = CurrentContextGuard::capture();
         let mut facts = crate::host_facts();
 
         let ctx = match GpuContext::init() {
@@ -141,14 +142,16 @@ impl GpuAccelerator {
         };
 
         let capabilities = capability_report_for_success(facts);
-        Ok(Self {
+        let accelerator = Self {
             _ctx: Some(ctx),
             modules: Some(modules),
             stream: Some(stream),
             aux_partial_scores: RefCell::new(None),
             aux_partial_walkers: RefCell::new(None),
             capabilities,
-        })
+        };
+        current_context.disarm();
+        Ok(accelerator)
     }
 
     fn cpu_fallback(capabilities: CapabilityReport) -> Self {

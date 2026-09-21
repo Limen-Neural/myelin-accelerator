@@ -10,12 +10,45 @@ use crate::capability::{
 };
 use crate::gpu::error::{GpuError, GpuResult};
 use cust::context::Context;
+use cust::context::legacy::{CurrentContext, UnownedContext};
 use cust::device::{Device, DeviceAttribute};
 
 /// Owns a CUDA primary context for device 0.
 pub struct GpuContext {
     pub(crate) _ctx: Context,
     pub(crate) compute_capability: Option<ComputeCapability>,
+}
+
+/// Restores the caller's thread-local CUDA context unless explicitly disarmed.
+pub(crate) struct CurrentContextGuard {
+    previous: Option<UnownedContext>,
+    armed: bool,
+}
+
+impl CurrentContextGuard {
+    pub(crate) fn capture() -> Self {
+        let previous = cust::init(cust::CudaFlags::empty())
+            .and_then(|()| CurrentContext::get_current())
+            .ok();
+        Self {
+            previous,
+            armed: true,
+        }
+    }
+
+    pub(crate) fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CurrentContextGuard {
+    fn drop(&mut self) {
+        if self.armed
+            && let Some(context) = &self.previous
+        {
+            let _ = CurrentContext::set_current(context);
+        }
+    }
 }
 
 impl GpuContext {
@@ -110,6 +143,39 @@ fn device_lookup_failure(error: cust::error::CudaError) -> GpuError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a CUDA device and driver"]
+    fn context_guard_restores_caller_after_post_init_failure() {
+        use cust::context::legacy::{Context as LegacyContext, ContextFlags};
+        use std::ptr;
+
+        cust::init(cust::CudaFlags::empty()).expect("CUDA driver initializes");
+        let device = Device::get_device(0).expect("CUDA device 0 is available");
+        let caller_context = LegacyContext::create_and_push(ContextFlags::SCHED_AUTO, device)
+            .expect("caller context can be created");
+        let current_context = || {
+            let mut context = ptr::null_mut();
+            // SAFETY: CUDA is initialized and `context` points to writable storage.
+            unsafe {
+                assert_eq!(
+                    cust::sys::cuCtxGetCurrent(&mut context),
+                    cust::sys::CUresult::CUDA_SUCCESS
+                );
+            }
+            context
+        };
+
+        let before = current_context();
+        let guard = CurrentContextGuard::capture();
+        let temporary_primary = Context::new(device).expect("primary context can be retained");
+        assert_ne!(current_context(), before);
+        drop(temporary_primary);
+        drop(guard);
+        assert_eq!(current_context(), before);
+
+        drop(caller_context);
+    }
 
     #[test]
     fn missing_device_maps_to_device_unavailable() {

@@ -12,7 +12,7 @@
 //!
 //! Decision table (first matching row wins):
 //!
-//! | `cuda_built` | runtime | device | CC ≥ 12.0 | PTX compiled | kernel runtime | selected | reason |
+//! | `cuda_built` | runtime | device | CC meets PTX target | PTX compiled | kernel runtime | selected | reason |
 //! |--------------|---------|--------|-----------|--------------|----------------|----------|--------|
 //! | false | * | * | * | * | * | `Cpu` | `cuda_feature_not_built` |
 //! | true | false | * | * | * | * | `Cpu` | `driver_runtime_failure` |
@@ -30,12 +30,6 @@
 //! facts intact.
 
 use std::fmt;
-
-/// Blackwell-class floor for first-party PTX (`sm_120`).
-pub const REQUIRED_COMPUTE_CAPABILITY: ComputeCapability = ComputeCapability {
-    major: 12,
-    minor: 0,
-};
 
 /// Selected implementation for a probe or accelerator instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -132,16 +126,24 @@ pub struct ComputeCapability {
     pub minor: u32,
 }
 
+/// Compute-capability floor encoded by the PTX target selected at build time.
+///
+/// This is `12.0` for the default `sm_120` build and follows an explicit
+/// `MYELIN_CUDA_ARCH` override.
+pub const REQUIRED_COMPUTE_CAPABILITY: ComputeCapability =
+    include!(concat!(env!("OUT_DIR"), "/compiled_cuda_capability.rs"));
+
 impl ComputeCapability {
     /// Same as [`REQUIRED_COMPUTE_CAPABILITY`].
     pub const REQUIRED: Self = REQUIRED_COMPUTE_CAPABILITY;
 
-    /// `true` when this capability can run `sm_120` first-party PTX.
+    /// `true` when this capability meets the compiled PTX target.
     ///
-    /// The published floor is [`REQUIRED_COMPUTE_CAPABILITY`] (`12.0`). Any
-    /// `major >= 12` is accepted; `minor` is reserved for a future raise.
+    /// The default floor is `12.0`; `MYELIN_CUDA_ARCH` can select another
+    /// target at build time.
     pub const fn meets_minimum(self) -> bool {
-        self.major >= Self::REQUIRED.major
+        (self.major as u64) * 10 + self.minor as u64
+            >= (Self::REQUIRED.major as u64) * 10 + Self::REQUIRED.minor as u64
     }
 }
 
@@ -331,34 +333,8 @@ impl CapabilityReport {
 #[must_use]
 pub fn probe_capabilities() -> CapabilityReport {
     #[cfg(feature = "cuda")]
-    let _restore_current_context = CurrentContextRestore::capture();
+    let _restore_current_context = crate::gpu::context::CurrentContextGuard::capture();
     crate::GpuAccelerator::new().capabilities().clone()
-}
-
-#[cfg(feature = "cuda")]
-struct CurrentContextRestore(Option<cust::context::legacy::UnownedContext>);
-
-#[cfg(feature = "cuda")]
-impl CurrentContextRestore {
-    fn capture() -> Self {
-        use cust::context::legacy::CurrentContext;
-
-        let current = cust::init(cust::CudaFlags::empty())
-            .and_then(|()| CurrentContext::get_current())
-            .ok();
-        Self(current)
-    }
-}
-
-#[cfg(feature = "cuda")]
-impl Drop for CurrentContextRestore {
-    fn drop(&mut self) {
-        use cust::context::legacy::CurrentContext;
-
-        if let Some(context) = &self.0 {
-            let _ = CurrentContext::set_current(context);
-        }
-    }
 }
 
 /// Pure decision function over [`CapabilityFacts`] (mocked tests welcome).
@@ -585,6 +561,17 @@ fn quote_opens_group(input: &str, token_start: usize, quote_index: usize) -> boo
 }
 
 fn sanitize_token(tok: &str) -> String {
+    if tok.contains([',', ';']) {
+        let mut sanitized = String::with_capacity(tok.len());
+        let mut field_start = 0;
+        for (index, separator) in tok.match_indices([',', ';']) {
+            sanitized.push_str(&sanitize_token(&tok[field_start..index]));
+            sanitized.push_str(separator);
+            field_start = index + separator.len();
+        }
+        sanitized.push_str(&sanitize_token(&tok[field_start..]));
+        return sanitized;
+    }
     let (prefix, core, suffix) = split_wrapping_punct(tok);
     let lower = core.to_ascii_lowercase();
     if is_user_path(&lower) {
@@ -1109,36 +1096,33 @@ mod tests {
     }
 
     #[test]
-    fn compute_capability_floor_is_sm_120() {
-        assert!(!ComputeCapability { major: 8, minor: 9 }.meets_minimum());
-        assert!(
-            !ComputeCapability {
-                major: 11,
-                minor: 0
-            }
-            .meets_minimum()
-        );
-        assert!(
-            ComputeCapability {
-                major: 12,
-                minor: 0
-            }
-            .meets_minimum()
-        );
+    fn compute_capability_floor_tracks_compiled_target() {
+        let required = ComputeCapability::REQUIRED;
+        let arch_digits: String = env!("MYELIN_COMPILED_CUDA_ARCH")
+            .chars()
+            .skip_while(|ch| !ch.is_ascii_digit())
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let encoded = arch_digits.parse::<u32>().expect("validated build target");
+        assert_eq!(required.major, encoded / 10);
+        assert_eq!(required.minor, encoded % 10);
+        assert!(required.meets_minimum());
         assert!(
             ComputeCapability {
-                major: 12,
-                minor: 1
+                major: required.major + 1,
+                minor: 0,
             }
             .meets_minimum()
         );
-        assert!(
-            ComputeCapability {
-                major: 13,
-                minor: 0
-            }
-            .meets_minimum()
-        );
+        if required.major > 0 {
+            assert!(
+                !ComputeCapability {
+                    major: required.major - 1,
+                    minor: 9,
+                }
+                .meets_minimum()
+            );
+        }
     }
 
     #[test]
@@ -1220,6 +1204,14 @@ mod tests {
             ),
             ("token:hunter2 ok", "token:<redacted> ok"),
             ("api-key:supersecret ok", "api-key:<redacted> ok"),
+            (
+                "state=bad,password=hunter2 ok",
+                "state=bad,password=<redacted> ok",
+            ),
+            (
+                "state=bad;file=/workspace/alice/private.ptx ok",
+                "state=bad;file=<path> ok",
+            ),
         ];
 
         for (input, expected) in cases {
