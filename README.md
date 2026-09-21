@@ -14,6 +14,7 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 - `Routing path`: `cosine_similarity_top_k` now uses warp-participating top-k reduction instead of a single-thread selection tail.
 - `Rust FFI`: kernel symbols are loaded through `src/gpu/kernel.rs`; the codebase stays ABI-consistent with the CUDA side.
 - Host **binary/ternary bitpacking** + group scales + CPU ref matmul: `src/bitpacking.rs`.
+- Scalar **CPU oracles** for public kernel paths + seeded mismatch reporting: `src/oracle.rs`.
 - Device **ternary GEMV/GEMM** (group-scaled, optional zero-skip): `cu/ternary_gemm.cu` — see [docs/TERNARY.md](docs/TERNARY.md).
 
 ## Module map
@@ -22,6 +23,7 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 |------|------|---------|
 | `src/lib.rs` | Crate root re-exports | yes |
 | `src/bitpacking.rs` | Host binary/ternary pack/unpack, scales, ref GEMV/GEMM | yes (`bitpacking`) |
+| `src/oracle.rs` | Scalar CPU oracles + seed/shape mismatch helpers | yes (`oracle`) |
 | `src/gpu/` | CUDA context, PTX load, buffers, launches | via re-exports when `cuda` |
 | `src/gpu_stub.rs` | CPU-safe stand-ins without toolkit | used when `cuda` off |
 | `cu/*.cu` | Device kernels (spiking, similarity, SAT, ternary) | via PTX + wrappers |
