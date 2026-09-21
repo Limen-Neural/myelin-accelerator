@@ -111,24 +111,29 @@ impl GpuAccelerator {
             });
         }
 
-        let modules = match KernelModule::load() {
+        let modules = match KernelModule::load_with_availability() {
             Ok(modules) => modules,
-            Err(e) => {
-                facts.kernels = KernelAvailability::all_unavailable();
+            Err(failure) => {
+                facts.kernels = failure.availability;
+                let reason = failure
+                    .error
+                    .fallback_reason()
+                    .unwrap_or(FallbackReason::DriverRuntimeFailure);
                 return Err(InitFailure {
                     facts,
-                    reason: FallbackReason::KernelSpecializationUnavailable,
-                    detail: e.to_string(),
+                    reason,
+                    detail: failure.error.to_string(),
                 });
             }
         };
 
+        facts.kernels = KernelAvailability::all_available();
         let stream = match Stream::new(StreamFlags::DEFAULT, None) {
             Ok(stream) => stream,
             Err(e) => {
                 return Err(InitFailure {
                     facts,
-                    reason: FallbackReason::DriverRuntimeFailure,
+                    reason: FallbackReason::StreamCreationFailure,
                     detail: format!("{e:?}"),
                 });
             }
@@ -774,9 +779,8 @@ fn apply_failure_to_facts(facts: &mut CapabilityFacts, reason: FallbackReason) {
             facts.device_available = false;
         }
         FallbackReason::UnsupportedHardware => {}
-        FallbackReason::KernelSpecializationUnavailable => {
-            facts.kernels = KernelAvailability::all_unavailable();
-        }
+        FallbackReason::KernelSpecializationUnavailable => {}
+        FallbackReason::StreamCreationFailure => {}
         FallbackReason::InvalidInput => {}
     }
 }
@@ -843,5 +847,30 @@ mod tests {
         assert!(report.device_available);
         assert!(report.gpu_usable());
         assert_eq!(report.selected_backend, Backend::Cuda);
+    }
+
+    #[test]
+    fn stream_failure_preserves_verified_runtime_device_and_kernels() {
+        let facts = CapabilityFacts {
+            cuda_built: true,
+            runtime_available: true,
+            device_available: true,
+            compute_capability: Some(ComputeCapability::REQUIRED),
+            kernels: KernelAvailability::all_available(),
+        };
+
+        let report = capability_report_for_failure(
+            facts,
+            FallbackReason::StreamCreationFailure,
+            "stream creation failed",
+        );
+
+        assert!(report.runtime_available);
+        assert!(report.device_available);
+        assert!(report.kernels.all_runtime_available());
+        assert_eq!(
+            report.fallback.expect("fallback").reason,
+            FallbackReason::StreamCreationFailure
+        );
     }
 }

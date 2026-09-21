@@ -24,8 +24,9 @@
 //! | true | true | true | true | true | any unknown | `Cpu` | `kernel_specialization_unavailable` |
 //! | true | true | true | true | true | all `true` | `Cuda` | — |
 //!
-//! `invalid_input` is a request-level reason (bad launch arguments), not a
-//! host-probe outcome.
+//! `stream_creation_failure` is a post-probe construction failure that keeps
+//! successful runtime, device, and kernel facts intact. `invalid_input` is a
+//! request-level reason (bad launch arguments), not a host-probe outcome.
 
 use std::fmt;
 
@@ -99,6 +100,8 @@ pub enum FallbackReason {
     UnsupportedHardware,
     /// Required PTX family or kernel symbol is missing after JIT.
     KernelSpecializationUnavailable,
+    /// CUDA initialized and kernels loaded, but stream creation failed.
+    StreamCreationFailure,
     /// Caller-supplied launch arguments are invalid.
     InvalidInput,
 }
@@ -112,6 +115,7 @@ impl FallbackReason {
             Self::DeviceUnavailable => "device_unavailable",
             Self::UnsupportedHardware => "unsupported_hardware",
             Self::KernelSpecializationUnavailable => "kernel_specialization_unavailable",
+            Self::StreamCreationFailure => "stream_creation_failure",
             Self::InvalidInput => "invalid_input",
         }
     }
@@ -505,11 +509,7 @@ fn split_wrapping_punct(tok: &str) -> (&str, &str, &str) {
 }
 
 fn is_user_path(lower: &str) -> bool {
-    lower.starts_with("/home/")
-        || lower.starts_with("/users/")
-        || lower.starts_with("/root/")
-        || lower.starts_with("/tmp/")
-        || lower.starts_with("/var/folders/")
+    lower.starts_with('/')
         || lower.contains("/.ssh/")
         || lower.contains("/.aws/")
         || (lower.len() >= 3
@@ -532,6 +532,12 @@ fn is_secret_key(key: &str) -> bool {
     ) || key.ends_with("token")
         || key.ends_with("password")
         || key.ends_with("secret")
+        || key.ends_with("api_key")
+        || key.ends_with("access_key")
+        || key.ends_with("secret_key")
+        || key.ends_with("credential")
+        || key.ends_with("authorization")
+        || key.contains("_secret_")
 }
 
 #[cfg(test)]
@@ -748,6 +754,10 @@ mod tests {
                 "kernel_specialization_unavailable",
             ),
             (FallbackReason::InvalidInput, "invalid_input"),
+            (
+                FallbackReason::StreamCreationFailure,
+                "stream_creation_failure",
+            ),
         ];
         for (reason, code) in expected {
             assert_eq!(reason.code(), code);
@@ -842,5 +852,24 @@ mod tests {
             sanitize_diagnostic("driver can't load /home/alice/private.ptx"),
             "driver can't load <path>"
         );
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_namespaced_credentials() {
+        let clean = sanitize_diagnostic(
+            "AWS_SECRET_ACCESS_KEY=abc MY_API_KEY=def service_authorization=ghi",
+        );
+        assert_eq!(
+            clean,
+            "AWS_SECRET_ACCESS_KEY=<redacted> MY_API_KEY=<redacted> service_authorization=<redacted>"
+        );
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_arbitrary_absolute_paths() {
+        let clean = sanitize_diagnostic(
+            "failed /workspace/alice/private.ptx file=/mnt/data/model.ptx system=/usr/local/cuda",
+        );
+        assert_eq!(clean, "failed <path> file=<path> system=<path>");
     }
 }

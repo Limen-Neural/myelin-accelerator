@@ -9,8 +9,9 @@
 //  file-system lookup — the bytes travel with the binary.
 // ════════════════════════════════════════════════════════════════════
 
-use crate::capability::sanitize_diagnostic;
+use crate::capability::{KernelAvailability, sanitize_diagnostic};
 use crate::gpu::error::{GpuError, GpuResult};
+use cust::error::CudaError;
 use cust::function::Function;
 use cust::module::Module;
 use std::collections::HashMap;
@@ -39,23 +40,33 @@ pub struct KernelModule {
     func_map: HashMap<String, String>,
 }
 
+pub(crate) struct KernelLoadFailure {
+    pub(crate) error: GpuError,
+    pub(crate) availability: KernelAvailability,
+}
+
 impl KernelModule {
     /// Load all PTX modules from their compile-time-embedded byte strings.
     ///
     /// The PTX is JIT-compiled by the CUDA driver on first call.
     /// On sm_120 hardware with an up-to-date driver this takes < 1 s.
     pub fn load() -> GpuResult<Self> {
+        Self::load_with_availability().map_err(|failure| failure.error)
+    }
+
+    pub(crate) fn load_with_availability() -> Result<Self, KernelLoadFailure> {
         range_push!("KernelModule::load");
         let result = Self::load_inner();
         range_pop!();
         result
     }
 
-    fn load_inner() -> GpuResult<Self> {
+    fn load_inner() -> Result<Self, KernelLoadFailure> {
         let mut modules = HashMap::new();
         let mut func_map = HashMap::new();
+        let mut availability = KernelAvailability::compiled_unverified();
 
-        Self::load_and_map(
+        if let Err(error) = Self::load_and_map(
             &mut modules,
             &mut func_map,
             SPIKING_NETWORK_PTX,
@@ -72,15 +83,29 @@ impl KernelModule {
                 "routing_entropy_reduce_pass1",
                 "latent_reduce_pass2",
             ],
-        )?;
-        Self::load_and_map(
+        ) {
+            availability.spiking_network = Some(false);
+            return Err(KernelLoadFailure {
+                error,
+                availability,
+            });
+        }
+        availability.spiking_network = Some(true);
+        if let Err(error) = Self::load_and_map(
             &mut modules,
             &mut func_map,
             VECTOR_SIMILARITY_PTX,
             "vector_similarity",
             &["cosine_similarity_batched", "cosine_similarity_top_k"],
-        )?;
-        Self::load_and_map(
+        ) {
+            availability.vector_similarity = Some(false);
+            return Err(KernelLoadFailure {
+                error,
+                availability,
+            });
+        }
+        availability.vector_similarity = Some(true);
+        if let Err(error) = Self::load_and_map(
             &mut modules,
             &mut func_map,
             SATSOLVER_PTX,
@@ -94,14 +119,27 @@ impl KernelModule {
                 "satsolver_best_reduce_pass1",
                 "satsolver_best_reduce_pass2",
             ],
-        )?;
-        Self::load_and_map(
+        ) {
+            availability.satsolver = Some(false);
+            return Err(KernelLoadFailure {
+                error,
+                availability,
+            });
+        }
+        availability.satsolver = Some(true);
+        if let Err(error) = Self::load_and_map(
             &mut modules,
             &mut func_map,
             TERNARY_GEMM_PTX,
             "ternary_gemm",
             &["ternary_gemv", "ternary_gemm"],
-        )?;
+        ) {
+            availability.ternary_gemm = Some(false);
+            return Err(KernelLoadFailure {
+                error,
+                availability,
+            });
+        }
 
         Ok(Self { modules, func_map })
     }
@@ -115,11 +153,9 @@ impl KernelModule {
     ) -> GpuResult<()> {
         let module = Self::load_module_from_ptx(ptx, mod_name)?;
         for &func_name in funcs {
-            if module.get_function(func_name).is_err() {
-                return Err(GpuError::KernelNotFound(format!(
-                    "{func_name} in {mod_name}"
-                )));
-            }
+            module
+                .get_function(func_name)
+                .map_err(|error| function_lookup_error(func_name, error))?;
             func_map.insert(func_name.to_string(), mod_name.to_string());
         }
         modules.insert(mod_name.to_string(), module);
@@ -145,21 +181,45 @@ impl KernelModule {
 
         module
             .get_function(name)
-            .map_err(|e| GpuError::KernelNotFound(sanitize_diagnostic(&format!("{name}: {e}"))))
+            .map_err(|error| function_lookup_error(name, error))
     }
 
     // ── private helpers ───────────────────────────────────────────────────────
 
     /// JIT-compile a PTX string into a loaded CUDA module.
     fn load_module_from_ptx(ptx: &str, name: &str) -> GpuResult<Module> {
-        Module::from_ptx(ptx, &[]).map_err(|e| {
-            let detail = sanitize_diagnostic(&format!("{e:?}"));
+        Module::from_ptx(ptx, &[]).map_err(|error| {
+            let detail = sanitize_diagnostic(&format!("{error:?}"));
             eprintln!("[CUDA JIT] Failed to load module '{name}': {detail}");
-            GpuError::ModuleLoadFailed(format!(
-                "JIT compilation failed for '{name}': {detail} \
-                 (target: sm_120 — check driver ≥ 570 and CUDA toolkit ≥ 12.8)"
-            ))
+            module_load_error(name, error)
         })
+    }
+}
+
+fn function_lookup_error(name: &str, error: CudaError) -> GpuError {
+    let detail = sanitize_diagnostic(&format!("{name}: {error:?}"));
+    if error == CudaError::NotFound {
+        GpuError::KernelNotFound(detail)
+    } else {
+        GpuError::CudaError(detail)
+    }
+}
+
+fn module_load_error(name: &str, error: CudaError) -> GpuError {
+    let detail = sanitize_diagnostic(&format!("{error:?}"));
+    if matches!(
+        error,
+        CudaError::InvalidImage
+            | CudaError::NoBinaryForGpu
+            | CudaError::InvalidPtx
+            | CudaError::InvalidSource
+    ) {
+        GpuError::ModuleLoadFailed(format!(
+            "JIT compilation failed for '{name}': {detail} \
+             (target: sm_120 — check driver ≥ 570 and CUDA toolkit ≥ 12.8)"
+        ))
+    } else {
+        GpuError::CudaError(format!("loading module '{name}': {detail}"))
     }
 }
 
@@ -167,6 +227,31 @@ impl KernelModule {
 mod tests {
     use super::*;
     use crate::gpu::GpuContext;
+    use cust::error::CudaError;
+
+    #[test]
+    fn missing_symbol_is_distinct_from_runtime_lookup_failure() {
+        assert!(matches!(
+            function_lookup_error("missing", CudaError::NotFound),
+            GpuError::KernelNotFound(_)
+        ));
+        let runtime = function_lookup_error("lif_step", CudaError::InvalidContext);
+        assert!(matches!(runtime, GpuError::CudaError(_)));
+        assert_eq!(
+            runtime.fallback_reason(),
+            Some(crate::FallbackReason::DriverRuntimeFailure)
+        );
+    }
+
+    #[test]
+    fn invalid_ptx_is_distinct_from_runtime_module_failure() {
+        assert!(matches!(
+            module_load_error("spiking_network", CudaError::InvalidPtx),
+            GpuError::ModuleLoadFailed(_)
+        ));
+        let runtime = module_load_error("spiking_network", CudaError::InvalidContext);
+        assert!(matches!(runtime, GpuError::CudaError(_)));
+    }
 
     #[test]
     #[ignore] // requires GPU + driver ≥ 570

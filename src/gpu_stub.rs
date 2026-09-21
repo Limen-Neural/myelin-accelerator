@@ -21,6 +21,11 @@ impl GpuContext {
     pub fn is_available() -> bool {
         false
     }
+
+    /// Device 0 compute capability; unavailable in a CPU-only build.
+    pub fn compute_capability(&self) -> Option<ComputeCapability> {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -305,6 +310,12 @@ impl Default for GpuAccelerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_api_reports_no_compute_capability() {
+        let ctx = GpuContext;
+        assert_eq!(ctx.compute_capability(), None);
+    }
 
     // ── GpuError Display ────────────────────────────────────────────────────
 

@@ -56,7 +56,7 @@ impl GpuError {
             Self::NoGpu => {
                 #[cfg(feature = "cuda")]
                 {
-                    None
+                    Some(FallbackReason::DeviceUnavailable)
                 }
                 #[cfg(not(feature = "cuda"))]
                 {
@@ -67,7 +67,8 @@ impl GpuError {
             Self::ModuleLoadFailed(_) | Self::KernelNotFound(_) => {
                 Some(FallbackReason::KernelSpecializationUnavailable)
             }
-            Self::MemoryError(_) | Self::LaunchFailed(_) | Self::CudaError(_) => None,
+            Self::CudaError(_) => Some(FallbackReason::DriverRuntimeFailure),
+            Self::MemoryError(_) | Self::LaunchFailed(_) => None,
         }
     }
 }
@@ -111,7 +112,19 @@ impl std::error::Error for GpuError {}
 #[cfg(feature = "cuda")]
 impl From<cust::error::CudaError> for GpuError {
     fn from(e: cust::error::CudaError) -> Self {
-        GpuError::CudaError(sanitize_diagnostic(&format!("{e:?}")))
+        use cust::error::CudaError;
+
+        let detail = sanitize_diagnostic(&format!("{e:?}"));
+        match e {
+            CudaError::NoDevice | CudaError::InvalidDevice => {
+                GpuError::unavailable(FallbackReason::DeviceUnavailable, detail)
+            }
+            CudaError::InvalidImage
+            | CudaError::NoBinaryForGpu
+            | CudaError::InvalidPtx
+            | CudaError::InvalidSource => GpuError::ModuleLoadFailed(detail),
+            _ => GpuError::CudaError(detail),
+        }
     }
 }
 
@@ -143,6 +156,39 @@ mod tests {
             "invalid input: n_vars must be >= 0, got -1"
         );
         assert_eq!(err.fallback_reason(), Some(FallbackReason::InvalidInput));
+    }
+
+    #[test]
+    fn legacy_no_gpu_and_cuda_errors_have_stable_reasons() {
+        let expected_no_gpu = if cfg!(feature = "cuda") {
+            FallbackReason::DeviceUnavailable
+        } else {
+            FallbackReason::CudaFeatureNotBuilt
+        };
+        assert_eq!(GpuError::NoGpu.fallback_reason(), Some(expected_no_gpu));
+        assert_eq!(
+            GpuError::CudaError("InvalidContext".into()).fallback_reason(),
+            Some(FallbackReason::DriverRuntimeFailure)
+        );
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cust_errors_preserve_device_specialization_and_runtime_categories() {
+        use cust::error::CudaError;
+
+        assert_eq!(
+            GpuError::from(CudaError::NoDevice).fallback_reason(),
+            Some(FallbackReason::DeviceUnavailable)
+        );
+        assert_eq!(
+            GpuError::from(CudaError::InvalidPtx).fallback_reason(),
+            Some(FallbackReason::KernelSpecializationUnavailable)
+        );
+        assert_eq!(
+            GpuError::from(CudaError::InvalidContext).fallback_reason(),
+            Some(FallbackReason::DriverRuntimeFailure)
+        );
     }
 
     #[test]
