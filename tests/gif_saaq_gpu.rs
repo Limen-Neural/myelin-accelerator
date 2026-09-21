@@ -36,6 +36,7 @@ fn gif_step_weighted_tick_matches_host_ref() {
         &mut adaptation,
         &weights,
         &input,
+        &vec![0.0f32; n],
         &mut refractory,
         &mut spikes,
         n,

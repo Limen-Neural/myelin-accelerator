@@ -44,6 +44,9 @@
 #define GIF_RESET_RATIO      0.35f
 #define GIF_ADAPTATION_TERM  0.05f
 
+// Inactive-lane SAAQ score. Must match `SAAQ_SCORE_SENTINEL` in src/gif.rs.
+#define SAAQ_SCORE_SENTINEL (-INFINITY)
+
 // ── STDP constants (match stdp.rs) ───────────────────────────────
 #define STDP_A_PLUS   0.01f
 #define STDP_A_MINUS  0.012f
@@ -257,14 +260,17 @@ void lif_step_weighted(
 //  on spike: adaptation += 1.0, soft-reset membrane.
 //
 //  Uses shared memory for the input_spikes tile. Refractory is respected.
+//  Per-neuron `input_current` (from `project_snapshot_current`) is added
+//  after the synaptic drive so telemetry projection affects GIF dynamics.
 //
 //  Params
-//    membrane     [n_neurons]              — read-write membrane potential
-//    adaptation   [n_neurons]              — read-write GIF adaptation
-//    weights      [n_neurons × n_inputs]   — row-major f32 weight matrix
-//    input_spikes [n_inputs]               — binary spike inputs (0.0/1.0)
-//    refract      [n_neurons]              — refractory counter
-//    spikes_out   [n_neurons]              — output spike flags
+//    membrane      [n_neurons]              — read-write membrane potential
+//    adaptation    [n_neurons]              — read-write GIF adaptation
+//    weights       [n_neurons × n_inputs]   — row-major f32 weight matrix
+//    input_spikes  [n_inputs]               — binary spike inputs (0.0/1.0)
+//    input_current [n_neurons]              — projected external current
+//    refract       [n_neurons]              — refractory counter
+//    spikes_out    [n_neurons]              — output spike flags
 //    n_neurons, n_inputs
 // ════════════════════════════════════════════════════════════════════
 extern "C" __global__
@@ -273,6 +279,7 @@ void gif_step_weighted(
     float* __restrict__        adaptation,
     const float* __restrict__  weights,
     const float* __restrict__  input_spikes,
+    const float* __restrict__  input_current,
     unsigned int* __restrict__ refract,
     unsigned int* __restrict__ spikes_out,
     int n_neurons,
@@ -304,7 +311,8 @@ void gif_step_weighted(
         for (int j = 0; j < n_inputs; ++j)
             drive = fmaf(w_row[j], s_inputs[j], drive);
 
-        v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM;
+        v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM
+            + input_current[tid];
 
         float threshold = GIF_THRESHOLD_BASE + a * GIF_ADAPTATION_SCALE;
         if (v >= threshold) {
@@ -326,6 +334,7 @@ void gif_step_weighted_f16(
     float* __restrict__        adaptation,
     const half* __restrict__   weights,
     const float* __restrict__  input_spikes,
+    const float* __restrict__  input_current,
     unsigned int* __restrict__ refract,
     unsigned int* __restrict__ spikes_out,
     int n_neurons,
@@ -357,7 +366,8 @@ void gif_step_weighted_f16(
         for (int j = 0; j < n_inputs; ++j)
             drive = fmaf(__half2float(w_row[j]), s_inputs[j], drive);
 
-        v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM;
+        v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM
+            + input_current[tid];
 
         float threshold = GIF_THRESHOLD_BASE + a * GIF_ADAPTATION_SCALE;
         if (v >= threshold) {
@@ -703,7 +713,7 @@ void saaq_find_best_walker(
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    float my_score = -1e30f;
+    float my_score = SAAQ_SCORE_SENTINEL;
     int my_walker = 0;
 
     if (tid < n_neurons) {
@@ -735,7 +745,7 @@ void saaq_find_best_walker(
     __syncthreads();
 
     if (warp_id == 0) {
-        float bscore = (threadIdx.x < n_warps) ? s_scores[lane] : -1e30f;
+        float bscore = (threadIdx.x < n_warps) ? s_scores[lane] : SAAQ_SCORE_SENTINEL;
         int bwalker = (threadIdx.x < n_warps) ? s_walkers[lane] : 0;
 
         for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
@@ -758,8 +768,8 @@ void saaq_find_best_walker(
 //  saaq_reduce_partials_f16
 //
 //  SAAQ pass 2: reduce per-block partial winners to one global walker.
-//  Launch <<<1, 32>>>; lanes >= n_partials are masked with the -1e30f
-//  sentinel. n_partials must be <= 32.
+//  Launch <<<1, 32>>>; lanes >= n_partials are masked with SAAQ_SCORE_SENTINEL
+//  (-inf). n_partials must be <= 32.
 // ════════════════════════════════════════════════════════════════════
 extern "C" __global__
 __launch_bounds__(32)
@@ -770,7 +780,7 @@ void saaq_reduce_partials_f16(
     int n_partials)
 {
     int lane = threadIdx.x;
-    float my_score = -1e30f;
+    float my_score = SAAQ_SCORE_SENTINEL;
     int my_walker = 0;
 
     if (lane < n_partials) {

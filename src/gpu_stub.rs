@@ -126,6 +126,10 @@ impl GpuAccelerator {
     pub fn is_ready(&self) -> bool {
         false
     }
+    /// Always `false` on the CPU stub (no context, stream, or modules).
+    pub fn kernels_ready(&self) -> bool {
+        false
+    }
     pub fn kernels(&self) -> GpuResult<&KernelModule> {
         Err(GpuError::NoGpu)
     }
@@ -503,12 +507,14 @@ mod tests {
     fn accelerator_new() {
         let acc = GpuAccelerator::new();
         assert!(!acc.is_ready());
+        assert!(!acc.kernels_ready());
     }
 
     #[test]
     fn accelerator_default() {
         let acc = GpuAccelerator;
         assert!(!acc.is_ready());
+        assert!(!acc.kernels_ready());
     }
 
     #[test]

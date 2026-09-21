@@ -121,7 +121,7 @@ fn find_nvcc() -> Option<PathBuf> {
     if let Ok(path) = env::var("CUDA_NVCC") {
         let p = PathBuf::from(path);
         if is_nvcc_binary(&p) {
-            return Some(p);
+            return Some(resolve_nvcc_absolute(&p));
         }
     }
 
@@ -129,17 +129,36 @@ fn find_nvcc() -> Option<PathBuf> {
         if let Ok(root) = env::var(root_var) {
             let p = PathBuf::from(root).join("bin").join(exe_name("nvcc"));
             if is_nvcc_binary(&p) {
-                return Some(p);
+                return Some(resolve_nvcc_absolute(&p));
             }
         }
     }
 
     let candidate = PathBuf::from(exe_name("nvcc"));
     if is_nvcc_binary(&candidate) {
-        Some(candidate)
+        Some(resolve_nvcc_absolute(&candidate))
     } else {
         None
     }
+}
+
+/// Prefer an absolute `nvcc` path so `parent()/parent()` can yield `lib64`.
+fn resolve_nvcc_absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    if let Some(found) = which_on_path(path.as_os_str()) {
+        return found;
+    }
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn which_on_path(bin: &std::ffi::OsStr) -> Option<PathBuf> {
+    let path_var = env::var_os("PATH")?;
+    env::split_paths(&path_var).find_map(|dir| {
+        let candidate = dir.join(bin);
+        candidate.is_file().then_some(candidate)
+    })
 }
 
 fn is_nvcc_binary(path: &Path) -> bool {
@@ -344,6 +363,9 @@ fn emit_cuda_runtime_linking(nvcc: &Path) {
 
 fn cuda_library_search_paths(nvcc: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
+    if let Some(dir) = libcudart_search_dir(nvcc) {
+        candidates.push(dir);
+    }
     for env_var in ["CUDA_HOME", "CUDA_PATH"] {
         if let Ok(root) = env::var(env_var) {
             let root = PathBuf::from(root);
@@ -368,6 +390,38 @@ fn cuda_library_search_paths(nvcc: &Path) -> Vec<PathBuf> {
         }
     }
     deduped
+}
+
+fn libcudart_search_dir(nvcc: &Path) -> Option<PathBuf> {
+    let names: &[&str] = if cfg!(windows) {
+        &["cudart.lib", "libcudart.lib"]
+    } else {
+        &["libcudart.so", "libcudart.so.13", "libcudart.so.12"]
+    };
+    for name in names {
+        let out = match Command::new(nvcc)
+            .arg(format!("--print-file-name={name}"))
+            .output()
+        {
+            Ok(out) => out,
+            Err(_) => continue,
+        };
+        if !out.status.success() {
+            continue;
+        }
+        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if printed.is_empty() || printed == *name {
+            continue;
+        }
+        let path = PathBuf::from(printed);
+        if path.is_file() {
+            return path.parent().map(Path::to_path_buf);
+        }
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn emit_stub_ptx(out_dir: &Path) {

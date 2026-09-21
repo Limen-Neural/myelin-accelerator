@@ -80,10 +80,17 @@ pub fn clear_launch_failure_hook() {
 }
 
 /// Called from CUDA launch wrappers. No-op unless a consumer installed a hook.
+///
+/// The `Arc` is cloned and the `RwLock` is dropped before the callback runs so
+/// a hook may call [`set_launch_failure_hook`] / [`clear_launch_failure_hook`]
+/// without deadlocking.
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub(crate) fn report_launch_failure(failure: LaunchFailure) {
-    let guard = hook_read();
-    if let Some(hook) = guard.as_ref() {
+    let hook = {
+        let guard = hook_read();
+        guard.clone()
+    };
+    if let Some(hook) = hook {
         hook(&failure);
     }
 }
@@ -136,6 +143,27 @@ mod tests {
         assert_eq!(
             seen.lock().expect("test mutex").as_deref(),
             Some("test_kernel")
+        );
+        let seen_reenter = Arc::clone(&seen);
+        set_launch_failure_hook(move |failure| {
+            *seen_reenter.lock().expect("test mutex") =
+                Some(format!("reenter:{}", failure.kernel_name));
+            clear_launch_failure_hook();
+        });
+        report_launch_failure(LaunchFailure {
+            kernel_name: "nested".into(),
+            launch_type: LaunchType::CAbiShim,
+            grid: (1, 1, 1),
+            block: (1, 1, 1),
+            shared_mem: 0,
+            neuron_count: None,
+            error: "nested".into(),
+            jit_error_log: None,
+            jit_info_log: None,
+        });
+        assert_eq!(
+            seen.lock().expect("test mutex").as_deref(),
+            Some("reenter:nested")
         );
     }
 }

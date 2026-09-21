@@ -14,6 +14,7 @@ extern "C" int myelin_launch_gif_step_weighted_f16(
     void* adaptation,
     void* weights,
     void* input_spikes,
+    void* input_current,
     void* refractory,
     void* spikes_out,
     int n_neurons,
@@ -24,6 +25,7 @@ extern "C" int myelin_launch_gif_step_weighted_f16(
     float* adaptation_ptr = reinterpret_cast<float*>(adaptation);
     const half* weights_ptr = reinterpret_cast<const half*>(weights);
     const float* input_spikes_ptr = reinterpret_cast<const float*>(input_spikes);
+    const float* input_current_ptr = reinterpret_cast<const float*>(input_current);
     unsigned int* refractory_ptr = reinterpret_cast<unsigned int*>(refractory);
     unsigned int* spikes_out_ptr = reinterpret_cast<unsigned int*>(spikes_out);
 
@@ -32,6 +34,7 @@ extern "C" int myelin_launch_gif_step_weighted_f16(
         adaptation_ptr,
         weights_ptr,
         input_spikes_ptr,
+        input_current_ptr,
         refractory_ptr,
         spikes_out_ptr,
         n_neurons,
@@ -67,6 +70,11 @@ extern "C" int myelin_launch_saaq_find_best_walker(
         partial_walkers_ptr,
         n_neurons,
         adaptation_scale);
+
+    cudaError_t pass1 = cudaGetLastError();
+    if (pass1 != cudaSuccess) {
+        return static_cast<int>(pass1);
+    }
 
     saaq_reduce_partials_f16<<<1u, 32u, 0u, cuda_stream>>>(
         partial_scores_ptr,

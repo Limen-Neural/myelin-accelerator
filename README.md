@@ -76,7 +76,10 @@ use myelin_accelerator::{GpuAccelerator, bitpacking};
 
 let gpu = GpuAccelerator::new();
 if gpu.is_ready() {
-    // launch wrappers when a device is present
+    // context + stream present (C-ABI shim may work even if modules failed)
+}
+if gpu.kernels_ready() {
+    // fatbin/PTX wrappers are also available
 }
 let packed = bitpacking::pack_ternary(&[-1, 0, 1, 1]);
 let _ = packed;

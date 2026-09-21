@@ -17,6 +17,7 @@ int myelin_launch_gif_step_weighted_f16(
     void* adaptation,
     void* weights,
     void* input_spikes,
+    void* input_current,
     void* refractory,
     void* spikes_out,
     int n_neurons,

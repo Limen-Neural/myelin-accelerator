@@ -10,8 +10,8 @@
 //  time. There is no runtime file-system lookup.
 //
 //  Load order: fatbin (SASS) first; on failure, PTX JIT. When the PTX
-//  path also fails we re-run cuModuleLoadDataEx to capture
-//  CU_JIT_ERROR_LOG_BUFFER / CU_JIT_INFO_LOG_BUFFER.
+//  path also fails we re-run cuModuleLoadDataEx with CU_JIT_LOG_VERBOSE
+//  and capture CU_JIT_ERROR_LOG_BUFFER / CU_JIT_INFO_LOG_BUFFER.
 //
 //  The Blackwell-critical F16 GIF and SAAQ paths launch through the
 //  C ABI shim in ffi.rs; their symbols are still registered here so
@@ -262,7 +262,7 @@ fn capture_jit_log_split(bytes: &[u8]) -> (String, String) {
         LOG_CAP as *mut c_void,
         info_buf.as_mut_ptr() as *mut c_void,
         LOG_CAP as *mut c_void,
-        std::ptr::null_mut(),
+        1 as *mut c_void,
     ];
 
     let mut module: cuda::CUmodule = ptr::null_mut();

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::bitpacking::TERNARY_VALUES_PER_WORD;
-use crate::gif::{GIF_ADAPTATION_SCALE, SnapshotChannels};
+use crate::gif::{GIF_ADAPTATION_SCALE, GIF_BLOCK_SIZE, SnapshotChannels, gif_saaq_grid};
 use crate::gpu::context::GpuContext;
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::ffi;
@@ -17,11 +17,9 @@ use tracing::warn;
 
 const SATSOLVER_BLOCK_SIZE: u32 = 256;
 const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
-const TEMPORAL_BLOCK_SIZE: u32 = 256;
+const TEMPORAL_BLOCK_SIZE: u32 = GIF_BLOCK_SIZE;
 const TEMPORAL_SHARED_MEM_BYTES: u32 = 0;
 const SNAPSHOT_CHANNELS: usize = 4;
-/// `saaq_reduce_partials_f16` is a single 32-thread warp.
-const SAAQ_MAX_BLOCKS: u32 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SynapsePrecision {
@@ -101,10 +99,16 @@ impl GpuAccelerator {
 
     /// `true` when a CUDA context and stream exist.
     ///
-    /// Fatbin/PTX helpers still require [`Self::kernels`]; the C-ABI shim
-    /// path (F16 GIF + SAAQ) can run with context+stream alone.
+    /// Fatbin/PTX helpers still require [`Self::kernels`] / [`Self::kernels_ready`];
+    /// the C-ABI shim path (F16 GIF + SAAQ) can run with context+stream alone
+    /// if module load failed.
     pub fn is_ready(&self) -> bool {
         self._ctx.is_some() && self.stream.is_some()
+    }
+
+    /// `true` when [`Self::is_ready`] and fatbin/PTX modules loaded successfully.
+    pub fn kernels_ready(&self) -> bool {
+        self.is_ready() && self.modules.is_some()
     }
 
     fn has_context(&self) -> bool {
@@ -119,10 +123,30 @@ impl GpuAccelerator {
         neuron_count: Option<usize>,
         error: impl std::fmt::Debug,
     ) -> GpuError {
+        Self::reported_launch_error(
+            kernel_name,
+            LaunchType::PtxFatbin,
+            grid,
+            block,
+            shared_mem,
+            neuron_count,
+            error,
+        )
+    }
+
+    fn reported_launch_error(
+        kernel_name: &str,
+        launch_type: LaunchType,
+        grid: u32,
+        block: u32,
+        shared_mem: u32,
+        neuron_count: Option<usize>,
+        error: impl std::fmt::Debug,
+    ) -> GpuError {
         let gpu_error = GpuError::LaunchFailed(format!("{kernel_name} launch: {error:?}"));
         report_launch_failure(LaunchFailure {
             kernel_name: kernel_name.to_string(),
-            launch_type: LaunchType::PtxFatbin,
+            launch_type,
             grid: (grid, 1, 1),
             block: (block, 1, 1),
             shared_mem,
@@ -135,19 +159,19 @@ impl GpuAccelerator {
     }
 
     fn temporal_grid(neuron_count: usize) -> GpuResult<u32> {
-        let grid = Self::ceil_div_u32(neuron_count as u32, TEMPORAL_BLOCK_SIZE).max(1);
-        if grid > SAAQ_MAX_BLOCKS {
-            return Err(GpuError::LaunchFailed(format!(
-                "temporal grid {grid} exceeds SAAQ pass-2 cap of {SAAQ_MAX_BLOCKS} blocks \
-                 (max {} neurons at {TEMPORAL_BLOCK_SIZE} threads)",
-                SAAQ_MAX_BLOCKS * TEMPORAL_BLOCK_SIZE
-            )));
-        }
-        Ok(grid)
+        gif_saaq_grid(neuron_count).map_err(GpuError::LaunchFailed)
     }
 
     pub fn kernels(&self) -> GpuResult<&KernelModule> {
-        self.modules.as_ref().ok_or(GpuError::NoGpu)
+        if self._ctx.is_none() {
+            return Err(GpuError::NoGpu);
+        }
+        self.modules.as_ref().ok_or_else(|| {
+            GpuError::ModuleLoadFailed(
+                "fatbin/PTX modules are not loaded; C-ABI shim launches may still work when is_ready()"
+                    .into(),
+            )
+        })
     }
 
     pub fn synchronize(&self) -> GpuResult<()> {
@@ -185,6 +209,9 @@ impl GpuAccelerator {
     }
 
     /// Project a 4-channel snapshot into per-neuron `input_current`.
+    ///
+    /// The next [`Self::gif_step_weighted_tick`] (f32 or f16) adds that current
+    /// to the synaptic drive so telemetry projection changes GIF dynamics.
     pub fn project_snapshot_current(
         &mut self,
         snapshot: SnapshotChannels,
@@ -192,7 +219,7 @@ impl GpuAccelerator {
     ) -> GpuResult<()> {
         self.ensure_temporal_state(neuron_count)?;
 
-        let modules = self.modules.as_ref().ok_or(GpuError::NoGpu)?;
+        let modules = self.kernels()?;
         let project_snapshot_current = modules.get_function("project_snapshot_current")?;
         let state = self
             .temporal_state
@@ -223,6 +250,8 @@ impl GpuAccelerator {
     }
 
     /// Download the current GIF spike vector.
+    ///
+    /// `neuron_count` must equal the resident temporal size.
     pub fn temporal_spikes_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<u32>> {
         if !self.has_context() {
             return Err(GpuError::NoGpu);
@@ -231,11 +260,13 @@ impl GpuAccelerator {
             .temporal_state
             .as_ref()
             .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
-        Self::expect_len("temporal spikes", state.spikes_out.len(), neuron_count)?;
+        Self::require_state_neuron_count(state, neuron_count)?;
         state.spikes_out.to_vec()
     }
 
     /// Download the current GIF membrane vector.
+    ///
+    /// `neuron_count` must equal the resident temporal size.
     pub fn temporal_membrane_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<f32>> {
         if !self.has_context() {
             return Err(GpuError::NoGpu);
@@ -244,11 +275,13 @@ impl GpuAccelerator {
             .temporal_state
             .as_ref()
             .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
-        Self::expect_len("temporal membrane", state.membrane.len(), neuron_count)?;
+        Self::require_state_neuron_count(state, neuron_count)?;
         state.membrane.to_vec()
     }
 
     /// Download the current GIF adaptation vector.
+    ///
+    /// `neuron_count` must equal the resident temporal size.
     pub fn temporal_adaptation_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<f32>> {
         if !self.has_context() {
             return Err(GpuError::NoGpu);
@@ -257,7 +290,7 @@ impl GpuAccelerator {
             .temporal_state
             .as_ref()
             .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
-        Self::expect_len("temporal adaptation", state.adaptation.len(), neuron_count)?;
+        Self::require_state_neuron_count(state, neuron_count)?;
         state.adaptation.to_vec()
     }
 
@@ -413,6 +446,7 @@ impl GpuAccelerator {
                             state.adaptation.as_device_ptr(),
                             state.weights_f32.as_device_ptr(),
                             state.input_spikes.as_device_ptr(),
+                            state.input_current.as_device_ptr(),
                             state.refractory.as_device_ptr(),
                             state.spikes_out.as_device_ptr(),
                             neuron_count as i32,
@@ -447,6 +481,7 @@ impl GpuAccelerator {
                         state.adaptation.as_device_ptr(),
                         weights_f16.as_device_ptr(),
                         state.input_spikes.as_device_ptr(),
+                        state.input_current.as_device_ptr(),
                         state.refractory.as_device_ptr(),
                         state.spikes_out.as_device_ptr(),
                         neuron_count as i32,
@@ -499,10 +534,7 @@ impl GpuAccelerator {
             self.synchronize()?;
         } else {
             let state = self.temporal_state.as_mut().expect("checked above");
-            state
-                .membrane
-                .upload(&vec![0.0f32; neuron_count])
-                .map_err(|e| GpuError::MemoryError(format!("reset membrane upload failed: {e}")))?;
+            state.membrane.zero_prefix(neuron_count)?;
         }
 
         let state = self.temporal_state.as_mut().expect("checked above");
@@ -514,20 +546,9 @@ impl GpuAccelerator {
             .spikes_out
             .upload(&vec![0u32; state.neuron_count])
             .map_err(|e| GpuError::MemoryError(format!("reset spikes upload failed: {e}")))?;
-        state
-            .input_current
-            .upload(&vec![0.0f32; state.neuron_count])
-            .map_err(|e| {
-                GpuError::MemoryError(format!("reset input_current upload failed: {e}"))
-            })?;
-        state
-            .input_spikes
-            .upload(&vec![0.0f32; state.n_inputs])
-            .map_err(|e| GpuError::MemoryError(format!("reset input_spikes upload failed: {e}")))?;
-        state
-            .adaptation
-            .upload(&vec![0.0f32; state.neuron_count])
-            .map_err(|e| GpuError::MemoryError(format!("reset adaptation upload failed: {e}")))?;
+        state.input_current.zero_prefix(state.neuron_count)?;
+        state.input_spikes.zero_prefix(state.n_inputs)?;
+        state.adaptation.zero_prefix(state.neuron_count)?;
         state
             .best_walker
             .upload(&[0u32; 1])
@@ -570,9 +591,17 @@ impl GpuAccelerator {
             GIF_ADAPTATION_SCALE,
         )?;
 
-        stream
-            .synchronize()
-            .map_err(|e| GpuError::LaunchFailed(format!("saaq_find_best_walker sync: {e:?}")))?;
+        stream.synchronize().map_err(|e| {
+            Self::reported_launch_error(
+                "saaq_find_best_walker",
+                LaunchType::CAbiShim,
+                grid,
+                TEMPORAL_BLOCK_SIZE,
+                0,
+                Some(neuron_count),
+                e,
+            )
+        })?;
 
         let best = state.best_walker.to_vec()?;
         Ok(best[0])
@@ -1058,6 +1087,16 @@ impl GpuAccelerator {
         range_pop!();
         launch_result.map_err(|e| GpuError::LaunchFailed(format!("ternary_gemm launch: {e:?}")))?;
 
+        Ok(())
+    }
+
+    fn require_state_neuron_count(state: &TemporalState, neuron_count: usize) -> GpuResult<()> {
+        if state.neuron_count != neuron_count {
+            return Err(GpuError::MemoryError(format!(
+                "temporal neuron_count mismatch: state has {}, requested {neuron_count}",
+                state.neuron_count
+            )));
+        }
         Ok(())
     }
 

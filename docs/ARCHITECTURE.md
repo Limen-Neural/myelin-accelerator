@@ -146,7 +146,7 @@ internal files.
 
 These are the **ergonomic** wrappers currently implemented:
 
-- Lifecycle: `new`, `is_ready`, `kernels`, `synchronize`
+- Lifecycle: `new`, `is_ready` (context+stream; C-ABI shim may run if modules failed), `kernels_ready`, `kernels` (returns `ModuleLoadFailed` rather than `NoGpu` when a context exists but fatbin/PTX did not load), `synchronize`
 - SAT: `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
 - Spiking: `poisson_encode` / `_async`
 - GIF / SAAQ temporal: `ensure_temporal_state`, `gif_step_weighted_tick`, `project_snapshot_current`, `reset_temporal_state`, `load_synapse_weights_named`, `load_synapse_weights_f16_registered`, `synapse_signature`, `temporal_spikes_to_vec`, `temporal_membrane_to_vec`, `temporal_adaptation_to_vec`, `upload_temporal_input_spikes`, `saaq_find_best_walker`

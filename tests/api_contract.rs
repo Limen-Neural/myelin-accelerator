@@ -165,6 +165,7 @@ mod stub_contract {
     fn accelerator_construction() {
         let acc = GpuAccelerator::new();
         assert!(!acc.is_ready());
+        assert!(!acc.kernels_ready());
         assert!(acc.kernels().is_err());
         assert!(acc.synchronize().is_err());
     }

@@ -24,6 +24,28 @@ pub const GIF_ADAPTATION_TERM: f32 = 0.05;
 pub const LIF_RESET: f32 = 0.0;
 /// Absolute refractory ticks (`LIF_REFRACT_TICK`).
 pub const LIF_REFRACT_TICK: u32 = 2;
+/// Threads per GIF/SAAQ block (matches the CUDA launch).
+pub const GIF_BLOCK_SIZE: u32 = 256;
+/// `saaq_reduce_partials_f16` is a single 32-thread warp.
+pub const SAAQ_MAX_BLOCKS: u32 = 32;
+/// Inactive-lane SAAQ score (`SAAQ_SCORE_SENTINEL` in `spiking_network.cu`).
+pub const SAAQ_SCORE_SENTINEL: f32 = f32::NEG_INFINITY;
+
+/// Grid.x for GIF/SAAQ launches. Rejects counts that would wrap `u32` or
+/// exceed the pass-2 warp (`SAAQ_MAX_BLOCKS`).
+pub fn gif_saaq_grid(neuron_count: usize) -> Result<u32, String> {
+    let max_neurons = (SAAQ_MAX_BLOCKS as usize).saturating_mul(GIF_BLOCK_SIZE as usize);
+    if neuron_count == 0 {
+        return Err("temporal state requires neuron_count > 0".into());
+    }
+    if neuron_count > max_neurons {
+        return Err(format!(
+            "temporal grid exceeds SAAQ pass-2 cap of {SAAQ_MAX_BLOCKS} blocks \
+             (max {max_neurons} neurons at {GIF_BLOCK_SIZE} threads; requested {neuron_count})"
+        ));
+    }
+    Ok((neuron_count as u32).div_ceil(GIF_BLOCK_SIZE).max(1))
+}
 
 /// Four telemetry channels consumed by [`project_snapshot_current`].
 ///
@@ -63,6 +85,7 @@ pub fn gif_step_weighted(
     adaptation: &mut [f32],
     weights: &[f32],
     input_spikes: &[f32],
+    input_current: &[f32],
     refractory: &mut [u32],
     spikes_out: &mut [u32],
     n_neurons: usize,
@@ -73,6 +96,7 @@ pub fn gif_step_weighted(
     assert_eq!(refractory.len(), n_neurons);
     assert_eq!(spikes_out.len(), n_neurons);
     assert_eq!(input_spikes.len(), n_inputs);
+    assert_eq!(input_current.len(), n_neurons);
     assert_eq!(weights.len(), n_neurons.saturating_mul(n_inputs));
 
     for tid in 0..n_neurons {
@@ -92,7 +116,8 @@ pub fn gif_step_weighted(
             for j in 0..n_inputs {
                 drive = row[j].mul_add(input_spikes[j], drive);
             }
-            v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM;
+            v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM
+                + input_current[tid];
             let threshold = GIF_THRESHOLD_BASE + a * GIF_ADAPTATION_SCALE;
             if v >= threshold {
                 spike = 1;
@@ -115,7 +140,7 @@ pub fn saaq_find_best_walker(membrane: &[f32], adaptation: &[f32], adaptation_sc
     assert_eq!(membrane.len(), adaptation.len());
     assert!(!membrane.is_empty());
 
-    let mut best_score = f32::NEG_INFINITY;
+    let mut best_score = SAAQ_SCORE_SENTINEL;
     let mut best_walker = 0u32;
     for (i, (&v, &a)) in membrane.iter().zip(adaptation.iter()).enumerate() {
         let score = v - adaptation_scale * a;
@@ -209,6 +234,7 @@ mod tests {
             &mut adaptation,
             &weights,
             &input,
+            &[0.0],
             &mut refract,
             &mut spikes,
             1,
@@ -237,6 +263,7 @@ mod tests {
             &mut adaptation,
             &weights,
             &input,
+            &[0.0],
             &mut refract,
             &mut spikes,
             1,
@@ -263,5 +290,43 @@ mod tests {
         let max = out.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         let min = out.iter().copied().fold(f32::INFINITY, f32::min);
         assert!(max - min < 0.3);
+    }
+
+    #[test]
+    fn gif_step_adds_projected_input_current() {
+        let mut membrane = vec![0.0f32];
+        let mut adaptation = vec![0.0f32];
+        let weights = vec![0.0f32];
+        let input = vec![0.0f32];
+        let current = vec![0.5f32];
+        let mut refract = vec![0u32];
+        let mut spikes = vec![0u32];
+        gif_step_weighted(
+            &mut membrane,
+            &mut adaptation,
+            &weights,
+            &input,
+            &current,
+            &mut refract,
+            &mut spikes,
+            1,
+            1,
+        );
+        let expected = 0.0 * GIF_LEAK + 0.5;
+        assert!((membrane[0] - expected).abs() < 1e-6);
+        assert_eq!(spikes[0], 0);
+    }
+
+    #[test]
+    fn gif_saaq_grid_rejects_zero_and_u32_wrap() {
+        assert!(gif_saaq_grid(0).is_err());
+        assert_eq!(gif_saaq_grid(1).unwrap(), 1);
+        assert_eq!(gif_saaq_grid(GIF_BLOCK_SIZE as usize).unwrap(), 1);
+        assert_eq!(gif_saaq_grid(GIF_BLOCK_SIZE as usize + 1).unwrap(), 2);
+        let max = (SAAQ_MAX_BLOCKS as usize) * (GIF_BLOCK_SIZE as usize);
+        assert_eq!(gif_saaq_grid(max).unwrap(), SAAQ_MAX_BLOCKS);
+        assert!(gif_saaq_grid(max + 1).is_err());
+        assert!(gif_saaq_grid(u32::MAX as usize + 1).is_err());
+        assert!(gif_saaq_grid(usize::MAX).is_err());
     }
 }
