@@ -212,12 +212,9 @@ fn normalize_slashes(input: &str) -> String {
 fn looks_like_windows_path(input: &str) -> bool {
     input.starts_with("\\\\")
         || input.contains("$HOME\\")
-        || input
-            .as_bytes()
-            .windows(3)
-            .any(|window| {
-                window[0].is_ascii_alphabetic() && window[1] == b':' && window[2] == b'\\'
-            })
+        || input.as_bytes().windows(3).any(|window| {
+            window[0].is_ascii_alphabetic() && window[1] == b':' && window[2] == b'\\'
+        })
 }
 
 #[cfg(test)]
