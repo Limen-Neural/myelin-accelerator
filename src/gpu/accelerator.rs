@@ -54,9 +54,8 @@ impl GpuAccelerator {
             Ok(acc) => Ok(acc),
             Err(failure) => {
                 let detail = sanitize_diagnostic(&failure.detail);
-                let mut facts = failure.facts;
-                apply_failure_to_facts(&mut facts, failure.reason);
-                let capabilities = evaluate_capabilities(&facts);
+                let capabilities =
+                    capability_report_for_failure(failure.facts, failure.reason, detail.as_str());
                 match policy {
                     ExecutionPolicy::PreferGpu => {
                         warn!(
@@ -738,6 +737,18 @@ fn classify_init_failure(facts: &CapabilityFacts) -> FallbackReason {
     }
 }
 
+fn capability_report_for_failure(
+    mut facts: CapabilityFacts,
+    reason: FallbackReason,
+    detail: &str,
+) -> CapabilityReport {
+    apply_failure_to_facts(&mut facts, reason);
+    let mut report = evaluate_capabilities(&facts);
+    report.selected_backend = Backend::Cpu;
+    report.fallback = Some(FallbackRecord::cpu(reason, detail));
+    report
+}
+
 fn apply_failure_to_facts(facts: &mut CapabilityFacts, reason: FallbackReason) {
     match reason {
         FallbackReason::CudaFeatureNotBuilt => {
@@ -755,5 +766,34 @@ fn apply_failure_to_facts(facts: &mut CapabilityFacts, reason: FallbackReason) {
             facts.kernels = KernelAvailability::all_unavailable();
         }
         FallbackReason::InvalidInput => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_report_preserves_sanitized_initialization_detail() {
+        let facts = CapabilityFacts {
+            cuda_built: true,
+            runtime_available: true,
+            device_available: true,
+            compute_capability: Some(ComputeCapability::REQUIRED),
+            kernels: KernelAvailability::compiled_unverified(),
+        };
+
+        let report = capability_report_for_failure(
+            facts,
+            FallbackReason::KernelSpecializationUnavailable,
+            "PTX load failed module=/home/alice/private.ptx InvalidPtx",
+        );
+        let fallback = report.fallback.expect("failed initialization falls back");
+
+        assert_eq!(
+            fallback.reason,
+            FallbackReason::KernelSpecializationUnavailable
+        );
+        assert_eq!(fallback.detail, "PTX load failed module=<path> InvalidPtx");
     }
 }

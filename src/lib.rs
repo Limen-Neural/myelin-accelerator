@@ -24,13 +24,7 @@ pub use gpu::{GpuAccelerator, GpuBuffer, GpuContext, GpuError, KernelModule};
 #[cfg(not(feature = "cuda"))]
 pub use gpu_stub::{GpuAccelerator, GpuBuffer, GpuContext, GpuError, KernelModule};
 
+#[cfg(feature = "cuda")]
 pub(crate) fn host_facts() -> capability::CapabilityFacts {
-    #[cfg(feature = "cuda")]
-    {
-        gpu::context::host_facts()
-    }
-    #[cfg(not(feature = "cuda"))]
-    {
-        gpu_stub::host_facts()
-    }
+    gpu::context::host_facts()
 }

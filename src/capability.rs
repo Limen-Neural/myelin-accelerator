@@ -20,7 +20,8 @@
 //! | true | true | true | missing | * | `Cpu` | `driver_runtime_failure` |
 //! | true | true | true | false | * | `Cpu` | `unsupported_hardware` |
 //! | true | true | true | true | any `false` | `Cpu` | `kernel_specialization_unavailable` |
-//! | true | true | true | true | unknown/true | `Cuda` | — |
+//! | true | true | true | true | unknown/any `false` | `Cpu` | `kernel_specialization_unavailable` |
+//! | true | true | true | true | all `true` | `Cuda` | — |
 //!
 //! `invalid_input` is a request-level reason (bad launch arguments), not a
 //! host-probe outcome.
@@ -214,6 +215,14 @@ impl KernelAvailability {
             || matches!(self.satsolver, Some(false))
             || matches!(self.ternary_gemm, Some(false))
     }
+
+    /// `true` only after all required PTX families JIT-loaded successfully.
+    pub const fn all_runtime_available(self) -> bool {
+        matches!(self.spiking_network, Some(true))
+            && matches!(self.vector_similarity, Some(true))
+            && matches!(self.satsolver, Some(true))
+            && matches!(self.ternary_gemm, Some(true))
+    }
 }
 
 impl Default for KernelAvailability {
@@ -308,13 +317,13 @@ impl CapabilityReport {
     }
 }
 
-/// Probe this process: build flags plus a light driver/device/CC check.
+/// Probe this process, including driver/device checks and required PTX JIT.
 ///
-/// Does not JIT-load PTX (that happens when constructing
-/// [`crate::GpuAccelerator`]). Kernel family flags are `None` until then.
+/// A CUDA backend is reported usable only after constructing an accelerator
+/// has verified every required kernel family.
 #[must_use]
 pub fn probe_capabilities() -> CapabilityReport {
-    evaluate_capabilities(&crate::host_facts())
+    crate::GpuAccelerator::new().capabilities().clone()
 }
 
 /// Pure decision function over [`CapabilityFacts`] (mocked tests welcome).
@@ -375,7 +384,7 @@ fn select_from_facts(facts: &CapabilityFacts) -> (Backend, Option<FallbackRecord
             "required PTX families were not compiled into this binary",
         );
     }
-    if facts.kernels.any_runtime_unavailable() {
+    if !facts.kernels.all_runtime_available() {
         return cpu(
             FallbackReason::KernelSpecializationUnavailable,
             "required kernel specialization is unavailable",
@@ -407,11 +416,14 @@ fn sanitize_token(tok: &str) -> String {
     if is_user_path(&lower) {
         return format!("{prefix}<path>{suffix}");
     }
-    if let Some((key, _)) = lower.split_once('=')
-        && is_secret_key(key)
-    {
+    if let Some((key, value)) = lower.split_once('=') {
         let orig_key = core.split_once('=').map(|(k, _)| k).unwrap_or(core);
-        return format!("{prefix}{orig_key}=<redacted>{suffix}");
+        if is_secret_key(key) {
+            return format!("{prefix}{orig_key}=<redacted>{suffix}");
+        }
+        if is_user_path(value) {
+            return format!("{prefix}{orig_key}=<path>{suffix}");
+        }
     }
     tok.to_string()
 }
@@ -584,8 +596,8 @@ mod tests {
                     Some(sm120),
                     KernelAvailability::compiled_unverified(),
                 ),
-                backend: Backend::Cuda,
-                reason: None,
+                backend: Backend::Cpu,
+                reason: Some(FallbackReason::KernelSpecializationUnavailable),
             },
             Case {
                 name: "all kernels available",
@@ -739,5 +751,13 @@ mod tests {
     fn sanitize_diagnostic_keeps_stable_reason_tokens() {
         let s = sanitize_diagnostic("cuda_feature_not_built sm_120 driver_runtime_failure");
         assert_eq!(s, "cuda_feature_not_built sm_120 driver_runtime_failure");
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_paths_after_assignment_keys() {
+        let clean = sanitize_diagnostic(
+            "path=/home/alice/private.ptx file=/Users/bob/key cache=C:\\Users\\eve\\cache.bin",
+        );
+        assert_eq!(clean, "path=<path> file=<path> cache=<path>");
     }
 }

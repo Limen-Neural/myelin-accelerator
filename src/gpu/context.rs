@@ -6,7 +6,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 use crate::capability::{
-    CapabilityFacts, ComputeCapability, KernelAvailability, sanitize_diagnostic,
+    CapabilityFacts, ComputeCapability, FallbackReason, KernelAvailability, sanitize_diagnostic,
 };
 use crate::gpu::error::{GpuError, GpuResult};
 use cust::context::Context;
@@ -25,9 +25,7 @@ impl GpuContext {
             GpuError::InitFailed(sanitize_diagnostic(&format!("cust::init: {e:?}")))
         })?;
 
-        let device = Device::get_device(0).map_err(|e| {
-            GpuError::InitFailed(sanitize_diagnostic(&format!("get_device(0): {e:?}")))
-        })?;
+        let device = Device::get_device(0).map_err(device_lookup_failure)?;
 
         let compute_capability = query_compute_capability(&device);
 
@@ -95,4 +93,25 @@ fn query_compute_capability(device: &Device) -> Option<ComputeCapability> {
         major: u32::try_from(major).ok()?,
         minor: u32::try_from(minor).ok()?,
     })
+}
+
+fn device_lookup_failure(error: cust::error::CudaError) -> GpuError {
+    GpuError::unavailable(
+        FallbackReason::DeviceUnavailable,
+        format!("get_device(0): {error:?}"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_device_maps_to_device_unavailable() {
+        let error = device_lookup_failure(cust::error::CudaError::NoDevice);
+        assert_eq!(
+            error.fallback_reason(),
+            Some(FallbackReason::DeviceUnavailable)
+        );
+    }
 }
