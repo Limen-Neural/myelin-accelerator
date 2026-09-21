@@ -96,14 +96,14 @@ fn query_compute_capability(device: &Device) -> Option<ComputeCapability> {
 }
 
 fn device_lookup_failure(error: cust::error::CudaError) -> GpuError {
+    use cust::error::CudaError;
+
+    let detail = format!("get_device(0): {error:?}");
     match error {
-        cust::error::CudaError::NoDevice | cust::error::CudaError::InvalidDevice => {
-            GpuError::unavailable(
-                FallbackReason::DeviceUnavailable,
-                format!("get_device(0): {error:?}"),
-            )
+        CudaError::NoDevice | CudaError::InvalidDevice => {
+            GpuError::unavailable(FallbackReason::DeviceUnavailable, detail)
         }
-        _ => GpuError::CudaError(sanitize_diagnostic(&format!("get_device(0): {error:?}"))),
+        _ => GpuError::InitFailed(sanitize_diagnostic(&detail)),
     }
 }
 
@@ -113,11 +113,27 @@ mod tests {
 
     #[test]
     fn missing_device_maps_to_device_unavailable() {
-        let error = device_lookup_failure(cust::error::CudaError::NoDevice);
+        for cuda_error in [
+            cust::error::CudaError::NoDevice,
+            cust::error::CudaError::InvalidDevice,
+        ] {
+            let error = device_lookup_failure(cuda_error);
+            assert_eq!(
+                error.fallback_reason(),
+                Some(FallbackReason::DeviceUnavailable),
+                "{cuda_error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_absence_device_lookup_maps_to_driver_runtime_failure() {
+        let error = device_lookup_failure(cust::error::CudaError::InvalidContext);
         assert_eq!(
             error.fallback_reason(),
-            Some(FallbackReason::DeviceUnavailable)
+            Some(FallbackReason::DriverRuntimeFailure)
         );
+        assert!(matches!(error, GpuError::InitFailed(_)));
     }
 
     #[test]

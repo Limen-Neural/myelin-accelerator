@@ -1032,11 +1032,31 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_diagnostic_redacts_arbitrary_windows_drive_paths() {
-        let clean = sanitize_diagnostic(
-            r"failed C:\workspace\alice\private.ptx file=C:\builds\alice\secret.ptx",
-        );
-        assert_eq!(clean, "failed <path> file=<path>");
+    fn sanitize_diagnostic_redacts_windows_absolute_paths_without_users() {
+        let cases = [
+            (
+                r"failed C:\workspace\alice\private.ptx ok",
+                "failed <path> ok",
+            ),
+            (r"file=C:\builds\alice\secret.ptx", "file=<path>"),
+            (
+                r"cache=D:/builds/alice/cache.bin leftover",
+                "cache=<path> leftover",
+            ),
+            (
+                r#"module="C:\workspace\alice\private.ptx" tail"#,
+                "module=<path> tail",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(sanitize_diagnostic(input), expected, "input={input}");
+            assert!(
+                !sanitize_diagnostic(input)
+                    .to_ascii_lowercase()
+                    .contains("alice"),
+                "input={input}"
+            );
+        }
     }
 
     #[test]
