@@ -673,8 +673,7 @@ fn is_user_path(lower: &str) -> bool {
         || lower.contains("/.aws/")
         || (lower.len() >= 3
             && lower.as_bytes()[1] == b':'
-            && (lower.as_bytes()[2] == b'\\' || lower.as_bytes()[2] == b'/')
-            && (lower.contains("\\users\\") || lower.contains("/users/")))
+            && (lower.as_bytes()[2] == b'\\' || lower.as_bytes()[2] == b'/'))
 }
 
 fn is_secret_key(key: &str) -> bool {
@@ -1030,6 +1029,37 @@ mod tests {
             "failed /workspace/alice/private.ptx file=/mnt/data/model.ptx system=/usr/local/cuda",
         );
         assert_eq!(clean, "failed <path> file=<path> system=<path>");
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_windows_absolute_paths_without_users() {
+        let cases = [
+            (
+                r"failed C:\workspace\alice\private.ptx ok",
+                "failed <path> ok",
+            ),
+            (
+                r"file=C:\builds\alice\secret.ptx",
+                "file=<path>",
+            ),
+            (
+                r"cache=D:/builds/alice/cache.bin leftover",
+                "cache=<path> leftover",
+            ),
+            (
+                r#"module="C:\workspace\alice\private.ptx" tail"#,
+                "module=<path> tail",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(sanitize_diagnostic(input), expected, "input={input}");
+            assert!(
+                !sanitize_diagnostic(input)
+                    .to_ascii_lowercase()
+                    .contains("alice"),
+                "input={input}"
+            );
+        }
     }
 
     #[test]
