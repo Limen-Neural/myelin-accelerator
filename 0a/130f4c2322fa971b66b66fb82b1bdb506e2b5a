@@ -1,0 +1,22 @@
+cu/spiking_network.cu
+  s_2e936c8275887f::t_36ce76404f2053 64-68
+tests/oracle_gpu.rs
+  s_2e936c8275887f::t_b4306421fa3259 44-57,155-201
+  s_2e936c8275887f::t_36ce76404f2053 202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0a130f4c2322fa971b66b66fb82b1bdb506e2b5a",
+  "prompts": {},
+  "sessions": {
+    "s_2e936c8275887f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c474-16c9-7241-89e4-7f6b425b2e5c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
