@@ -37,15 +37,16 @@ mod tests {
 
     #[test]
     fn enforce_flag_defaults_off() {
-        assert!(!parse_enforce_flag(None));
-        assert!(!parse_enforce_flag(Some("")));
-        assert!(!parse_enforce_flag(Some("0")));
-        assert!(!parse_enforce_flag(Some("false")));
-        assert!(!parse_enforce_flag(Some("off")));
-        assert!(parse_enforce_flag(Some("1")));
-        assert!(parse_enforce_flag(Some("true")));
-        assert!(parse_enforce_flag(Some("YES")));
-        assert!(parse_enforce_flag(Some("on")));
+        assert_eq!(parse_enforce_flag(None), Ok(false));
+        assert_eq!(parse_enforce_flag(Some("")), Ok(false));
+        assert_eq!(parse_enforce_flag(Some("0")), Ok(false));
+        assert_eq!(parse_enforce_flag(Some("false")), Ok(false));
+        assert_eq!(parse_enforce_flag(Some("off")), Ok(false));
+        assert_eq!(parse_enforce_flag(Some("1")), Ok(true));
+        assert_eq!(parse_enforce_flag(Some("true")), Ok(true));
+        assert_eq!(parse_enforce_flag(Some("YES")), Ok(true));
+        assert_eq!(parse_enforce_flag(Some("on")), Ok(true));
+        assert!(parse_enforce_flag(Some("treu")).is_err());
     }
 
     #[test]

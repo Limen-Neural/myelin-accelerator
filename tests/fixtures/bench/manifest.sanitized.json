@@ -49,13 +49,21 @@
     "warmup": 2
   },
   "toolchain": {
+    "cargo_codegen_units": "16",
+    "cargo_incremental": "false",
+    "cargo_lto": "false",
+    "cargo_profile": "release",
+    "cargo_profile_config": "",
     "crate_version": "0.2.0",
     "cpu_model": "Synthetic CPU",
+    "cuda_arch": null,
     "debug_assertions": false,
     "host_arch": "x86_64",
     "host_os": "linux",
     "nvcc": null,
     "opt_level": "3",
+    "panic_strategy": "unwind",
+    "ptx_version": null,
     "rustc": "rustc 1.98.1",
     "rustflags": [],
     "target_features": [

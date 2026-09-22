@@ -60,6 +60,22 @@ pub struct ToolchainInfo {
     pub rustflags: Vec<String>,
     #[serde(default)]
     pub target_features: Vec<String>,
+    #[serde(default)]
+    pub cargo_profile: Option<String>,
+    #[serde(default)]
+    pub cargo_lto: Option<String>,
+    #[serde(default)]
+    pub cargo_codegen_units: Option<String>,
+    #[serde(default)]
+    pub cargo_incremental: Option<String>,
+    #[serde(default)]
+    pub panic_strategy: Option<String>,
+    #[serde(default)]
+    pub cargo_profile_config: Option<String>,
+    #[serde(default)]
+    pub cuda_arch: Option<String>,
+    #[serde(default)]
+    pub ptx_version: Option<String>,
     pub host_arch: String,
     pub host_os: String,
     #[serde(default)]
@@ -223,6 +239,14 @@ pub fn capture_toolchain() -> ToolchainInfo {
             .map(str::to_string)
             .collect(),
         target_features,
+        cargo_profile: option_env!("MYELIN_BUILD_CARGO_PROFILE").map(str::to_string),
+        cargo_lto: option_env!("MYELIN_BUILD_CARGO_LTO").map(str::to_string),
+        cargo_codegen_units: option_env!("MYELIN_BUILD_CARGO_CODEGEN_UNITS").map(str::to_string),
+        cargo_incremental: option_env!("MYELIN_BUILD_CARGO_INCREMENTAL").map(str::to_string),
+        panic_strategy: option_env!("MYELIN_BUILD_PANIC_STRATEGY").map(str::to_string),
+        cargo_profile_config: option_env!("MYELIN_BUILD_CARGO_PROFILE_CONFIG").map(str::to_string),
+        cuda_arch: option_env!("MYELIN_BUILD_CUDA_ARCH").map(str::to_string),
+        ptx_version: option_env!("MYELIN_BUILD_PTX_VERSION").map(str::to_string),
         host_arch: std::env::consts::ARCH.to_string(),
         host_os: std::env::consts::OS.to_string(),
         cpu_model: capture_cpu_model(),
@@ -355,7 +379,7 @@ fn probe_power_clock_with_query(
     mut query: impl FnMut(&str, &str) -> Option<String>,
 ) -> (Option<String>, Option<String>, PowerClockControls) {
     let mut controls = PowerClockControls::unavailable();
-    let mut uuid = Some(selected_device.hyphenated());
+    let uuid = Some(selected_device.hyphenated());
     let mut driver_version = None;
     let mut selected_smi_selector = None;
 
@@ -374,7 +398,6 @@ fn probe_power_clock_with_query(
             .map(str::trim)
             .collect();
         if parts.len() >= 4 {
-            uuid = optional_smi(parts[0]).or(uuid);
             driver_version = optional_smi(parts[1]);
             controls.persistence_mode = optional_smi(parts[2]);
             controls.power_limit_w = optional_smi(parts[3]).and_then(|s| s.parse().ok());
@@ -592,6 +615,14 @@ mod tests {
                 nvcc: None,
                 rustflags: vec![],
                 target_features: vec![],
+                cargo_profile: None,
+                cargo_lto: None,
+                cargo_codegen_units: None,
+                cargo_incremental: None,
+                panic_strategy: None,
+                cargo_profile_config: None,
+                cuda_arch: None,
+                ptx_version: None,
                 host_arch: "x86_64".into(),
                 host_os: "linux".into(),
                 cpu_model: None,
@@ -802,7 +833,7 @@ mod tests {
 
         assert_eq!(
             uuid.as_deref(),
-            Some("GPU-ce87fa7e-0dd6-4e65-3505-7b0753efeb5e")
+            Some("ce87fa7e-0dd6-4e65-3505-7b0753efeb5e")
         );
         assert_eq!(driver_version.as_deref(), Some("610.43.03"));
         assert_eq!(controls.persistence_mode.as_deref(), Some("Enabled"));
@@ -861,7 +892,7 @@ mod tests {
         );
         assert_eq!(
             uuid.as_deref(),
-            Some("MIG-11223344-5566-7788-99aa-bbccddeeff00")
+            Some("11223344-5566-7788-99aa-bbccddeeff00")
         );
         assert_eq!(driver_version.as_deref(), Some("610.43.03"));
         assert_eq!(controls, PowerClockControls::unavailable());
@@ -921,6 +952,36 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected_target_features
         );
+        assert!(
+            toolchain
+                .cargo_profile
+                .as_deref()
+                .is_some_and(|v| !v.is_empty())
+        );
+        assert!(
+            toolchain
+                .cargo_lto
+                .as_deref()
+                .is_some_and(|v| !v.is_empty())
+        );
+        assert!(
+            toolchain
+                .cargo_codegen_units
+                .as_deref()
+                .is_some_and(|v| !v.is_empty())
+        );
+        assert!(
+            toolchain
+                .cargo_incremental
+                .as_deref()
+                .is_some_and(|v| !v.is_empty())
+        );
+        assert!(
+            toolchain
+                .panic_strategy
+                .as_deref()
+                .is_some_and(|v| !v.is_empty())
+        );
         if cfg!(feature = "cuda") {
             assert!(
                 toolchain
@@ -928,8 +989,22 @@ mod tests {
                     .as_deref()
                     .is_some_and(|version| version.contains("release "))
             );
+            assert!(
+                toolchain
+                    .cuda_arch
+                    .as_deref()
+                    .is_some_and(|v| !v.is_empty())
+            );
+            assert!(
+                toolchain
+                    .ptx_version
+                    .as_deref()
+                    .is_some_and(|v| !v.is_empty())
+            );
         } else {
             assert_eq!(toolchain.nvcc, None);
+            assert_eq!(toolchain.cuda_arch, None);
+            assert_eq!(toolchain.ptx_version, None);
         }
     }
 

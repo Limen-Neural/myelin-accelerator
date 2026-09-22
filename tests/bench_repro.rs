@@ -92,7 +92,7 @@ fn fixture_classification_is_deterministic() {
 
     let report = comparison_report(rows, budget, false, Vec::new());
     assert!(!report.enforced);
-    assert!(!parse_enforce_flag(None));
+    assert_eq!(parse_enforce_flag(None), Ok(false));
 
     assert_eq!(
         serde_json::to_value(&report).expect("serialize comparison report"),
@@ -102,8 +102,9 @@ fn fixture_classification_is_deterministic() {
 
 #[test]
 fn default_ci_cannot_fail_on_hardware_enforcement() {
-    assert!(!parse_enforce_flag(None));
-    assert!(!parse_enforce_flag(Some("0")));
+    assert_eq!(parse_enforce_flag(None), Ok(false));
+    assert_eq!(parse_enforce_flag(Some("0")), Ok(false));
+    assert!(parse_enforce_flag(Some("treu")).is_err());
 }
 
 #[test]

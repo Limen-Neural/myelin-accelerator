@@ -51,6 +51,7 @@ fn main() {
     println!("cargo:rustc-env=MYELIN_BUILD_RUSTFLAGS={rustflags}");
     let target_features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
     println!("cargo:rustc-env=MYELIN_BUILD_TARGET_FEATURES={target_features}");
+    emit_cargo_profile_provenance(&manifest_dir, &out_dir);
     emit_git_provenance(&manifest_dir);
 
     let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
@@ -82,6 +83,7 @@ fn main() {
         None => println!("cargo:warning=using nvcc at {}", nvcc_path.display()),
     }
 
+    let mut emitted_ptx_version = None;
     for &(cu_name, ptx_name) in KERNELS {
         let source = cu_dir.join(cu_name);
         let output = out_dir.join(ptx_name);
@@ -112,7 +114,83 @@ fn main() {
                 "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx=nvcc-default)"
             );
         }
+        if let Some(version) = read_ptx_version(&output) {
+            if let Some(previous) = emitted_ptx_version.as_deref() {
+                assert_eq!(
+                    previous, version,
+                    "compiled kernels use different PTX versions"
+                );
+            } else {
+                emitted_ptx_version = Some(version.to_string());
+            }
+        }
     }
+    println!("cargo:rustc-env=MYELIN_BUILD_CUDA_ARCH={arch}");
+    if let Some(version) = emitted_ptx_version {
+        println!("cargo:rustc-env=MYELIN_BUILD_PTX_VERSION={version}");
+    }
+}
+
+fn emit_cargo_profile_provenance(manifest_dir: &Path, out_dir: &Path) {
+    let profile_class = env::var("PROFILE").unwrap_or_else(|_| "unknown".to_string());
+    let profile = out_dir
+        .ancestors()
+        .nth(3)
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| profile_class.clone());
+    let env_profile = profile
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let release_like = profile_class == "release";
+    let setting = |name: &str, default: &str| {
+        env::var(format!("CARGO_PROFILE_{env_profile}_{name}"))
+            .unwrap_or_else(|_| default.to_string())
+    };
+    let lto = setting("LTO", "false");
+    let codegen_units = setting("CODEGEN_UNITS", if release_like { "16" } else { "256" });
+    let incremental = env::var("CARGO_INCREMENTAL")
+        .ok()
+        .map(|value| match value.as_str() {
+            "0" => "false".to_string(),
+            "1" => "true".to_string(),
+            _ => value,
+        })
+        .unwrap_or_else(|| setting("INCREMENTAL", if release_like { "false" } else { "true" }));
+    let panic_strategy = env::var("CARGO_CFG_PANIC").unwrap_or_else(|_| "unwind".to_string());
+    let profile_config = cargo_profile_config(manifest_dir);
+
+    println!("cargo:rustc-env=MYELIN_BUILD_CARGO_PROFILE={profile}");
+    println!("cargo:rustc-env=MYELIN_BUILD_CARGO_LTO={lto}");
+    println!("cargo:rustc-env=MYELIN_BUILD_CARGO_CODEGEN_UNITS={codegen_units}");
+    println!("cargo:rustc-env=MYELIN_BUILD_CARGO_INCREMENTAL={incremental}");
+    println!("cargo:rustc-env=MYELIN_BUILD_PANIC_STRATEGY={panic_strategy}");
+    println!("cargo:rustc-env=MYELIN_BUILD_CARGO_PROFILE_CONFIG={profile_config}");
+}
+
+fn cargo_profile_config(manifest_dir: &Path) -> String {
+    let Ok(text) = fs::read_to_string(manifest_dir.join("Cargo.toml")) else {
+        return String::new();
+    };
+    let mut in_profile = false;
+    text.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_profile = trimmed.starts_with("[profile.");
+            }
+            (in_profile && !trimmed.is_empty() && !trimmed.starts_with('#'))
+                .then_some(trimmed.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 fn emit_git_provenance(manifest_dir: &Path) {
@@ -361,6 +439,17 @@ fn ensure_min_ptx_version(path: &Path, min_ver: &str) {
     if ptx_version_less(current, min_ver) {
         patch_ptx_version_any(path, min_ver);
     }
+}
+
+fn read_ptx_version(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    text.lines().find_map(|line| {
+        line.trim_start()
+            .strip_prefix(".version ")
+            .map(str::trim)
+            .filter(|version| !version.is_empty())
+            .map(str::to_string)
+    })
 }
 
 fn ptx_version_less(a: &str, b: &str) -> bool {

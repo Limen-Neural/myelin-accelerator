@@ -50,9 +50,9 @@
 use myelin_accelerator::bench::{
     BenchmarkManifest, ComparisonCase, ComparisonRejection, ComparisonRejectionReason,
     CudaDeviceUuid, DeviceIdentity, MANIFEST_SCHEMA_VERSION, ManifestCase, PowerClockControls,
-    RegressionBudget, RegressionClass, SampleSource, SampleStats, capture_toolchain, compare_one,
+    RedactionContext, RegressionBudget, RegressionClass, SampleSource, SampleStats, compare_one,
     comparison_report, enforce_budget_requested, paths_refer_to_same_file, probe_power_clock,
-    write_atomic_bytes, write_canonical_json, write_canonical_manifest,
+    redact_and_canonicalize, write_atomic_bytes, write_canonical_json, write_canonical_manifest,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -156,7 +156,11 @@ impl Config {
             require_non_negative_finite("--noisy-dispersion", noisy);
             budget.noisy_relative_dispersion = noisy;
         }
-        let enforce_budget = raw.enforce_budget || enforce_budget_requested();
+        let env_enforce_budget = enforce_budget_requested().unwrap_or_else(|message| {
+            eprintln!("{message}");
+            std::process::exit(1);
+        });
+        let enforce_budget = raw.enforce_budget || env_enforce_budget;
         if let Err(message) =
             validate_enforcement_configuration(enforce_budget, raw.baseline.as_deref())
         {
@@ -916,12 +920,21 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
     }
 
     let mut rejections = Vec::new();
-    let current_toolchain = capture_toolchain();
+    let current_toolchain =
+        canonicalize_toolchain(&current.toolchain).expect("toolchain provenance must canonicalize");
     let build_profile_mismatch = baseline.build_profile.as_ref().is_some_and(|profile| {
         profile.rustc != current_toolchain.rustc
             || profile.nvcc != current_toolchain.nvcc
             || profile.rustflags != current_toolchain.rustflags
             || profile.target_features != current_toolchain.target_features
+            || profile.cargo_profile != current_toolchain.cargo_profile
+            || profile.cargo_lto != current_toolchain.cargo_lto
+            || profile.cargo_codegen_units != current_toolchain.cargo_codegen_units
+            || profile.cargo_incremental != current_toolchain.cargo_incremental
+            || profile.panic_strategy != current_toolchain.panic_strategy
+            || profile.cargo_profile_config != current_toolchain.cargo_profile_config
+            || profile.cuda_arch != current_toolchain.cuda_arch
+            || profile.ptx_version != current_toolchain.ptx_version
             || profile.opt_level != current_toolchain.opt_level
             || profile.debug_assertions != current_toolchain.debug_assertions
     });
@@ -1158,7 +1171,7 @@ fn write_rejected_comparison(config: &Config, reason: ComparisonRejectionReason)
         eprintln!("[bench] {err}");
         return 1;
     }
-    i32::from(config.enforce_budget && !report.gate_passed)
+    1
 }
 
 fn duplicate_names<'a>(names: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> {
@@ -1188,6 +1201,14 @@ struct BuildProfile {
     nvcc: Option<String>,
     rustflags: Vec<String>,
     target_features: Vec<String>,
+    cargo_profile: Option<String>,
+    cargo_lto: Option<String>,
+    cargo_codegen_units: Option<String>,
+    cargo_incremental: Option<String>,
+    panic_strategy: Option<String>,
+    cargo_profile_config: Option<String>,
+    cuda_arch: Option<String>,
+    ptx_version: Option<String>,
     opt_level: String,
     debug_assertions: bool,
 }
@@ -1225,6 +1246,63 @@ fn same_feature_set(baseline: &[String], current: &[String]) -> bool {
     baseline.iter().collect::<BTreeSet<_>>() == current.iter().collect::<BTreeSet<_>>()
 }
 
+fn canonicalize_toolchain(
+    toolchain: &myelin_accelerator::bench::ToolchainInfo,
+) -> Result<myelin_accelerator::bench::ToolchainInfo, String> {
+    let text = redact_and_canonicalize(toolchain, &RedactionContext::from_env())
+        .map_err(|err| err.to_string())?;
+    serde_json::from_str(&text).map_err(|err| err.to_string())
+}
+
+fn validate_manifest_case(case: &ManifestCase) -> Result<SampleStats, String> {
+    if case.samples_us.is_empty() {
+        return Err(format!(
+            "manifest case {:?} has no latency samples",
+            case.name
+        ));
+    }
+    if case.samples != case.samples_us.len() {
+        return Err(format!(
+            "manifest case {:?} declares {} samples but contains {}",
+            case.name,
+            case.samples,
+            case.samples_us.len()
+        ));
+    }
+    if case.samples_us.iter().any(|sample| !sample.is_finite()) {
+        return Err(format!(
+            "manifest case {:?} contains non-finite samples",
+            case.name
+        ));
+    }
+    let computed = myelin_accelerator::bench::sample_stats(&case.samples_us);
+    let aggregates = [
+        ("mean_us", case.mean_us, computed.mean),
+        ("median_us", case.median_us, computed.median),
+        ("mad_us", case.mad_us, computed.mad),
+        (
+            "relative_dispersion",
+            case.relative_dispersion,
+            computed.relative_dispersion,
+        ),
+        ("min_us", case.min_us, computed.min),
+        ("max_us", case.max_us, computed.max),
+        ("p50_us", case.p50_us, computed.p50),
+        ("p95_us", case.p95_us, computed.p95),
+        ("p99_us", case.p99_us, computed.p99),
+    ];
+    for (field, stored, expected) in aggregates {
+        let tolerance = 1e-12 * stored.abs().max(expected.abs()).max(1.0);
+        if !stored.is_finite() || (stored - expected).abs() > tolerance {
+            return Err(format!(
+                "manifest case {:?} has inconsistent {field}: stored {stored}, computed {expected}",
+                case.name
+            ));
+        }
+    }
+    Ok(computed)
+}
+
 impl BaselineRow {
     fn matches_workload(&self, current: &ManifestCase) -> bool {
         match (&self.kernel_variant, &self.input_dimensions) {
@@ -1256,18 +1334,30 @@ fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
                 manifest.schema_version, MANIFEST_SCHEMA_VERSION
             ));
         }
+        for case in &manifest.cases {
+            validate_manifest_case(case)?;
+        }
+        let toolchain = canonicalize_toolchain(&manifest.toolchain)?;
         let build_profile = BuildProfile {
-            rustc: manifest.toolchain.rustc.clone(),
-            nvcc: manifest.toolchain.nvcc.clone(),
-            rustflags: manifest.toolchain.rustflags.clone(),
-            target_features: manifest.toolchain.target_features.clone(),
-            opt_level: manifest.toolchain.opt_level,
-            debug_assertions: manifest.toolchain.debug_assertions,
+            rustc: toolchain.rustc.clone(),
+            nvcc: toolchain.nvcc.clone(),
+            rustflags: toolchain.rustflags.clone(),
+            target_features: toolchain.target_features.clone(),
+            cargo_profile: toolchain.cargo_profile.clone(),
+            cargo_lto: toolchain.cargo_lto.clone(),
+            cargo_codegen_units: toolchain.cargo_codegen_units.clone(),
+            cargo_incremental: toolchain.cargo_incremental.clone(),
+            panic_strategy: toolchain.panic_strategy.clone(),
+            cargo_profile_config: toolchain.cargo_profile_config.clone(),
+            cuda_arch: toolchain.cuda_arch.clone(),
+            ptx_version: toolchain.ptx_version.clone(),
+            opt_level: toolchain.opt_level,
+            debug_assertions: toolchain.debug_assertions,
         };
         let host_identity = HostIdentity {
-            arch: manifest.toolchain.host_arch.clone(),
-            os: manifest.toolchain.host_os.clone(),
-            cpu_model: manifest.toolchain.cpu_model.clone(),
+            arch: toolchain.host_arch.clone(),
+            os: toolchain.host_os.clone(),
+            cpu_model: toolchain.cpu_model.clone(),
         };
         let device = manifest.device;
         let power_clock = manifest.power_clock;
@@ -1275,26 +1365,18 @@ fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
         let rows = manifest
             .cases
             .into_iter()
-            .map(|c| BaselineRow {
-                name: c.name,
-                kernel_variant: Some(c.kernel_variant),
-                input_dimensions: Some(c.input_dimensions),
-                seed: c.seed,
-                warmup: Some(c.warmup),
-                stats: SampleStats {
-                    n: c.samples,
-                    mean: c.mean_us,
-                    median: c.median_us,
-                    mad: c.mad_us,
-                    relative_dispersion: c.relative_dispersion,
-                    min: c.min_us,
-                    max: c.max_us,
-                    p50: c.p50_us,
-                    p95: c.p95_us,
-                    p99: c.p99_us,
-                },
-                samples_us: c.samples_us,
-                dispersion_known: true,
+            .map(|c| {
+                let stats = myelin_accelerator::bench::sample_stats(&c.samples_us);
+                BaselineRow {
+                    name: c.name,
+                    kernel_variant: Some(c.kernel_variant),
+                    input_dimensions: Some(c.input_dimensions),
+                    seed: c.seed,
+                    warmup: Some(c.warmup),
+                    stats,
+                    samples_us: c.samples_us,
+                    dispersion_known: true,
+                }
             })
             .collect();
         return Ok(LoadedBaseline {
@@ -2135,6 +2217,90 @@ mod tests {
     }
 
     #[test]
+    fn informational_comparison_fails_for_unreadable_baseline() {
+        let dir = temp_dir("informational-unreadable-baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(dir.join("missing.json").to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: false,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_cases_with_baseline(&[], &config), 1);
+        assert_eq!(
+            rejection_reasons(&comparison_json(&config.output_prefix)),
+            vec!["baseline_read_failure", "no_comparable_cases"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn informational_comparison_fails_for_invalid_baseline() {
+        let dir = temp_dir("informational-invalid-baseline");
+        let baseline_path = dir.join("invalid.json");
+        std::fs::write(&baseline_path, "not-json").expect("write invalid baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: false,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_cases_with_baseline(&[], &config), 1);
+        assert_eq!(
+            rejection_reasons(&comparison_json(&config.output_prefix)),
+            vec!["baseline_parse_failure", "no_comparable_cases"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn manifest_baseline_requires_samples_and_consistent_aggregates() {
+        for mutation in ["empty-samples", "wrong-median"] {
+            let dir = temp_dir(mutation);
+            let baseline_path = dir.join("baseline.manifest.json");
+            let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+            let mut baseline = BenchmarkManifest::new(
+                myelin_accelerator::bench::RunTiming {
+                    warmup: 1,
+                    samples: 8,
+                    seed: None,
+                },
+                vec![baseline_case.clone()],
+            );
+            if mutation == "empty-samples" {
+                baseline.cases[0].samples_us.clear();
+            } else {
+                baseline.cases[0].median_us = 1.0;
+            }
+            std::fs::write(
+                &baseline_path,
+                serde_json::to_vec(&baseline).expect("serialize manifest"),
+            )
+            .expect("write baseline");
+            let config = Config {
+                warmup: 1,
+                iterations: 8,
+                baseline: Some(baseline_path.to_string_lossy().into_owned()),
+                output_prefix: dir.join("current").to_string_lossy().into_owned(),
+                enforce_budget: true,
+                budget: RegressionBudget::default(),
+            };
+
+            assert_eq!(compare_cases_with_baseline(&[baseline_case], &config), 1);
+            assert_eq!(
+                rejection_reasons(&comparison_json(&config.output_prefix)),
+                vec!["baseline_parse_failure", "no_comparable_cases"]
+            );
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
     fn enforced_comparison_records_baseline_cases_missing_from_current() {
         let dir = temp_dir("missing-current-case");
         let baseline_path = dir.join("baseline.manifest.json");
@@ -2278,6 +2444,111 @@ mod tests {
         assert_eq!(
             rejection_reasons(&report),
             vec!["build_profile_mismatch", "no_comparable_cases"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_accepts_equally_redacted_codegen_paths() {
+        let dir = temp_dir("redacted-codegen-path");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let mut baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case],
+        );
+        let home = std::env::var("HOME").expect("HOME for redaction test");
+        baseline.toolchain.rustflags = vec![format!("-Lnative={home}/lib")];
+        write_canonical_manifest(&baseline_path, &baseline).expect("write canonical baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_with_baseline(&baseline, &config), 0);
+        assert!(rejection_reasons(&comparison_json(&config.output_prefix)).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_rejects_mismatched_cargo_profile_settings() {
+        let dir = temp_dir("cargo-profile-mismatch");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case.clone()],
+        );
+        let mut baseline_json = serde_json::to_value(&baseline).expect("serialize manifest");
+        baseline_json["toolchain"]["cargo_lto"] = serde_json::json!("fat");
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline_json).expect("serialize manifest JSON"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_cases_with_baseline(&[baseline_case], &config), 1);
+        assert!(
+            rejection_reasons(&comparison_json(&config.output_prefix))
+                .contains(&"build_profile_mismatch")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_rejects_mismatched_cuda_codegen_settings() {
+        let dir = temp_dir("cuda-codegen-mismatch");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case.clone()],
+        );
+        let mut baseline_json = serde_json::to_value(&baseline).expect("serialize manifest");
+        baseline_json["toolchain"]["cuda_arch"] = serde_json::json!("sm_999");
+        baseline_json["toolchain"]["ptx_version"] = serde_json::json!("999.0");
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline_json).expect("serialize manifest JSON"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_cases_with_baseline(&[baseline_case], &config), 1);
+        assert!(
+            rejection_reasons(&comparison_json(&config.output_prefix))
+                .contains(&"build_profile_mismatch")
         );
         let _ = std::fs::remove_dir_all(dir);
     }

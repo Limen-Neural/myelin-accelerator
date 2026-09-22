@@ -235,18 +235,21 @@ fn finite_or_inf(x: f64) -> f64 {
 }
 
 /// Parse `MYELIN_BENCH_ENFORCE_BUDGET` / CLI values. Unset and common falsy tokens are off.
-pub fn parse_enforce_flag(raw: Option<&str>) -> bool {
+pub fn parse_enforce_flag(raw: Option<&str>) -> Result<bool, String> {
     match raw {
-        None => false,
-        Some(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
+        None => Ok(false),
+        Some(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "" | "0" | "false" | "no" | "off" => Ok(false),
+            "1" | "true" | "yes" | "on" => Ok(true),
+            _ => Err(format!(
+                "invalid MYELIN_BENCH_ENFORCE_BUDGET value {v:?}; expected one of 1/true/yes/on or 0/false/no/off"
+            )),
+        },
     }
 }
 
 /// Read the opt-in hardware-enforcement environment flag.
-pub fn enforce_budget_requested() -> bool {
+pub fn enforce_budget_requested() -> Result<bool, String> {
     parse_enforce_flag(std::env::var("MYELIN_BENCH_ENFORCE_BUDGET").ok().as_deref())
 }
 

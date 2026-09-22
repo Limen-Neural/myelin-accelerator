@@ -40,8 +40,9 @@ Cargo features, kernel variant and input dimensions per case, seed,
 warmup/sample counts, device
 identity, compute capability, the NVIDIA driver reported by `nvidia-smi`, and
 the exact rustc/nvcc versions selected at build time, effective encoded
-Rust codegen flags and target features, host architecture/OS/CPU identity, and
-release/debug profile settings. It also records
+Rust codegen flags and target features, host architecture/OS/CPU identity,
+Cargo profile/LTO/codegen-unit/incremental/panic settings, and the effective
+CUDA architecture/PTX version. It also records
 `nvidia-smi` power controls plus configured application clocks when available.
 GPUs where application-clock controls are unsupported or deprecated record
 those clock fields as `null` rather than substituting a post-run idle-clock
@@ -77,8 +78,9 @@ reported as `insufficient_samples` instead of being treated as perfectly
 noise-free. Manifest baselines additionally require matching kernel variants,
 input dimensions, and seed before their measurements are compared.
 
-Without `--enforce-budget`, `fail` is printed and recorded but the process
-still exits 0.
+Without `--enforce-budget`, statistical `fail` results are printed and recorded
+but the process still exits 0. An unreadable, invalid, or internally
+inconsistent baseline is an operational error and exits nonzero in either mode.
 
 ## Enforce a budget (opt-in)
 
@@ -92,7 +94,9 @@ MYELIN_BENCH_ENFORCE_BUDGET=1 \
 
 Either the environment variable (`1` / `true` / `yes` / `on`) or
 `--enforce-budget` turns on process failure and requires `--baseline`; omitting
-the baseline is a configuration error. The process then exits 1 on
+the baseline is a configuration error. Recognized false values are empty,
+`0`, `false`, `no`, and `off`; any other value is rejected instead of silently
+disabling enforcement. The process then exits 1 on
 `class=fail` or `class=insufficient_samples`, when a baseline case is missing
 from the current run, when no comparable cases are produced, when case names
 are duplicated, or when same-name manifest cases have different workload
