@@ -18,7 +18,7 @@
 //  so consumers can profile the unfused baseline via get_function.
 // ════════════════════════════════════════════════════════════════════
 
-use crate::capability::{KernelAvailability, sanitize_diagnostic};
+use crate::capability::KernelAvailability;
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::launch_hook::{LaunchFailure, LaunchType, report_launch_failure};
 use cust::error::CudaError;

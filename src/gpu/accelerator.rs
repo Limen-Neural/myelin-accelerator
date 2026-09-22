@@ -337,6 +337,7 @@ impl GpuAccelerator {
         }
     }
 
+    #[cfg(feature = "saaq")]
     pub fn ensure_temporal_state(&mut self, neuron_count: usize) -> GpuResult<()> {
         if !self.has_context() {
             return Err(GpuError::NoGpu);
