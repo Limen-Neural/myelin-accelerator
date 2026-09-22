@@ -60,10 +60,13 @@ research are not crate material. Keep them in a dedicated experiment repository
 or under an excluded `experiments/saaq/` or `research/` path; never add them to
 `src/`, `cu/`, or the public documentation shipped in the Cargo archive.
 
-The crate's Cargo package uses an explicit allowlist, and CI inspects the actual
-package file list. This makes the boundary apply to a future `cargo publish`,
-not just to repository organization. A generic reusable GPU primitive requires
-its own scope decision; it does not make the surrounding SAAQ experiment
+The crate's Cargo package uses an explicit allowlist for Rust (`.rs`) and CUDA
+(`.cu`/`.cuh`) source files, the public benchmark example, licenses, and public
+docs; test payloads and non-source data under `src/` or `cu/` are not shipped.
+CI tests its package-boundary checker against forbidden SAAQ paths and inspects
+the actual package file list. This makes the boundary apply to a future `cargo
+publish`, not just to repository organization. A generic reusable GPU primitive
+requires its own scope decision; it does not make the surrounding SAAQ experiment
 publishable.
 
 ---
