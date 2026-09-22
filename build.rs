@@ -30,6 +30,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=CUDA_NVCC");
+    println!("cargo:rerun-if-env-changed=RUSTC");
     println!("cargo:rerun-if-env-changed=MYELIN_CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=MYELIN_PTX_VERSION");
     println!("cargo:rerun-if-env-changed=MYELIN_NVCC_THREADS");
@@ -41,6 +42,9 @@ fn main() {
 
     let opt_level = env::var("OPT_LEVEL").unwrap_or_else(|_| "unknown".to_string());
     println!("cargo:rustc-env=OPT_LEVEL={opt_level}");
+    if let Some(version) = rustc_version() {
+        println!("cargo:rustc-env=MYELIN_BUILD_RUSTC_VERSION={version}");
+    }
 
     let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
     if !cuda_feature_enabled {
@@ -64,7 +68,10 @@ fn main() {
     };
 
     match nvcc_version(&nvcc_path) {
-        Some(v) => println!("cargo:warning=using nvcc: {v}"),
+        Some(v) => {
+            println!("cargo:warning=using nvcc: {v}");
+            println!("cargo:rustc-env=MYELIN_BUILD_NVCC_VERSION={v}");
+        }
         None => println!("cargo:warning=using nvcc at {}", nvcc_path.display()),
     }
 
@@ -99,6 +106,20 @@ fn main() {
             );
         }
     }
+}
+
+fn rustc_version() -> Option<String> {
+    let rustc = env::var_os("RUSTC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(exe_name("rustc")));
+    let out = Command::new(rustc).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout)
+        .ok()
+        .and_then(|s| s.lines().next().map(|line| line.trim().to_string()))
+        .filter(|line| !line.is_empty())
 }
 
 fn find_nvcc() -> Option<PathBuf> {
@@ -156,9 +177,12 @@ fn nvcc_version(nvcc: &Path) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    String::from_utf8(out.stdout)
-        .ok()
-        .and_then(|s| s.lines().last().map(|l| l.trim().to_string()))
+    String::from_utf8(out.stdout).ok().and_then(|s| {
+        s.lines()
+            .map(str::trim)
+            .find(|line| line.contains("Cuda compilation tools, release "))
+            .map(str::to_string)
+    })
 }
 
 fn compile_to_ptx(nvcc: &Path, cu_dir: &Path, source: &Path, output: &Path, arch: &str) {

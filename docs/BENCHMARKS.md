@@ -37,8 +37,13 @@ Artifacts (never committed from the working directory prefix
 
 The manifest includes git commit/dirty state, enabled Cargo features, kernel
 variant and input dimensions per case, seed, warmup/sample counts, device
-identity, compute capability, driver/runtime/nvcc versions, and `nvidia-smi`
-power/clock fields when that binary is available.
+identity, compute capability, the NVIDIA driver reported by `nvidia-smi`, and
+the exact rustc/nvcc versions selected at build time. It also records
+`nvidia-smi` power controls plus configured application clocks when available.
+GPUs where application-clock controls are unsupported or deprecated record
+those clock fields as `null` rather than substituting a post-run idle-clock
+snapshot. Failure to query those optional clock fields does not discard the
+stable UUID, driver, persistence-mode, or power-limit fields.
 
 ## Compare (informational)
 
@@ -59,6 +64,11 @@ Classification uses **median** latency and **relative MAD** dispersion:
    `--budget-abs-us` are exceeded
 4. `pass` — otherwise (including speedups)
 
+Legacy JSON baselines do not contain MAD/dispersion data, so their rows are
+reported as `insufficient_samples` instead of being treated as perfectly
+noise-free. Manifest baselines additionally require matching kernel variants
+and input dimensions before their measurements are compared.
+
 Without `--enforce-budget`, `fail` is printed and recorded but the process
 still exits 0.
 
@@ -74,8 +84,12 @@ MYELIN_BENCH_ENFORCE_BUDGET=1 \
 
 Either the environment variable (`1` / `true` / `yes` / `on`) or
 `--enforce-budget` turns on process failure. The process then exits 1 on
-`class=fail` **or** when a baseline case is missing from the current run.
-Do not set this in ordinary GitHub-hosted CPU CI.
+`class=fail`, when a baseline case is missing from the current run, when no
+comparable cases are produced, when case names are duplicated, or when
+same-name manifest cases have different workload metadata. Comparison
+artifacts are written atomically; an artifact write failure also exits nonzero
+even in informational mode. Do not set budget enforcement in ordinary
+GitHub-hosted CPU CI.
 
 Defaults: 10% relative, 2 µs absolute, 8 samples, 0.25 relative MAD.
 

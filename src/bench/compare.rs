@@ -45,13 +45,23 @@ impl Default for RegressionBudget {
 pub enum SampleSource<'a> {
     Samples(&'a [f64]),
     Stats(SampleStats),
+    /// Pre-aggregated statistics from a format that did not record dispersion.
+    StatsWithoutDispersion(SampleStats),
 }
 
 impl SampleSource<'_> {
-    fn stats(&self) -> SampleStats {
+    fn stats(&self) -> (SampleStats, Option<f64>) {
         match self {
-            SampleSource::Samples(s) => sample_stats(s),
-            SampleSource::Stats(s) => s.clone(),
+            SampleSource::Samples(samples) => {
+                let stats = sample_stats(samples);
+                let dispersion = stats.relative_dispersion;
+                (stats, Some(dispersion))
+            }
+            SampleSource::Stats(stats) => {
+                let dispersion = stats.relative_dispersion;
+                (stats.clone(), Some(dispersion))
+            }
+            SampleSource::StatsWithoutDispersion(stats) => (stats.clone(), None),
         }
     }
 }
@@ -65,10 +75,11 @@ pub struct ComparisonCase {
     pub current_n: usize,
     pub baseline_median_us: f64,
     pub current_median_us: f64,
-    pub relative_delta: f64,
+    /// Relative change from the baseline, or `None` when the baseline median is zero.
+    pub relative_delta: Option<f64>,
     pub absolute_delta_us: f64,
-    pub baseline_relative_dispersion: f64,
-    pub current_relative_dispersion: f64,
+    pub baseline_relative_dispersion: Option<f64>,
+    pub current_relative_dispersion: Option<f64>,
 }
 
 /// Versioned comparison report written beside benchmark output when a baseline is supplied.
@@ -118,24 +129,31 @@ pub fn compare_one(
     current: SampleSource<'_>,
     budget: &RegressionBudget,
 ) -> ComparisonCase {
-    let b = baseline.stats();
-    let c = current.stats();
+    let (b, baseline_relative_dispersion) = baseline.stats();
+    let (c, current_relative_dispersion) = current.stats();
     let absolute_delta_us = c.median - b.median;
     let relative_delta = if b.median.abs() > 1e-12 {
-        absolute_delta_us / b.median.abs()
-    } else if absolute_delta_us.abs() > 0.0 {
-        f64::INFINITY
+        Some(absolute_delta_us / b.median.abs())
     } else {
-        0.0
+        None
     };
+    let relative_budget_exceeded = relative_delta
+        .map(|delta| delta > budget.relative)
+        .unwrap_or(absolute_delta_us > 0.0);
 
-    let class = if b.n < budget.min_samples || c.n < budget.min_samples {
+    let class = if b.n < budget.min_samples
+        || c.n < budget.min_samples
+        || baseline_relative_dispersion.is_none()
+        || current_relative_dispersion.is_none()
+    {
         RegressionClass::InsufficientSamples
-    } else if finite_or_inf(b.relative_dispersion) > budget.noisy_relative_dispersion
-        || finite_or_inf(c.relative_dispersion) > budget.noisy_relative_dispersion
+    } else if baseline_relative_dispersion
+        .is_some_and(|value| finite_or_inf(value) > budget.noisy_relative_dispersion)
+        || current_relative_dispersion
+            .is_some_and(|value| finite_or_inf(value) > budget.noisy_relative_dispersion)
     {
         RegressionClass::Noisy
-    } else if relative_delta > budget.relative && absolute_delta_us > budget.min_absolute_us {
+    } else if relative_budget_exceeded && absolute_delta_us > budget.min_absolute_us {
         RegressionClass::Fail
     } else {
         RegressionClass::Pass
@@ -150,8 +168,8 @@ pub fn compare_one(
         current_median_us: c.median,
         relative_delta,
         absolute_delta_us,
-        baseline_relative_dispersion: b.relative_dispersion,
-        current_relative_dispersion: c.relative_dispersion,
+        baseline_relative_dispersion,
+        current_relative_dispersion,
     }
 }
 
@@ -319,5 +337,71 @@ mod tests {
                 &budget()
             )
         );
+    }
+
+    #[test]
+    fn zero_baseline_relative_delta_roundtrips_as_undefined() {
+        let baseline = n_copies(0.0, 8);
+        let current = n_copies(10.0, 8);
+        let row = compare_one(
+            "zero-baseline",
+            SampleSource::Samples(&baseline),
+            SampleSource::Samples(&current),
+            &budget(),
+        );
+
+        assert_eq!(row.class, RegressionClass::Fail);
+        assert_eq!(row.relative_delta, None);
+        let json = serde_json::to_string(&row).expect("serialize comparison row");
+        assert!(json.contains("\"relative_delta\":null"));
+        let parsed: ComparisonCase =
+            serde_json::from_str(&json).expect("deserialize comparison row");
+        assert_eq!(parsed, row);
+    }
+
+    #[test]
+    fn zero_to_zero_relative_delta_is_undefined_but_passes() {
+        let baseline = n_copies(0.0, 8);
+        let current = n_copies(0.0, 8);
+        let row = compare_one(
+            "zero-to-zero",
+            SampleSource::Samples(&baseline),
+            SampleSource::Samples(&current),
+            &budget(),
+        );
+
+        assert_eq!(row.class, RegressionClass::Pass);
+        assert_eq!(row.relative_delta, None);
+        let json = serde_json::to_string(&row).expect("serialize comparison row");
+        let parsed: ComparisonCase =
+            serde_json::from_str(&json).expect("deserialize comparison row");
+        assert_eq!(parsed, row);
+    }
+
+    #[test]
+    fn missing_baseline_dispersion_is_insufficient_not_a_failure() {
+        let baseline = SampleStats {
+            n: 8,
+            mean: 100.0,
+            median: 100.0,
+            mad: 0.0,
+            relative_dispersion: 0.0,
+            min: 90.0,
+            max: 110.0,
+            p50: 100.0,
+            p95: 110.0,
+            p99: 110.0,
+        };
+        let current = n_copies(130.0, 8);
+
+        let row = compare_one(
+            "legacy",
+            SampleSource::StatsWithoutDispersion(baseline),
+            SampleSource::Samples(&current),
+            &budget(),
+        );
+
+        assert_eq!(row.class, RegressionClass::InsufficientSamples);
+        assert_eq!(row.baseline_relative_dispersion, None);
     }
 }

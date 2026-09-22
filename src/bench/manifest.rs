@@ -195,8 +195,8 @@ pub fn capture_git() -> GitProvenance {
 /// rustc / nvcc versions and host identity. Paths are never stored.
 pub fn capture_toolchain() -> ToolchainInfo {
     ToolchainInfo {
-        rustc: command_stdout("rustc", &["--version"]).map(trim_line),
-        nvcc: nvcc_release(),
+        rustc: option_env!("MYELIN_BUILD_RUSTC_VERSION").map(str::to_string),
+        nvcc: option_env!("MYELIN_BUILD_NVCC_VERSION").map(str::to_string),
         host_arch: std::env::consts::ARCH.to_string(),
         host_os: std::env::consts::OS.to_string(),
         opt_level: option_env!("OPT_LEVEL").unwrap_or("unknown").to_string(),
@@ -205,32 +205,70 @@ pub fn capture_toolchain() -> ToolchainInfo {
     }
 }
 
-/// Probe `nvidia-smi` for UUID and power/clock controls. Missing binary → empty.
-pub fn probe_power_clock() -> (Option<String>, PowerClockControls) {
-    let Some(raw) = command_stdout(
-        "nvidia-smi",
-        &[
-            "--query-gpu=uuid,persistence_mode,clocks.current.graphics,clocks.current.memory,power.limit",
+/// Probe `nvidia-smi` for UUID, driver, and configured power/clock controls.
+///
+/// Stable identity/power fields and optional application clocks are queried
+/// separately so drivers that reject the deprecated clock fields do not erase
+/// otherwise available provenance.
+pub fn probe_power_clock() -> (Option<String>, Option<String>, PowerClockControls) {
+    probe_power_clock_with_command(Path::new("nvidia-smi"))
+}
+
+fn smi_query(binary: &Path, fields: &str) -> Option<String> {
+    Command::new(binary)
+        .args([
+            &format!("--query-gpu={fields}"),
             "--format=csv,noheader,nounits",
             "-i",
             "0",
-        ],
-    ) else {
-        return (None, PowerClockControls::unavailable());
-    };
-    let line = raw.lines().next().unwrap_or("").trim();
-    let parts: Vec<&str> = line.split(',').map(str::trim).collect();
-    if parts.len() < 5 {
-        return (None, PowerClockControls::unavailable());
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+}
+
+fn probe_power_clock_with_command(
+    binary: &Path,
+) -> (Option<String>, Option<String>, PowerClockControls) {
+    let mut controls = PowerClockControls::unavailable();
+    let mut uuid = None;
+    let mut driver_version = None;
+
+    if let Some(raw) = smi_query(binary, "uuid,driver_version,persistence_mode,power.limit") {
+        let parts: Vec<&str> = raw
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .collect();
+        if parts.len() >= 4 {
+            uuid = optional_smi(parts[0]);
+            driver_version = optional_smi(parts[1]);
+            controls.persistence_mode = optional_smi(parts[2]);
+            controls.power_limit_w = optional_smi(parts[3]).and_then(|s| s.parse().ok());
+        }
     }
-    let uuid = optional_smi(parts[0]);
-    let power_clock = PowerClockControls {
-        persistence_mode: optional_smi(parts[1]),
-        graphics_clock_mhz: optional_smi(parts[2]).and_then(|s| s.parse().ok()),
-        memory_clock_mhz: optional_smi(parts[3]).and_then(|s| s.parse().ok()),
-        power_limit_w: optional_smi(parts[4]).and_then(|s| s.parse().ok()),
-    };
-    (uuid, power_clock)
+
+    if let Some(raw) = smi_query(
+        binary,
+        "clocks.applications.graphics,clocks.applications.memory",
+    ) {
+        let parts: Vec<&str> = raw
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .collect();
+        if parts.len() >= 2 {
+            controls.graphics_clock_mhz = optional_smi(parts[0]).and_then(|s| s.parse().ok());
+            controls.memory_clock_mhz = optional_smi(parts[1]).and_then(|s| s.parse().ok());
+        }
+    }
+
+    (uuid, driver_version, controls)
 }
 
 /// True when `a` and `b` name the same filesystem path after resolving `.` /
@@ -305,14 +343,20 @@ fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> 
     }
 }
 
-/// Write a redacted, key-sorted pretty JSON manifest. Never used as a baseline overwrite helper.
+/// Write any serializable value as redacted, key-sorted pretty JSON.
+///
 /// Bytes land in a same-directory temp file and are renamed into place so an
-/// interrupt cannot leave a truncated JSON baseline.
-pub fn write_canonical_manifest(path: &Path, manifest: &BenchmarkManifest) -> std::io::Result<()> {
+/// interrupt cannot leave a truncated artifact.
+pub fn write_canonical_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let ctx = RedactionContext::from_env();
-    let text = redact_and_canonicalize(manifest, &ctx)
+    let text = redact_and_canonicalize(value, &ctx)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     write_atomic(path, text)
+}
+
+/// Write a redacted, key-sorted pretty JSON manifest atomically.
+pub fn write_canonical_manifest(path: &Path, manifest: &BenchmarkManifest) -> std::io::Result<()> {
+    write_canonical_json(path, manifest)
 }
 
 fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
@@ -325,52 +369,6 @@ fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
         return None;
     }
     String::from_utf8(out.stdout).ok()
-}
-
-fn command_stdout(bin: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new(bin).args(args).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8(out.stdout).ok()
-}
-
-fn trim_line(s: String) -> String {
-    s.lines().next().unwrap_or("").trim().to_string()
-}
-
-fn nvcc_release() -> Option<String> {
-    let binary = nvcc_binary();
-    let out = Command::new(binary).arg("--version").output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
-    s.lines().find_map(|line| {
-        line.split("release ")
-            .nth(1)
-            .and_then(|rest| rest.split(',').next())
-            .map(str::trim)
-            .map(str::to_string)
-    })
-}
-
-fn nvcc_binary() -> PathBuf {
-    std::env::var("CUDA_NVCC")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            for var in ["CUDA_HOME", "CUDA_PATH"] {
-                if let Ok(root) = std::env::var(var)
-                    && !root.trim().is_empty()
-                {
-                    return Some(PathBuf::from(root).join("bin").join("nvcc"));
-                }
-            }
-            None
-        })
-        .unwrap_or_else(|| PathBuf::from("nvcc"))
 }
 
 fn optional_smi(raw: &str) -> Option<String> {
@@ -506,5 +504,74 @@ mod tests {
             .count();
         assert_eq!(leftover, 1, "temp sibling must be renamed away");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn power_clock_probe_preserves_stable_fields_when_application_clocks_fail() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "myelin-nvidia-smi-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let script = dir.join("nvidia-smi");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+case "$*" in
+  *uuid,driver_version,persistence_mode,power.limit*)
+    printf '%s\n' 'GPU-test, 610.43.03, Enabled, 360.00'
+    ;;
+  *clocks.applications.graphics,clocks.applications.memory*)
+    exit 64
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+"#,
+        )
+        .expect("write fake nvidia-smi");
+        let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("make executable");
+
+        let (uuid, driver_version, controls) = probe_power_clock_with_command(&script);
+
+        assert_eq!(uuid.as_deref(), Some("GPU-test"));
+        assert_eq!(driver_version.as_deref(), Some("610.43.03"));
+        assert_eq!(controls.persistence_mode.as_deref(), Some("Enabled"));
+        assert_eq!(controls.graphics_clock_mhz, None);
+        assert_eq!(controls.memory_clock_mhz, None);
+        assert_eq!(controls.power_limit_w, Some(360.0));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn toolchain_versions_are_the_compilers_recorded_at_build_time() {
+        let toolchain = capture_toolchain();
+
+        assert!(
+            toolchain
+                .rustc
+                .as_deref()
+                .is_some_and(|version| version.starts_with("rustc "))
+        );
+        if cfg!(feature = "cuda") {
+            assert!(
+                toolchain
+                    .nvcc
+                    .as_deref()
+                    .is_some_and(|version| version.contains("release "))
+            );
+        } else {
+            assert_eq!(toolchain.nvcc, None);
+        }
     }
 }
