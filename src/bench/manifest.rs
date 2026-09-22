@@ -58,6 +58,8 @@ pub struct ToolchainInfo {
     pub nvcc: Option<String>,
     pub host_arch: String,
     pub host_os: String,
+    #[serde(default)]
+    pub cpu_model: Option<String>,
     pub opt_level: String,
     pub debug_assertions: bool,
     pub crate_version: String,
@@ -204,10 +206,40 @@ pub fn capture_toolchain() -> ToolchainInfo {
         nvcc: option_env!("MYELIN_BUILD_NVCC_VERSION").map(str::to_string),
         host_arch: std::env::consts::ARCH.to_string(),
         host_os: std::env::consts::OS.to_string(),
+        cpu_model: capture_cpu_model(),
         opt_level: option_env!("OPT_LEVEL").unwrap_or("unknown").to_string(),
         debug_assertions: cfg!(debug_assertions),
         crate_version: env!("CARGO_PKG_VERSION").to_string(),
     }
+}
+
+fn capture_cpu_model() -> Option<String> {
+    if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
+        for preferred_key in ["model name", "Hardware", "Processor"] {
+            if let Some(model) = cpuinfo.lines().find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                (key.trim() == preferred_key)
+                    .then(|| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            }) {
+                return Some(model);
+            }
+        }
+    }
+    if let Ok(output) = Command::new("sysctl")
+        .args(["-n", "machdep.cpu.brand_string"])
+        .output()
+        && output.status.success()
+    {
+        let model = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !model.is_empty() {
+            return Some(model);
+        }
+    }
+    std::env::var("PROCESSOR_IDENTIFIER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// The 16-byte UUID reported by the CUDA driver for the selected logical device.
@@ -494,6 +526,7 @@ mod tests {
                 nvcc: None,
                 host_arch: "x86_64".into(),
                 host_os: "linux".into(),
+                cpu_model: None,
                 opt_level: "0".into(),
                 debug_assertions: true,
                 crate_version: "0.0.0".into(),

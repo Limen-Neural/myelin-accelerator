@@ -50,6 +50,7 @@
   },
   "toolchain": {
     "crate_version": "0.2.0",
+    "cpu_model": "Synthetic CPU",
     "debug_assertions": false,
     "host_arch": "x86_64",
     "host_os": "linux",
