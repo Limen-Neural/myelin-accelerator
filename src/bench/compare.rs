@@ -82,19 +82,48 @@ pub struct ComparisonCase {
     pub current_relative_dispersion: Option<f64>,
 }
 
+/// Why a baseline/current row could not be compared safely.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComparisonRejectionReason {
+    BaselineReadFailure,
+    BaselineParseFailure,
+    MissingCurrentCase,
+    WorkloadMetadataMismatch,
+    DuplicateBaselineName,
+    DuplicateCurrentName,
+    NoComparableCases,
+}
+
+/// A comparison input rejected before statistical classification.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComparisonRejection {
+    pub reason: ComparisonRejectionReason,
+    pub case_name: Option<String>,
+}
+
 /// Versioned comparison report written beside benchmark output when a baseline is supplied.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ComparisonReport {
     pub schema_version: u32,
     pub budget: RegressionBudget,
     pub enforced: bool,
+    /// Whether the requested enforcement gate accepted the complete comparison.
+    pub gate_passed: bool,
+    /// Inputs that could not be represented as classified comparison rows.
+    pub rejections: Vec<ComparisonRejection>,
     pub cases: Vec<ComparisonCase>,
 }
 
 impl ComparisonReport {
-    /// True when any case is a budget failure.
+    /// True when any classified case cannot pass an enforced gate.
     pub fn has_failure(&self) -> bool {
-        self.cases.iter().any(|c| c.class == RegressionClass::Fail)
+        self.cases.iter().any(|c| {
+            matches!(
+                c.class,
+                RegressionClass::Fail | RegressionClass::InsufficientSamples
+            )
+        })
     }
 }
 
@@ -114,11 +143,31 @@ pub fn comparison_report(
     cases: Vec<ComparisonCase>,
     budget: RegressionBudget,
     enforced: bool,
+    mut rejections: Vec<ComparisonRejection>,
 ) -> ComparisonReport {
+    if cases.is_empty()
+        && !rejections
+            .iter()
+            .any(|rejection| rejection.reason == ComparisonRejectionReason::NoComparableCases)
+    {
+        rejections.push(ComparisonRejection {
+            reason: ComparisonRejectionReason::NoComparableCases,
+            case_name: None,
+        });
+    }
+    let has_failure = cases.iter().any(|case| {
+        matches!(
+            case.class,
+            RegressionClass::Fail | RegressionClass::InsufficientSamples
+        )
+    });
+    let gate_passed = !enforced || (rejections.is_empty() && !has_failure);
     ComparisonReport {
         schema_version: 1,
         budget,
         enforced,
+        gate_passed,
+        rejections,
         cases,
     }
 }
@@ -403,5 +452,35 @@ mod tests {
 
         assert_eq!(row.class, RegressionClass::InsufficientSamples);
         assert_eq!(row.baseline_relative_dispersion, None);
+    }
+
+    #[test]
+    fn insufficient_samples_are_an_enforcement_failure() {
+        let baseline = n_copies(100.0, 8);
+        let current = n_copies(130.0, 1);
+        let row = compare_one(
+            "under-sampled",
+            SampleSource::Samples(&baseline),
+            SampleSource::Samples(&current),
+            &budget(),
+        );
+        let report = comparison_report(vec![row], budget(), true, Vec::new());
+
+        assert!(report.has_failure());
+        assert!(!report.gate_passed);
+    }
+
+    #[test]
+    fn enforced_empty_report_is_rejected_by_constructor() {
+        let report = comparison_report(Vec::new(), budget(), true, Vec::new());
+
+        assert!(!report.gate_passed);
+        assert_eq!(
+            report.rejections,
+            vec![ComparisonRejection {
+                reason: ComparisonRejectionReason::NoComparableCases,
+                case_name: None,
+            }]
+        );
     }
 }

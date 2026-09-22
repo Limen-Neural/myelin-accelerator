@@ -45,6 +45,7 @@ fn main() {
     if let Some(version) = rustc_version() {
         println!("cargo:rustc-env=MYELIN_BUILD_RUSTC_VERSION={version}");
     }
+    emit_git_provenance(&manifest_dir);
 
     let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
     if !cuda_feature_enabled {
@@ -106,6 +107,67 @@ fn main() {
             );
         }
     }
+}
+
+fn emit_git_provenance(manifest_dir: &Path) {
+    if let Some(commit) = git_stdout(manifest_dir, &["rev-parse", "HEAD"]) {
+        println!("cargo:rustc-env=MYELIN_BUILD_GIT_COMMIT={commit}");
+    }
+    if let Some(status) = git_stdout(
+        manifest_dir,
+        &["status", "--porcelain", "--untracked-files=no"],
+    ) {
+        println!(
+            "cargo:rustc-env=MYELIN_BUILD_GIT_DIRTY={}",
+            !status.is_empty()
+        );
+    }
+
+    if let Some(files) = git_stdout_bytes(manifest_dir, &["ls-files", "-z"]) {
+        for file in files
+            .split(|byte| *byte == 0)
+            .filter(|file| !file.is_empty())
+        {
+            let path = manifest_dir.join(String::from_utf8_lossy(file).as_ref());
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+
+    for git_path in ["HEAD", "index", "packed-refs"] {
+        emit_git_rerun_path(manifest_dir, git_path);
+    }
+    if let Some(symbolic_ref) = git_stdout(manifest_dir, &["symbolic-ref", "-q", "HEAD"]) {
+        emit_git_rerun_path(manifest_dir, &symbolic_ref);
+    }
+}
+
+fn emit_git_rerun_path(manifest_dir: &Path, git_path: &str) {
+    let Some(path) = git_stdout(manifest_dir, &["rev-parse", "--git-path", git_path]) else {
+        return;
+    };
+    let path = PathBuf::from(path);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        manifest_dir.join(path)
+    };
+    println!("cargo:rerun-if-changed={}", path.display());
+}
+
+fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
+    let bytes = git_stdout_bytes(dir, args)?;
+    String::from_utf8(bytes)
+        .ok()
+        .map(|output| output.trim().to_string())
+}
+
+fn git_stdout_bytes(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    output.status.success().then_some(output.stdout)
 }
 
 fn rustc_version() -> Option<String> {

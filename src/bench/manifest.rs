@@ -184,11 +184,14 @@ pub fn enabled_features() -> Vec<String> {
     features
 }
 
-/// `git rev-parse` / `git status --porcelain` from the crate root when possible.
+/// Git revision and dirty state captured when this crate was built.
 pub fn capture_git() -> GitProvenance {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let commit = git_stdout(&dir, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string());
-    let dirty = git_stdout(&dir, &["status", "--porcelain"]).map(|s| !s.trim().is_empty());
+    let commit = option_env!("MYELIN_BUILD_GIT_COMMIT").map(str::to_string);
+    let dirty = option_env!("MYELIN_BUILD_GIT_DIRTY").and_then(|value| match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    });
     GitProvenance { commit, dirty }
 }
 
@@ -435,18 +438,6 @@ pub fn write_canonical_json<T: Serialize>(path: &Path, value: &T) -> std::io::Re
 /// Write a redacted, key-sorted pretty JSON manifest atomically.
 pub fn write_canonical_manifest(path: &Path, manifest: &BenchmarkManifest) -> std::io::Result<()> {
     write_canonical_json(path, manifest)
-}
-
-fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8(out.stdout).ok()
 }
 
 fn optional_smi(raw: &str) -> Option<String> {
@@ -707,5 +698,17 @@ mod tests {
         } else {
             assert_eq!(toolchain.nvcc, None);
         }
+    }
+
+    #[test]
+    fn git_provenance_is_recorded_at_build_time() {
+        let provenance = capture_git();
+        let expected_dirty = option_env!("MYELIN_BUILD_GIT_DIRTY").map(|value| value == "true");
+
+        assert_eq!(
+            provenance.commit.as_deref(),
+            option_env!("MYELIN_BUILD_GIT_COMMIT")
+        );
+        assert_eq!(provenance.dirty, expected_dirty);
     }
 }

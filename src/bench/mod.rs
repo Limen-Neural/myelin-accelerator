@@ -17,8 +17,9 @@ mod redact;
 mod stats;
 
 pub use compare::{
-    ComparisonCase, ComparisonReport, RegressionBudget, RegressionClass, SampleSource, classify,
-    compare_one, comparison_report, enforce_budget_requested, parse_enforce_flag,
+    ComparisonCase, ComparisonRejection, ComparisonRejectionReason, ComparisonReport,
+    RegressionBudget, RegressionClass, SampleSource, classify, compare_one, comparison_report,
+    enforce_budget_requested, parse_enforce_flag,
 };
 pub use manifest::{
     BenchmarkManifest, CudaDeviceUuid, DeviceIdentity, GitProvenance, MANIFEST_SCHEMA_VERSION,

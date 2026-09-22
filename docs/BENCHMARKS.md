@@ -35,8 +35,9 @@ Artifacts (never committed from the working directory prefix
 | `{prefix}.manifest.json` | Versioned provenance + samples |
 | `{prefix}.comparison.json` | Written only when `--baseline` is set |
 
-The manifest includes git commit/dirty state, enabled Cargo features, kernel
-variant and input dimensions per case, seed, warmup/sample counts, device
+The manifest includes build-time git commit/tracked-source dirty state, enabled
+Cargo features, kernel variant and input dimensions per case, seed,
+warmup/sample counts, device
 identity, compute capability, the NVIDIA driver reported by `nvidia-smi`, and
 the exact rustc/nvcc versions selected at build time. It also records
 `nvidia-smi` power controls plus configured application clocks when available.
@@ -71,8 +72,8 @@ Classification uses **median** latency and **relative MAD** dispersion:
 
 Legacy JSON baselines do not contain MAD/dispersion data, so their rows are
 reported as `insufficient_samples` instead of being treated as perfectly
-noise-free. Manifest baselines additionally require matching kernel variants
-and input dimensions before their measurements are compared.
+noise-free. Manifest baselines additionally require matching kernel variants,
+input dimensions, and seed before their measurements are compared.
 
 Without `--enforce-budget`, `fail` is printed and recorded but the process
 still exits 0.
@@ -88,13 +89,16 @@ MYELIN_BENCH_ENFORCE_BUDGET=1 \
 ```
 
 Either the environment variable (`1` / `true` / `yes` / `on`) or
-`--enforce-budget` turns on process failure. The process then exits 1 on
-`class=fail`, when a baseline case is missing from the current run, when no
-comparable cases are produced, when case names are duplicated, or when
-same-name manifest cases have different workload metadata. Comparison
-artifacts are written atomically; an artifact write failure also exits nonzero
-even in informational mode. Do not set budget enforcement in ordinary
-GitHub-hosted CPU CI.
+`--enforce-budget` turns on process failure and requires `--baseline`; omitting
+the baseline is a configuration error. The process then exits 1 on
+`class=fail` or `class=insufficient_samples`, when a baseline case is missing
+from the current run, when no comparable cases are produced, when case names
+are duplicated, or when same-name manifest cases have different workload
+metadata. The comparison artifact records the overall `gate_passed` result and
+structured rejections, so it describes enforcement failures that have no
+statistical row. Comparison artifacts are written atomically; an artifact write
+failure also exits nonzero even in informational mode. Do not set budget
+enforcement in ordinary GitHub-hosted CPU CI.
 
 Defaults: 10% relative, 2 µs absolute, 8 samples, 0.25 relative MAD.
 

@@ -40,6 +40,8 @@
       "relative": 0.1
     },
     "enforced": false,
+    "gate_passed": true,
+    "rejections": [],
     "cases": [
       {
         "name": "pass_small_delta",

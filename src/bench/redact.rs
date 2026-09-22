@@ -143,29 +143,49 @@ fn is_path_delim_char(c: char) -> bool {
 }
 
 fn redact_secret_tokens(input: &str) -> String {
-    let prefixes = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "sk-"];
+    let prefixes = [
+        ("ghp_", 1),
+        ("gho_", 1),
+        ("ghu_", 1),
+        ("ghs_", 1),
+        ("ghr_", 1),
+        ("github_pat_", 1),
+        ("sk-", 20),
+    ];
     let mut s = input.to_string();
-    for prefix in prefixes {
-        s = redact_prefix_token(&s, prefix);
+    for (prefix, min_payload_len) in prefixes {
+        s = redact_prefix_token(&s, prefix, min_payload_len);
     }
     redact_akia(&s)
 }
 
-fn redact_prefix_token(input: &str, prefix: &str) -> String {
+fn redact_prefix_token(input: &str, prefix: &str, min_payload_len: usize) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
     while let Some(idx) = rest.find(prefix) {
-        out.push_str(&rest[..idx]);
-        out.push_str("$REDACTED");
         let after = &rest[idx + prefix.len()..];
-        let consume = after
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-            .count();
-        rest = &after[consume..];
+        let consume = after.chars().take_while(|c| is_token_char(*c)).count();
+        let has_left_boundary = idx == 0
+            || rest[..idx]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !is_token_char(c));
+        if has_left_boundary && consume >= min_payload_len {
+            out.push_str(&rest[..idx]);
+            out.push_str("$REDACTED");
+            rest = &after[consume..];
+        } else {
+            let prefix_end = idx + prefix.len();
+            out.push_str(&rest[..prefix_end]);
+            rest = &rest[prefix_end..];
+        }
     }
     out.push_str(rest);
     out
+}
+
+fn is_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-'
 }
 
 fn redact_akia(input: &str) -> String {
@@ -271,8 +291,16 @@ mod tests {
             ctx.redact_str("token=ghp_abcdefghijklmnopqrstuvwxyz012345"),
             "token=$REDACTED"
         );
-        assert_eq!(ctx.redact_str("key=sk-abcDEF123"), "key=$REDACTED");
+        let openai_key = format!("key=sk-{}", "a".repeat(32));
+        assert_eq!(ctx.redact_str(&openai_key), "key=$REDACTED");
         assert_eq!(ctx.redact_str("id=AKIAIOSFODNN7EXAMPLE"), "id=$REDACTED");
+    }
+
+    #[test]
+    fn preserves_embedded_or_implausibly_short_openai_prefixes() {
+        let ctx = alice();
+        assert_eq!(ctx.redact_str("mask-kernel"), "mask-kernel");
+        assert_eq!(ctx.redact_str("key=sk-short"), "key=sk-short");
     }
 
     #[test]

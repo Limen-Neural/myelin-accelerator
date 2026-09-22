@@ -90,7 +90,7 @@ fn fixture_classification_is_deterministic() {
         rows.push(row);
     }
 
-    let report = comparison_report(rows, budget, false);
+    let report = comparison_report(rows, budget, false, Vec::new());
     assert!(!report.enforced);
     assert!(!parse_enforce_flag(None));
 
