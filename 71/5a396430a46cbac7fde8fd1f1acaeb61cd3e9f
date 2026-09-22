@@ -1,0 +1,32 @@
+scripts/test-package-boundary.sh
+  s_560aed441389cf::t_a47c77527c2714 1-11,14-22,29-32
+  s_560aed441389cf::t_5f17810e280e31 28
+  s_560aed441389cf::t_2c66e515d38b4d 12-13
+  s_560aed441389cf::t_27d6a5c3491857 23-27
+scripts/check-package-boundary.sh
+  s_560aed441389cf::t_d1d935343c7b1f 1-6,8-10
+  s_560aed441389cf::t_1499389f318837 7
+Cargo.toml
+  s_560aed441389cf::t_d1d935343c7b1f 16
+  s_560aed441389cf::t_1499389f318837 13-15
+docs/ARCHITECTURE.md
+  s_560aed441389cf::t_1499389f318837 63-69
+.github/workflows/ci.yml
+  s_560aed441389cf::t_d1d935343c7b1f 67-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "715a396430a46cbac7fde8fd1f1acaeb61cd3e9f",
+  "prompts": {},
+  "sessions": {
+    "s_560aed441389cf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c83a-84bf-7fd2-a2b9-348e8c8be4fe",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
