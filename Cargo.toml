@@ -6,6 +6,21 @@ description = "CUDA spiking-network kernels + safe Rust FFI wrappers (Tier 1)"
 authors = ["Raul Cardenas Montoya <montoyaraul34@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Limen-Neural/myelin-accelerator"
+include = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "build.rs",
+    "src/**",
+    "cu/**",
+    "examples/**",
+    "tests/**",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/BENCHMARKS.md",
+    "docs/TERNARY.md",
+]
 
 [lib]
 name = "myelin_accelerator"
