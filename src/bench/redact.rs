@@ -203,7 +203,21 @@ fn redact_aws_access_key_prefix(input: &str, prefix: &str) -> String {
         out.push_str(&rest[..idx]);
         let candidate = &rest[idx..];
         let token: String = candidate.chars().take(20).collect();
-        if token.len() == 20
+        let token_end = idx + 20;
+        let has_left_boundary = idx == 0
+            || rest[..idx]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !is_token_char(c));
+        let has_right_boundary = token.len() == 20
+            && (token_end == rest.len()
+                || rest[token_end..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| !is_token_char(c)));
+        if has_left_boundary
+            && has_right_boundary
+            && token.len() == 20
             && token
                 .bytes()
                 .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
@@ -318,6 +332,17 @@ mod tests {
         let out = canonicalize_json_value(json!({ "identity": temporary_key }), &ctx);
 
         assert_eq!(out["identity"], json!("$REDACTED"));
+    }
+
+    #[test]
+    fn preserves_aws_key_shapes_embedded_in_larger_tokens() {
+        let ctx = alice();
+        let access_key = format!("AKIA{}", "A".repeat(16));
+        let left_embedded = format!("labelX{access_key}");
+        let right_embedded = format!("{access_key}Y");
+
+        assert_eq!(ctx.redact_str(&left_embedded), left_embedded);
+        assert_eq!(ctx.redact_str(&right_embedded), right_embedded);
     }
 
     #[test]
