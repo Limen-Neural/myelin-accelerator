@@ -1,0 +1,32 @@
+src/bench/manifest.rs
+  s_2e936c8275887f::t_6833d0b88086ca 255-257
+.github/workflows/ci.yml
+  s_2e936c8275887f::t_d083215d3de55b 66-68
+build.rs
+  s_2e936c8275887f::t_d083215d3de55b 72,149
+tests/fixtures/bench/manifest.sanitized.json
+  s_2e936c8275887f::t_d083215d3de55b 56
+CMakeLists.txt
+  s_2e936c8275887f::t_d083215d3de55b 130-133
+examples/benchmark.rs
+  s_2e936c8275887f::t_ac5879393197aa 940-942
+  s_2e936c8275887f::t_8cef023cad6adc 2576-2670
+  s_2e936c8275887f::t_6625a94ed37d86 846
+  s_2e936c8275887f::t_5ee695dec766ef 870-877
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "309ac2dd58a0f39d5c63455cf8db65a9fa22fd0a",
+  "prompts": {},
+  "sessions": {
+    "s_2e936c8275887f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c474-16c9-7241-89e4-7f6b425b2e5c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
