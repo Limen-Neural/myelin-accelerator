@@ -64,11 +64,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo package --locked --allow-dirty --no-verify --list > package-contents.txt
-          if grep -En '^(experiments|research|docs/research)/' package-contents.txt; then
-            echo 'experimental research must not be shipped in the crate archive' >&2
-            exit 1
-          fi
+          ./scripts/test-package-boundary.sh
+          cargo package --locked --allow-dirty --no-verify --list \
+            | ./scripts/check-package-boundary.sh
 
       - name: Cargo test
         run: cargo test --locked
