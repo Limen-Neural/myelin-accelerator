@@ -20,6 +20,8 @@ include = [
     "docs/ARCHITECTURE.md",
     "docs/BENCHMARKS.md",
     "docs/TERNARY.md",
+    "tests/fixtures/bench/manifest.sanitized.json",
+    "tests/fixtures/bench/comparison.fixture.json",
 ]
 
 [lib]
