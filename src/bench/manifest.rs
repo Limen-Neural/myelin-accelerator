@@ -369,6 +369,19 @@ fn files_have_same_identity(_left: &Path, _right: &Path) -> bool {
     false
 }
 
+fn read_buffer_to_full_or_eof(reader: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match reader.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(filled)
+}
+
 fn files_have_same_contents(left: &Path, right: &Path) -> bool {
     let Ok(left_meta) = std::fs::metadata(left) else {
         return false;
@@ -390,10 +403,10 @@ fn files_have_same_contents(left: &Path, right: &Path) -> bool {
     let mut left_buf = [0_u8; 64 * 1024];
     let mut right_buf = [0_u8; 64 * 1024];
     loop {
-        let Ok(left_read) = left_reader.read(&mut left_buf) else {
+        let Ok(left_read) = read_buffer_to_full_or_eof(&mut left_reader, &mut left_buf) else {
             return false;
         };
-        let Ok(right_read) = right_reader.read(&mut right_buf) else {
+        let Ok(right_read) = read_buffer_to_full_or_eof(&mut right_reader, &mut right_buf) else {
             return false;
         };
         if left_read != right_read || left_buf[..left_read] != right_buf[..right_read] {
@@ -749,6 +762,37 @@ fn optional_smi(raw: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::bench::redact::canonicalize_json_value;
+
+    struct ShortReadReader {
+        bytes: std::io::Cursor<&'static [u8]>,
+        calls: u8,
+    }
+
+    impl Read for ShortReadReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            if self.calls == 2 {
+                return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+            }
+            let limit = if self.calls == 1 { 2 } else { buffer.len() };
+            self.bytes.read(&mut buffer[..limit])
+        }
+    }
+
+    #[test]
+    fn read_buffer_to_full_or_eof_retries_short_and_interrupted_reads() {
+        let mut reader = ShortReadReader {
+            bytes: std::io::Cursor::new(b"abcde"),
+            calls: 0,
+        };
+        let mut buffer = [0_u8; 5];
+
+        assert_eq!(
+            read_buffer_to_full_or_eof(&mut reader, &mut buffer).unwrap(),
+            5
+        );
+        assert_eq!(&buffer, b"abcde");
+    }
 
     #[test]
     fn empty_optional_fields_still_roundtrip() {
