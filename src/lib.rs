@@ -4,6 +4,8 @@
 // myelin-accelerator: safe Rust FFI wrappers around CUDA spiking-network kernels.
 pub mod bench;
 pub mod bitpacking;
+pub mod capability;
+mod error;
 pub mod oracle;
 
 #[cfg(not(feature = "cuda"))]
@@ -14,7 +16,17 @@ pub use gpu_stub as gpu;
 pub mod gpu;
 
 // Re-export the main public API at the crate root for ergonomic use.
+pub use capability::{
+    Backend, CapabilityFacts, CapabilityReport, ComputeCapability, ExecutionPolicy, FallbackReason,
+    FallbackRecord, KernelAvailability, evaluate_capabilities, probe_capabilities,
+    sanitize_diagnostic,
+};
 #[cfg(feature = "cuda")]
 pub use gpu::{GpuAccelerator, GpuBuffer, GpuContext, GpuError, KernelModule};
 #[cfg(not(feature = "cuda"))]
 pub use gpu_stub::{GpuAccelerator, GpuBuffer, GpuContext, GpuError, KernelModule};
+
+#[cfg(feature = "cuda")]
+pub(crate) fn host_facts() -> capability::CapabilityFacts {
+    gpu::context::host_facts()
+}
