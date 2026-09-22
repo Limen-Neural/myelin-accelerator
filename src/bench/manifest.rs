@@ -231,11 +231,17 @@ fn smi_query(binary: &Path, fields: &str) -> Option<String> {
 fn probe_power_clock_with_command(
     binary: &Path,
 ) -> (Option<String>, Option<String>, PowerClockControls) {
+    probe_power_clock_with_query(|fields| smi_query(binary, fields))
+}
+
+fn probe_power_clock_with_query(
+    mut query: impl FnMut(&str) -> Option<String>,
+) -> (Option<String>, Option<String>, PowerClockControls) {
     let mut controls = PowerClockControls::unavailable();
     let mut uuid = None;
     let mut driver_version = None;
 
-    if let Some(raw) = smi_query(binary, "uuid,driver_version,persistence_mode,power.limit") {
+    if let Some(raw) = query("uuid,driver_version,persistence_mode,power.limit") {
         let parts: Vec<&str> = raw
             .lines()
             .next()
@@ -251,10 +257,7 @@ fn probe_power_clock_with_command(
         }
     }
 
-    if let Some(raw) = smi_query(
-        binary,
-        "clocks.applications.graphics,clocks.applications.memory",
-    ) {
+    if let Some(raw) = query("clocks.applications.graphics,clocks.applications.memory") {
         let parts: Vec<&str> = raw
             .lines()
             .next()
@@ -506,43 +509,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(unix)]
     #[test]
     fn power_clock_probe_preserves_stable_fields_when_application_clocks_fail() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = std::env::temp_dir().join(format!(
-            "myelin-nvidia-smi-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let script = dir.join("nvidia-smi");
-        std::fs::write(
-            &script,
-            r#"#!/bin/sh
-case "$*" in
-  *uuid,driver_version,persistence_mode,power.limit*)
-    printf '%s\n' 'GPU-test, 610.43.03, Enabled, 360.00'
-    ;;
-  *clocks.applications.graphics,clocks.applications.memory*)
-    exit 64
-    ;;
-  *)
-    exit 64
-    ;;
-esac
-"#,
-        )
-        .expect("write fake nvidia-smi");
-        let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&script, permissions).expect("make executable");
-
-        let (uuid, driver_version, controls) = probe_power_clock_with_command(&script);
+        let (uuid, driver_version, controls) =
+            probe_power_clock_with_query(|fields| match fields {
+                "uuid,driver_version,persistence_mode,power.limit" => {
+                    Some("GPU-test, 610.43.03, Enabled, 360.00\n".to_string())
+                }
+                "clocks.applications.graphics,clocks.applications.memory" => None,
+                unexpected => panic!("unexpected nvidia-smi query: {unexpected}"),
+            });
 
         assert_eq!(uuid.as_deref(), Some("GPU-test"));
         assert_eq!(driver_version.as_deref(), Some("610.43.03"));
@@ -550,7 +526,6 @@ esac
         assert_eq!(controls.graphics_clock_mhz, None);
         assert_eq!(controls.memory_clock_mhz, None);
         assert_eq!(controls.power_limit_w, Some(360.0));
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
