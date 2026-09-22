@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::bitpacking::TERNARY_VALUES_PER_WORD;
-use crate::gpu::context::GpuContext;
+use crate::capability::{
+    Backend, CapabilityFacts, CapabilityReport, ComputeCapability, ExecutionPolicy, FallbackReason,
+    FallbackRecord, KernelAvailability, apply_failure_to_facts, evaluate_capabilities,
+    sanitize_diagnostic,
+};
+use crate::gpu::context::{CurrentContextGuard, GpuContext};
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::kernel::KernelModule;
 use crate::gpu::memory::GpuBuffer;
@@ -21,69 +26,188 @@ pub struct GpuAccelerator {
     stream: Option<Stream>,
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
+    capabilities: CapabilityReport,
+}
+
+struct InitFailure {
+    facts: CapabilityFacts,
+    reason: FallbackReason,
+    detail: String,
 }
 
 impl GpuAccelerator {
+    /// Construct with [`ExecutionPolicy::PreferGpu`] (caller-approved CPU fallback).
     pub fn new() -> Self {
-        match GpuContext::init() {
-            Ok(ctx) => match (
-                KernelModule::load(),
-                Stream::new(StreamFlags::DEFAULT, None),
-            ) {
-                (Ok(modules), Ok(stream)) => Self {
-                    _ctx: Some(ctx),
-                    modules: Some(modules),
-                    stream: Some(stream),
-                    aux_partial_scores: RefCell::new(None),
-                    aux_partial_walkers: RefCell::new(None),
-                },
-                (Err(e), _) => {
-                    warn!("[GPU] PTX load failed (CPU fallback): {e}");
-                    Self {
-                        _ctx: Some(ctx),
-                        modules: None,
-                        stream: None,
-                        aux_partial_scores: RefCell::new(None),
-                        aux_partial_walkers: RefCell::new(None),
+        match Self::with_policy(ExecutionPolicy::PreferGpu) {
+            Ok(acc) => acc,
+            Err(_) => unreachable!("PreferGpu construction is infallible"),
+        }
+    }
+
+    /// Fail closed: never return a CPU-backend accelerator.
+    pub fn require_gpu() -> GpuResult<Self> {
+        Self::with_policy(ExecutionPolicy::RequireGpu)
+    }
+
+    /// Construct under an explicit execution policy.
+    pub fn with_policy(policy: ExecutionPolicy) -> GpuResult<Self> {
+        match Self::try_init_gpu() {
+            Ok(acc) => Ok(acc),
+            Err(failure) => {
+                let detail = sanitize_diagnostic(&failure.detail);
+                let capabilities =
+                    capability_report_for_failure(failure.facts, failure.reason, detail.as_str());
+                match policy {
+                    ExecutionPolicy::PreferGpu => {
+                        warn!(
+                            reason = failure.reason.code(),
+                            backend = Backend::Cpu.code(),
+                            detail = detail.as_str(),
+                            "GPU unavailable; using CPU fallback"
+                        );
+                        Ok(Self::cpu_fallback(capabilities))
                     }
-                }
-                (_, Err(e)) => {
-                    warn!("[GPU] stream creation failed (CPU fallback): {e:?}");
-                    Self {
-                        _ctx: Some(ctx),
-                        modules: None,
-                        stream: None,
-                        aux_partial_scores: RefCell::new(None),
-                        aux_partial_walkers: RefCell::new(None),
+                    ExecutionPolicy::RequireGpu => {
+                        Err(GpuError::unavailable(failure.reason, detail))
                     }
-                }
-            },
-            Err(e) => {
-                warn!("[GPU] No CUDA device (CPU fallback): {e}");
-                Self {
-                    _ctx: None,
-                    modules: None,
-                    stream: None,
-                    aux_partial_scores: RefCell::new(None),
-                    aux_partial_walkers: RefCell::new(None),
                 }
             }
         }
     }
 
+    fn try_init_gpu() -> Result<Self, InitFailure> {
+        let current_context = CurrentContextGuard::capture();
+        let mut facts = crate::host_facts();
+
+        let ctx = match GpuContext::init() {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                let reason = classify_context_failure(&facts, &e);
+                return Err(InitFailure {
+                    facts,
+                    reason,
+                    detail: e.to_string(),
+                });
+            }
+        };
+
+        if facts.compute_capability.is_none() {
+            facts.compute_capability = ctx.compute_capability;
+        }
+        if let Some(cc) = facts.compute_capability {
+            if !cc.meets_minimum() {
+                return Err(InitFailure {
+                    facts,
+                    reason: FallbackReason::UnsupportedHardware,
+                    detail: format!(
+                        "compute capability {cc} is below required {}",
+                        ComputeCapability::REQUIRED
+                    ),
+                });
+            }
+        } else {
+            return Err(InitFailure {
+                facts,
+                reason: FallbackReason::DriverRuntimeFailure,
+                detail: "compute capability query failed".to_string(),
+            });
+        }
+
+        let modules = match KernelModule::load_with_availability() {
+            Ok(modules) => modules,
+            Err(failure) => {
+                facts.kernels = failure.availability;
+                let reason = failure
+                    .error
+                    .fallback_reason()
+                    .unwrap_or(FallbackReason::DriverRuntimeFailure);
+                return Err(InitFailure {
+                    facts,
+                    reason,
+                    detail: failure.error.to_string(),
+                });
+            }
+        };
+
+        facts.kernels = KernelAvailability::all_available();
+        let stream = match Stream::new(StreamFlags::DEFAULT, None) {
+            Ok(stream) => stream,
+            Err(e) => {
+                return Err(InitFailure {
+                    facts,
+                    reason: FallbackReason::DriverRuntimeFailure,
+                    detail: format!("{e:?}"),
+                });
+            }
+        };
+
+        let capabilities = capability_report_for_success(facts);
+        let accelerator = Self {
+            _ctx: Some(ctx),
+            modules: Some(modules),
+            stream: Some(stream),
+            aux_partial_scores: RefCell::new(None),
+            aux_partial_walkers: RefCell::new(None),
+            capabilities,
+        };
+        current_context.disarm();
+        Ok(accelerator)
+    }
+
+    fn cpu_fallback(capabilities: CapabilityReport) -> Self {
+        Self {
+            _ctx: None,
+            modules: None,
+            stream: None,
+            aux_partial_scores: RefCell::new(None),
+            aux_partial_walkers: RefCell::new(None),
+            capabilities,
+        }
+    }
+
     pub fn is_ready(&self) -> bool {
-        self._ctx.is_some() && self.modules.is_some() && self.stream.is_some()
+        self._ctx.is_some()
+            && self.modules.is_some()
+            && self.stream.is_some()
+            && self.capabilities.gpu_usable()
+    }
+
+    /// Snapshot of the capability probe used to select this backend.
+    pub fn capabilities(&self) -> &CapabilityReport {
+        &self.capabilities
+    }
+
+    /// Implementation selected for this instance.
+    pub fn selected_backend(&self) -> Backend {
+        self.capabilities.selected_backend
+    }
+
+    /// Fallback record when this instance is not running on CUDA.
+    pub fn fallback(&self) -> Option<&FallbackRecord> {
+        self.capabilities.fallback.as_ref()
     }
 
     pub fn kernels(&self) -> GpuResult<&KernelModule> {
-        self.modules.as_ref().ok_or(GpuError::NoGpu)
+        self.modules
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())
     }
 
     pub fn synchronize(&self) -> GpuResult<()> {
-        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
-        stream
-            .synchronize()
-            .map_err(|e| GpuError::LaunchFailed(format!("stream sync: {e:?}")))
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
+        stream.synchronize().map_err(|e| {
+            GpuError::LaunchFailed(sanitize_diagnostic(&format!("stream sync: {e:?}")))
+        })
+    }
+
+    fn unavailable_error(&self) -> GpuError {
+        match &self.capabilities.fallback {
+            Some(fb) => GpuError::unavailable(fb.reason, fb.detail.clone()),
+            None => GpuError::NoGpu,
+        }
     }
 
     pub fn satsolver_extract(
@@ -107,12 +231,12 @@ impl GpuAccelerator {
         n_walkers: i32,
     ) -> GpuResult<()> {
         if n_vars < 0 {
-            return Err(GpuError::LaunchFailed(format!(
+            return Err(GpuError::invalid_input(format!(
                 "satsolver_extract: n_vars must be >= 0, got {n_vars}"
             )));
         }
         if n_walkers <= 0 {
-            return Err(GpuError::LaunchFailed(format!(
+            return Err(GpuError::invalid_input(format!(
                 "satsolver_extract: n_walkers must be > 0, got {n_walkers}"
             )));
         }
@@ -132,7 +256,10 @@ impl GpuAccelerator {
 
         let kernels = self.kernels()?;
         let satsolver_extract = kernels.get_function("satsolver_extract")?;
-        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
         let grid = Self::ceil_div_u32(n_vars as u32, SATSOLVER_BLOCK_SIZE);
         let block = SATSOLVER_BLOCK_SIZE;
 
@@ -144,7 +271,11 @@ impl GpuAccelerator {
                 n_vars as i32,
                 n_walkers,
             ))
-            .map_err(|e| GpuError::LaunchFailed(format!("satsolver_extract launch: {e:?}")))?;
+            .map_err(|e| {
+                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
+                    "satsolver_extract launch: {e:?}"
+                )))
+            })?;
         }
 
         Ok(())
@@ -200,22 +331,22 @@ impl GpuAccelerator {
         clause_len: i32,
     ) -> GpuResult<()> {
         if n_walkers <= 0 {
-            return Err(GpuError::LaunchFailed(format!(
+            return Err(GpuError::invalid_input(format!(
                 "satsolver_aux_reduce_best: n_walkers must be > 0, got {n_walkers}"
             )));
         }
         if n_vars < 0 {
-            return Err(GpuError::LaunchFailed(format!(
+            return Err(GpuError::invalid_input(format!(
                 "satsolver_aux_reduce_best: n_vars must be >= 0, got {n_vars}"
             )));
         }
         if n_clauses < 0 {
-            return Err(GpuError::LaunchFailed(format!(
+            return Err(GpuError::invalid_input(format!(
                 "satsolver_aux_reduce_best: n_clauses must be >= 0, got {n_clauses}"
             )));
         }
         if clause_len < 0 {
-            return Err(GpuError::LaunchFailed(format!(
+            return Err(GpuError::invalid_input(format!(
                 "satsolver_aux_reduce_best: clause_len must be >= 0, got {clause_len}"
             )));
         }
@@ -247,7 +378,10 @@ impl GpuAccelerator {
         let kernels = self.kernels()?;
         let satsolver_aux_update = kernels.get_function("satsolver_aux_update")?;
         let satsolver_best_reduce_pass2 = kernels.get_function("satsolver_best_reduce_pass2")?;
-        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
         let grid_x = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
         let block = SATSOLVER_BLOCK_SIZE;
         let partial_len = grid_x as usize;
@@ -261,7 +395,9 @@ impl GpuAccelerator {
                 .is_none_or(|b| b.len() < partial_len);
         if need_partial_realloc {
             stream.synchronize().map_err(|e| {
-                GpuError::LaunchFailed(format!("stream sync before partial realloc: {e:?}"))
+                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
+                    "stream sync before partial realloc: {e:?}"
+                )))
             })?;
             let scores = GpuBuffer::<i32>::alloc(partial_len)?;
             let walkers = GpuBuffer::<i32>::alloc(partial_len)?;
@@ -284,7 +420,11 @@ impl GpuAccelerator {
                 n_clauses,
                 clause_len,
             ))
-            .map_err(|e| GpuError::LaunchFailed(format!("satsolver_aux_update launch: {e:?}")))?;
+            .map_err(|e| {
+                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
+                    "satsolver_aux_update launch: {e:?}"
+                )))
+            })?;
 
             launch!(satsolver_best_reduce_pass2<<<1u32, block, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
                 partial_scores.as_device_ptr(),
@@ -294,7 +434,9 @@ impl GpuAccelerator {
                 partial_len as i32,
             ))
             .map_err(|e| {
-                GpuError::LaunchFailed(format!("satsolver_best_reduce_pass2 launch: {e:?}"))
+                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
+                    "satsolver_best_reduce_pass2 launch: {e:?}"
+                )))
             })?;
         }
 
@@ -322,7 +464,10 @@ impl GpuAccelerator {
 
         let kernels = self.kernels()?;
         let func = kernels.get_function("poisson_encode")?;
-        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
 
         let block = 256;
         let grid = Self::ceil_div_u32(n as u32, block);
@@ -334,7 +479,11 @@ impl GpuAccelerator {
                 n as i32,
                 seed,
             ))
-            .map_err(|e| GpuError::LaunchFailed(format!("poisson_encode launch: {e:?}")))?;
+            .map_err(|e| {
+                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
+                    "poisson_encode launch: {e:?}"
+                )))
+            })?;
         }
 
         Ok(())
@@ -375,12 +524,12 @@ impl GpuAccelerator {
         skip_zeros: bool,
     ) -> GpuResult<()> {
         if m < 0 || k < 0 {
-            return Err(GpuError::LaunchFailed(format!(
+            return Err(GpuError::invalid_input(format!(
                 "ternary_gemv: m and k must be >= 0, got m={m} k={k}"
             )));
         }
         if group_size <= 0 {
-            return Err(GpuError::LaunchFailed(format!(
+            return Err(GpuError::invalid_input(format!(
                 "ternary_gemv: group_size must be > 0, got {group_size}"
             )));
         }
@@ -413,7 +562,10 @@ impl GpuAccelerator {
 
         let kernels = self.kernels()?;
         let func = kernels.get_function("ternary_gemv")?;
-        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
         let block = 256u32;
         let grid = Self::ceil_div_u32(m as u32, block);
         let skip = if skip_zeros { 1i32 } else { 0i32 };
@@ -432,7 +584,9 @@ impl GpuAccelerator {
             ))
         };
         range_pop!();
-        launch_result.map_err(|e| GpuError::LaunchFailed(format!("ternary_gemv launch: {e:?}")))?;
+        launch_result.map_err(|e| {
+            GpuError::LaunchFailed(sanitize_diagnostic(&format!("ternary_gemv launch: {e:?}")))
+        })?;
 
         Ok(())
     }
@@ -472,12 +626,12 @@ impl GpuAccelerator {
         skip_zeros: bool,
     ) -> GpuResult<()> {
         if m < 0 || k < 0 || n < 0 {
-            return Err(GpuError::LaunchFailed(format!(
+            return Err(GpuError::invalid_input(format!(
                 "ternary_gemm: m, k, n must be >= 0, got m={m} k={k} n={n}"
             )));
         }
         if group_size <= 0 {
-            return Err(GpuError::LaunchFailed(format!(
+            return Err(GpuError::invalid_input(format!(
                 "ternary_gemm: group_size must be > 0, got {group_size}"
             )));
         }
@@ -511,14 +665,17 @@ impl GpuAccelerator {
 
         let kernels = self.kernels()?;
         let func = kernels.get_function("ternary_gemm")?;
-        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
         // m,n are nonnegative i32 after validation; product always fits u64.
         let total = (m as u64) * (n as u64);
         let block = 256u32;
         // Launch uses 1-D grid of u32 block indices over flattened M*N threads.
         let grid_u64 = total.div_ceil(block as u64);
         if grid_u64 > u32::MAX as u64 {
-            return Err(GpuError::LaunchFailed(format!(
+            return Err(GpuError::invalid_input(format!(
                 "ternary_gemm: grid too large for 1-D launch ({grid_u64} blocks, M*N={total})"
             )));
         }
@@ -540,14 +697,16 @@ impl GpuAccelerator {
             ))
         };
         range_pop!();
-        launch_result.map_err(|e| GpuError::LaunchFailed(format!("ternary_gemm launch: {e:?}")))?;
+        launch_result.map_err(|e| {
+            GpuError::LaunchFailed(sanitize_diagnostic(&format!("ternary_gemm launch: {e:?}")))
+        })?;
 
         Ok(())
     }
 
     fn expect_len(name: &str, actual: usize, minimum: usize) -> GpuResult<()> {
         if actual < minimum {
-            return Err(GpuError::MemoryError(format!(
+            return Err(GpuError::invalid_input(format!(
                 "{name} too small: need at least {minimum} elements, got {actual}"
             )));
         }
@@ -568,5 +727,110 @@ impl Drop for GpuAccelerator {
 impl Default for GpuAccelerator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn classify_init_failure(facts: &CapabilityFacts) -> FallbackReason {
+    if !facts.runtime_available {
+        FallbackReason::DriverRuntimeFailure
+    } else if !facts.device_available {
+        FallbackReason::DeviceUnavailable
+    } else if facts
+        .compute_capability
+        .is_some_and(|cc| !cc.meets_minimum())
+    {
+        FallbackReason::UnsupportedHardware
+    } else {
+        FallbackReason::DriverRuntimeFailure
+    }
+}
+
+fn classify_context_failure(facts: &CapabilityFacts, error: &GpuError) -> FallbackReason {
+    error
+        .fallback_reason()
+        .unwrap_or_else(|| classify_init_failure(facts))
+}
+
+fn capability_report_for_success(mut facts: CapabilityFacts) -> CapabilityReport {
+    facts.runtime_available = true;
+    facts.device_available = true;
+    facts.kernels = KernelAvailability::all_available();
+    evaluate_capabilities(&facts)
+}
+
+fn capability_report_for_failure(
+    mut facts: CapabilityFacts,
+    reason: FallbackReason,
+    detail: &str,
+) -> CapabilityReport {
+    apply_failure_to_facts(&mut facts, reason);
+    let mut report = evaluate_capabilities(&facts);
+    report.selected_backend = Backend::Cpu;
+    report.fallback = Some(FallbackRecord::cpu(reason, detail));
+    report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_report_preserves_sanitized_initialization_detail() {
+        let facts = CapabilityFacts {
+            cuda_built: true,
+            runtime_available: true,
+            device_available: true,
+            compute_capability: Some(ComputeCapability::REQUIRED),
+            kernels: KernelAvailability::compiled_unverified(),
+        };
+
+        let report = capability_report_for_failure(
+            facts,
+            FallbackReason::KernelSpecializationUnavailable,
+            "PTX load failed module=/home/alice/private.ptx InvalidPtx",
+        );
+        let fallback = report.fallback.expect("failed initialization falls back");
+
+        assert_eq!(
+            fallback.reason,
+            FallbackReason::KernelSpecializationUnavailable
+        );
+        assert_eq!(fallback.detail, "PTX load failed module=<path> InvalidPtx");
+    }
+
+    #[test]
+    fn typed_context_failure_reason_takes_precedence_over_stale_facts() {
+        let facts = CapabilityFacts {
+            cuda_built: true,
+            runtime_available: true,
+            device_available: true,
+            compute_capability: Some(ComputeCapability::REQUIRED),
+            kernels: KernelAvailability::compiled_unverified(),
+        };
+        let error =
+            GpuError::unavailable(FallbackReason::DeviceUnavailable, "get_device(0): NoDevice");
+
+        assert_eq!(
+            classify_context_failure(&facts, &error),
+            FallbackReason::DeviceUnavailable
+        );
+    }
+
+    #[test]
+    fn successful_initialization_overrides_stale_negative_facts() {
+        let facts = CapabilityFacts {
+            cuda_built: true,
+            runtime_available: false,
+            device_available: false,
+            compute_capability: Some(ComputeCapability::REQUIRED),
+            kernels: KernelAvailability::compiled_unverified(),
+        };
+
+        let report = capability_report_for_success(facts);
+
+        assert!(report.runtime_available);
+        assert!(report.device_available);
+        assert!(report.gpu_usable());
+        assert_eq!(report.selected_backend, Backend::Cuda);
     }
 }

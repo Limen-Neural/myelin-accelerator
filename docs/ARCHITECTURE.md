@@ -84,6 +84,8 @@ myelin-accelerator/
 │   └── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
 ├── src/
 │   ├── lib.rs                   # Crate root; public re-exports
+│   ├── capability.rs            # Probe types, decision table, sanitizer
+│   ├── error.rs                 # GpuError / GpuResult (CUDA + stub)
 │   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
 │   ├── oracle.rs                # Scalar CPU oracles + seeded compare helpers
 │   ├── gpu_stub.rs              # CPU-safe stand-ins (no cuda feature)
@@ -125,6 +127,9 @@ Re-exported from `src/lib.rs` (names available with or without `cuda` via stub):
 | `GpuBuffer` | Device buffer helper |
 | `KernelModule` | Loaded PTX modules + `get_function` |
 | `GpuError` | Error type re-exported at the crate root |
+| `probe_capabilities` / `CapabilityReport` | Typed pre-launch probe (build, runtime, device, CC, kernels, backend) |
+| `ExecutionPolicy` | `PreferGpu` (recorded CPU fallback) or `RequireGpu` (fail closed) |
+| `FallbackReason` / `FallbackRecord` | Stable reason codes + selected implementation |
 | `bitpacking` module | Host packing APIs (`pack_ternary`, `pack_binary`, …) |
 | `oracle` module | Named CPU oracles + seed/shape mismatch reporting |
 
@@ -135,11 +140,33 @@ boundary, or `myelin_accelerator::gpu::GpuResult` if you want the alias (via the
 `use myelin_accelerator::{GpuAccelerator, GpuError, …}` over deep paths into
 internal files.
 
+### Capability probe and fallback policy
+
+Call `probe_capabilities()` (or `evaluate_capabilities` with mocked
+`CapabilityFacts`) for a typed snapshot: build-time CUDA support, driver
+runtime, device presence, compute capability, kernel-family availability, and
+the selected backend. The production probe constructs an accelerator and
+JIT-loads every required PTX family before reporting CUDA as usable.
+Diagnostics are sanitized (no absolute user paths or secret assignments) and
+reason codes are stable snake_case tokens.
+
+`GpuAccelerator` construction uses one policy:
+
+| Policy | API | If GPU is unusable |
+|--------|-----|--------------------|
+| Prefer GPU (caller-approved fallback) | `GpuAccelerator::new()` / `with_policy(PreferGpu)` | CPU backend + `FallbackRecord` |
+| Require GPU (fail closed) | `require_gpu()` / `with_policy(RequireGpu)` | `GpuError::Unavailable { reason, detail }` — never CPU |
+
+`GpuAccelerator::new()` remains infallible and may select CPU; it no longer
+fails silently: `fallback()` always explains a CPU selection. Launch wrappers
+on a CPU instance return `Unavailable` with the same reason rather than
+executing reduced kernels without a record.
+
 ### High-level launches today (`GpuAccelerator`)
 
 These are the **ergonomic** wrappers currently implemented:
 
-- Lifecycle: `new`, `is_ready`, `kernels`, `synchronize`
+- Lifecycle: `new` (PreferGpu), `require_gpu` / `with_policy`, `is_ready`, `capabilities`, `selected_backend`, `fallback`, `kernels`, `synchronize`
 - SAT: `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
 - Spiking: `poisson_encode` / `_async`
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))

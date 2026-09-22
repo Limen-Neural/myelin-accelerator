@@ -26,6 +26,21 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let cu_dir = manifest_dir.join("cu");
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+    let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
+    let arch = if cuda_feature_enabled {
+        env::var("MYELIN_CUDA_ARCH").unwrap_or_else(|_| "sm_120".to_string())
+    } else {
+        "sm_120".to_string()
+    };
+    let (arch_major, arch_minor) = compute_capability_from_arch(&arch).unwrap_or_else(|| {
+        panic!("MYELIN_CUDA_ARCH must look like sm_120 or compute_120, got \"{arch}\"")
+    });
+    fs::write(
+        out_dir.join("compiled_cuda_capability.rs"),
+        format!("ComputeCapability {{ major: {arch_major}, minor: {arch_minor} }}\n"),
+    )
+    .expect("write compiled CUDA capability");
+    println!("cargo:rustc-env=MYELIN_COMPILED_CUDA_ARCH={arch}");
 
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
@@ -39,7 +54,6 @@ fn main() {
         println!("cargo:rerun-if-changed=cu/{cu_name}");
     }
 
-    let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
     if !cuda_feature_enabled {
         emit_stub_ptx(&out_dir);
         println!("cargo:warning=cuda feature not enabled; wrote stub PTX files");
@@ -47,7 +61,6 @@ fn main() {
     }
 
     let nvcc = find_nvcc();
-    let arch = env::var("MYELIN_CUDA_ARCH").unwrap_or_else(|_| "sm_120".to_string());
     // Treat empty MYELIN_PTX_VERSION as unset (Some("") would write ".version ").
     let ptx_version_override = env::var("MYELIN_PTX_VERSION")
         .ok()
@@ -96,6 +109,18 @@ fn main() {
             );
         }
     }
+}
+
+fn compute_capability_from_arch(arch: &str) -> Option<(u32, u32)> {
+    let suffix = arch
+        .strip_prefix("sm_")
+        .or_else(|| arch.strip_prefix("compute_"))?;
+    let digits: String = suffix.chars().take_while(char::is_ascii_digit).collect();
+    if digits.len() < 2 {
+        return None;
+    }
+    let value = digits.parse::<u32>().ok()?;
+    Some((value / 10, value % 10))
 }
 
 fn find_nvcc() -> Option<PathBuf> {

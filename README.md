@@ -42,7 +42,7 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 
 ### Public symbols (crate root)
 
-`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError` — plus the `bitpacking` module. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError`, plus capability types (`probe_capabilities`, `CapabilityReport`, `ExecutionPolicy`, `FallbackReason`, `Backend`, …) and the `bitpacking` module. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## What Changed
 
@@ -68,12 +68,21 @@ myelin-accelerator = "0.2.0"
 ```
 
 ```rust
-use myelin_accelerator::{GpuAccelerator, bitpacking};
+use myelin_accelerator::{
+    probe_capabilities, Backend, GpuAccelerator, bitpacking,
+};
 
-let gpu = GpuAccelerator::new();
-if gpu.is_ready() {
-    // launch wrappers when a device is present
-}
+let caps = probe_capabilities();
+let gpu = if caps.gpu_usable() {
+    GpuAccelerator::require_gpu().expect("probe said GPU is usable")
+} else {
+    // Caller-approved CPU fallback; `gpu.fallback()` names the reason.
+    GpuAccelerator::new()
+};
+assert_eq!(
+    gpu.selected_backend() == Backend::Cuda,
+    gpu.is_ready()
+);
 let packed = bitpacking::pack_ternary(&[-1, 0, 1, 1]);
 let _ = packed;
 ```

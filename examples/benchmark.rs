@@ -466,7 +466,13 @@ fn bench_gpu_kernels(config: &Config) -> Vec<BenchmarkResult> {
     let mut results = Vec::new();
     let acc = GpuAccelerator::new();
     if !acc.is_ready() {
-        eprintln!("[bench] GPU not available, skipping kernel benchmarks");
+        match acc.fallback() {
+            Some(fb) => eprintln!(
+                "[bench] GPU not available ({}), skipping kernel benchmarks",
+                fb.reason.code()
+            ),
+            None => eprintln!("[bench] GPU not available, skipping kernel benchmarks"),
+        }
         return results;
     }
 
