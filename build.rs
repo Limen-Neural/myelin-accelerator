@@ -51,7 +51,10 @@ fn main() {
     println!("cargo:rustc-env=MYELIN_BUILD_RUSTFLAGS={rustflags}");
     let target_features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
     println!("cargo:rustc-env=MYELIN_BUILD_TARGET_FEATURES={target_features}");
-    emit_cargo_profile_provenance(&manifest_dir, &out_dir);
+    if let Ok(target) = env::var("TARGET") {
+        println!("cargo:rustc-env=MYELIN_BUILD_TARGET={target}");
+    }
+    emit_cargo_profile_provenance(&manifest_dir);
     emit_git_provenance(&manifest_dir);
 
     let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
@@ -131,46 +134,17 @@ fn main() {
     }
 }
 
-fn emit_cargo_profile_provenance(manifest_dir: &Path, out_dir: &Path) {
+fn emit_cargo_profile_provenance(manifest_dir: &Path) {
     let profile_class = env::var("PROFILE").unwrap_or_else(|_| "unknown".to_string());
-    let profile = out_dir
-        .ancestors()
-        .nth(3)
-        .and_then(Path::file_name)
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| profile_class.clone());
-    let env_profile = profile
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    let release_like = profile_class == "release";
-    let setting = |name: &str, default: &str| {
-        env::var(format!("CARGO_PROFILE_{env_profile}_{name}"))
-            .unwrap_or_else(|_| default.to_string())
-    };
-    let lto = setting("LTO", "false");
-    let codegen_units = setting("CODEGEN_UNITS", if release_like { "16" } else { "256" });
-    let incremental = env::var("CARGO_INCREMENTAL")
-        .ok()
-        .map(|value| match value.as_str() {
-            "0" => "false".to_string(),
-            "1" => "true".to_string(),
-            _ => value,
-        })
-        .unwrap_or_else(|| setting("INCREMENTAL", if release_like { "false" } else { "true" }));
     let panic_strategy = env::var("CARGO_CFG_PANIC").unwrap_or_else(|_| "unwind".to_string());
     let profile_config = cargo_profile_config(manifest_dir);
 
-    println!("cargo:rustc-env=MYELIN_BUILD_CARGO_PROFILE={profile}");
-    println!("cargo:rustc-env=MYELIN_BUILD_CARGO_LTO={lto}");
-    println!("cargo:rustc-env=MYELIN_BUILD_CARGO_CODEGEN_UNITS={codegen_units}");
-    println!("cargo:rustc-env=MYELIN_BUILD_CARGO_INCREMENTAL={incremental}");
+    // Cargo exposes the effective profile *class* (debug/release), not the
+    // selected custom profile name. Do not infer a name from the output
+    // directory: built-in `bench`, for example, also writes to `release/`.
+    // Effective profile settings are recorded at runtime from Cargo's exact
+    // unit fingerprint instead of guessing LTO/codegen-unit defaults here.
+    println!("cargo:rustc-env=MYELIN_BUILD_CARGO_PROFILE={profile_class}");
     println!("cargo:rustc-env=MYELIN_BUILD_PANIC_STRATEGY={panic_strategy}");
     println!("cargo:rustc-env=MYELIN_BUILD_CARGO_PROFILE_CONFIG={profile_config}");
 }

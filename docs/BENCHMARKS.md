@@ -41,8 +41,12 @@ warmup/sample counts, device
 identity, compute capability, the NVIDIA driver reported by `nvidia-smi`, and
 the exact rustc/nvcc versions selected at build time, effective encoded
 Rust codegen flags and target features, host architecture/OS/CPU identity,
-Cargo profile/LTO/codegen-unit/incremental/panic settings, and the effective
-CUDA architecture/PTX version. It also records
+the full Rust target triple, Cargo's profile class and opaque effective-profile
+fingerprint, panic strategy, and the effective CUDA architecture/PTX version.
+The profile fingerprint comes from Cargo's exact compilation-unit metadata and
+therefore changes when settings such as LTO or codegen units are overridden by
+`--config`; the harness does not report guessed defaults for settings Cargo
+does not expose directly. It also records
 `nvidia-smi` power controls plus configured application clocks when available.
 GPUs where application-clock controls are unsupported or deprecated record
 those clock fields as `null` rather than substituting a post-run idle-clock

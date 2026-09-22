@@ -928,6 +928,7 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
             || profile.rustflags != current_toolchain.rustflags
             || profile.target_features != current_toolchain.target_features
             || profile.cargo_profile != current_toolchain.cargo_profile
+            || profile.cargo_profile_fingerprint != current_toolchain.cargo_profile_fingerprint
             || profile.cargo_lto != current_toolchain.cargo_lto
             || profile.cargo_codegen_units != current_toolchain.cargo_codegen_units
             || profile.cargo_incremental != current_toolchain.cargo_incremental
@@ -935,6 +936,7 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
             || profile.cargo_profile_config != current_toolchain.cargo_profile_config
             || profile.cuda_arch != current_toolchain.cuda_arch
             || profile.ptx_version != current_toolchain.ptx_version
+            || profile.target_triple != current_toolchain.target_triple
             || profile.opt_level != current_toolchain.opt_level
             || profile.debug_assertions != current_toolchain.debug_assertions
     });
@@ -1202,6 +1204,7 @@ struct BuildProfile {
     rustflags: Vec<String>,
     target_features: Vec<String>,
     cargo_profile: Option<String>,
+    cargo_profile_fingerprint: Option<String>,
     cargo_lto: Option<String>,
     cargo_codegen_units: Option<String>,
     cargo_incremental: Option<String>,
@@ -1209,6 +1212,7 @@ struct BuildProfile {
     cargo_profile_config: Option<String>,
     cuda_arch: Option<String>,
     ptx_version: Option<String>,
+    target_triple: Option<String>,
     opt_level: String,
     debug_assertions: bool,
 }
@@ -1344,6 +1348,7 @@ fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
             rustflags: toolchain.rustflags.clone(),
             target_features: toolchain.target_features.clone(),
             cargo_profile: toolchain.cargo_profile.clone(),
+            cargo_profile_fingerprint: toolchain.cargo_profile_fingerprint.clone(),
             cargo_lto: toolchain.cargo_lto.clone(),
             cargo_codegen_units: toolchain.cargo_codegen_units.clone(),
             cargo_incremental: toolchain.cargo_incremental.clone(),
@@ -1351,6 +1356,7 @@ fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
             cargo_profile_config: toolchain.cargo_profile_config.clone(),
             cuda_arch: toolchain.cuda_arch.clone(),
             ptx_version: toolchain.ptx_version.clone(),
+            target_triple: toolchain.target_triple.clone(),
             opt_level: toolchain.opt_level,
             debug_assertions: toolchain.debug_assertions,
         };
@@ -2493,6 +2499,82 @@ mod tests {
         );
         let mut baseline_json = serde_json::to_value(&baseline).expect("serialize manifest");
         baseline_json["toolchain"]["cargo_lto"] = serde_json::json!("fat");
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline_json).expect("serialize manifest JSON"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_cases_with_baseline(&[baseline_case], &config), 1);
+        assert!(
+            rejection_reasons(&comparison_json(&config.output_prefix))
+                .contains(&"build_profile_mismatch")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_rejects_mismatched_cargo_profile_fingerprint() {
+        let dir = temp_dir("cargo-profile-fingerprint-mismatch");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case.clone()],
+        );
+        let mut baseline_json = serde_json::to_value(&baseline).expect("serialize manifest");
+        baseline_json["toolchain"]["cargo_profile_fingerprint"] =
+            serde_json::json!("definitely-not-current");
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline_json).expect("serialize manifest JSON"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_cases_with_baseline(&[baseline_case], &config), 1);
+        assert!(
+            rejection_reasons(&comparison_json(&config.output_prefix))
+                .contains(&"build_profile_mismatch")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_rejects_mismatched_target_triple() {
+        let dir = temp_dir("target-triple-mismatch");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case.clone()],
+        );
+        let mut baseline_json = serde_json::to_value(&baseline).expect("serialize manifest");
+        baseline_json["toolchain"]["target_triple"] =
+            serde_json::json!("x86_64-unknown-linux-definitely-not-current");
         std::fs::write(
             &baseline_path,
             serde_json::to_vec(&baseline_json).expect("serialize manifest JSON"),

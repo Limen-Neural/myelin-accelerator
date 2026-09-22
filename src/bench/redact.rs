@@ -35,6 +35,10 @@ impl RedactionContext {
         {
             s = s.replace(home, "$HOME");
         }
+        // Build provenance may have been produced by a different account or
+        // machine than the one serializing the manifest. Redact conventional
+        // user-home patterns independently of the current HOME/USER values.
+        s = redact_user_home_patterns(&s);
         if let Some(user) = self.user.as_deref()
             && !user.is_empty()
         {
@@ -50,6 +54,37 @@ impl RedactionContext {
             s
         }
     }
+}
+
+fn redact_user_home_patterns(input: &str) -> String {
+    ["/home/", "/Users/", "C:\\Users\\", "C:/Users/"]
+        .into_iter()
+        .fold(input.to_string(), |value, prefix| {
+            redact_home_after_prefix(&value, prefix)
+        })
+}
+
+fn redact_home_after_prefix(input: &str, prefix: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(index) = rest.find(prefix) {
+        let component_start = index + prefix.len();
+        let component_len = rest[component_start..]
+            .chars()
+            .take_while(|ch| !matches!(ch, '/' | '\\' | '"' | '\'' | ' ' | '\t' | '\r' | '\n'))
+            .map(char::len_utf8)
+            .sum::<usize>();
+        if component_len == 0 {
+            out.push_str(&rest[..component_start]);
+            rest = &rest[component_start..];
+            continue;
+        }
+        out.push_str(&rest[..index]);
+        out.push_str("$HOME");
+        rest = &rest[component_start + component_len..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Recursively redact strings, replace secret-keyed values, and sort object keys.
@@ -308,6 +343,27 @@ mod tests {
         assert_eq!(ctx.redact_str("/tmp/alice/out"), "/tmp/$USER/out");
         // Do not rewrite the username inside unrelated words.
         assert_eq!(ctx.redact_str("malice"), "malice");
+    }
+
+    #[test]
+    fn redacts_builder_home_independently_of_runtime_user() {
+        let ctx = RedactionContext {
+            home: Some("/home/bob".into()),
+            user: Some("bob".into()),
+        };
+
+        assert_eq!(
+            ctx.redact_str("-Lnative=/home/alice/project/lib"),
+            "-Lnative=$HOME/project/lib"
+        );
+        assert_eq!(
+            ctx.redact_str("--sysroot=/Users/carol/rust"),
+            "--sysroot=$HOME/rust"
+        );
+        assert_eq!(
+            ctx.redact_str(r"-Lnative=C:\Users\dave\project\lib"),
+            "-Lnative=$HOME/project/lib"
+        );
     }
 
     #[test]

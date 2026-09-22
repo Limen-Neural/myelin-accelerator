@@ -49,11 +49,12 @@
     "warmup": 2
   },
   "toolchain": {
-    "cargo_codegen_units": "16",
-    "cargo_incremental": "false",
-    "cargo_lto": "false",
+    "cargo_codegen_units": null,
+    "cargo_incremental": null,
+    "cargo_lto": null,
     "cargo_profile": "release",
     "cargo_profile_config": "",
+    "cargo_profile_fingerprint": "2040997289075261528",
     "crate_version": "0.2.0",
     "cpu_model": "Synthetic CPU",
     "cuda_arch": null,
@@ -70,6 +71,7 @@
       "fxsr",
       "sse",
       "sse2"
-    ]
+    ],
+    "target_triple": "x86_64-unknown-linux-gnu"
   }
 }

@@ -7,7 +7,7 @@ use crate::bench::redact::{RedactionContext, redact_and_canonicalize};
 use crate::bench::stats::{SampleStats, sample_stats};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -62,6 +62,11 @@ pub struct ToolchainInfo {
     pub target_features: Vec<String>,
     #[serde(default)]
     pub cargo_profile: Option<String>,
+    /// Cargo's opaque hash of the effective profile settings for this exact
+    /// compilation unit. Unlike inferred defaults, this changes for CLI
+    /// `--config profile.*` overrides.
+    #[serde(default)]
+    pub cargo_profile_fingerprint: Option<String>,
     #[serde(default)]
     pub cargo_lto: Option<String>,
     #[serde(default)]
@@ -76,6 +81,8 @@ pub struct ToolchainInfo {
     pub cuda_arch: Option<String>,
     #[serde(default)]
     pub ptx_version: Option<String>,
+    #[serde(default)]
+    pub target_triple: Option<String>,
     pub host_arch: String,
     pub host_os: String,
     #[serde(default)]
@@ -240,6 +247,7 @@ pub fn capture_toolchain() -> ToolchainInfo {
             .collect(),
         target_features,
         cargo_profile: option_env!("MYELIN_BUILD_CARGO_PROFILE").map(str::to_string),
+        cargo_profile_fingerprint: capture_cargo_profile_fingerprint(),
         cargo_lto: option_env!("MYELIN_BUILD_CARGO_LTO").map(str::to_string),
         cargo_codegen_units: option_env!("MYELIN_BUILD_CARGO_CODEGEN_UNITS").map(str::to_string),
         cargo_incremental: option_env!("MYELIN_BUILD_CARGO_INCREMENTAL").map(str::to_string),
@@ -247,12 +255,151 @@ pub fn capture_toolchain() -> ToolchainInfo {
         cargo_profile_config: option_env!("MYELIN_BUILD_CARGO_PROFILE_CONFIG").map(str::to_string),
         cuda_arch: option_env!("MYELIN_BUILD_CUDA_ARCH").map(str::to_string),
         ptx_version: option_env!("MYELIN_BUILD_PTX_VERSION").map(str::to_string),
+        target_triple: option_env!("MYELIN_BUILD_TARGET").map(str::to_string),
         host_arch: std::env::consts::ARCH.to_string(),
         host_os: std::env::consts::OS.to_string(),
         cpu_model: capture_cpu_model(),
         opt_level: option_env!("OPT_LEVEL").unwrap_or("unknown").to_string(),
         debug_assertions: cfg!(debug_assertions),
         crate_version: env!("CARGO_PKG_VERSION").to_string(),
+    }
+}
+
+fn capture_cargo_profile_fingerprint() -> Option<String> {
+    let executable = std::env::current_exe().ok()?;
+    cargo_profile_fingerprint_for_executable(&executable)
+}
+
+fn cargo_profile_fingerprint_for_executable(executable: &Path) -> Option<String> {
+    let artifact_hash = cargo_artifact_hash(executable)?;
+    let artifact_dir = executable.parent()?;
+    let profile_dir = match artifact_dir.file_name().and_then(|name| name.to_str()) {
+        Some("deps" | "examples") => artifact_dir.parent()?,
+        _ => artifact_dir,
+    };
+    let fingerprint_dir = profile_dir
+        .join(".fingerprint")
+        .join(format!("{}-{artifact_hash}", env!("CARGO_PKG_NAME")));
+    let entries = std::fs::read_dir(fingerprint_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        if let Some(profile) = value.get("profile") {
+            return match profile {
+                serde_json::Value::String(value) => Some(value.clone()),
+                serde_json::Value::Number(value) => Some(value.to_string()),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+fn cargo_artifact_hash(executable: &Path) -> Option<String> {
+    let stem = executable.file_stem()?.to_str()?;
+    if let Some(hash) = stem.rsplit_once('-').map(|(_, hash)| hash)
+        && is_cargo_artifact_hash(hash)
+    {
+        return Some(hash.to_string());
+    }
+
+    let artifact_dir = executable.parent()?;
+    let expected_prefix = format!("{stem}-");
+    let expected_extension = executable.extension();
+    let mut matching_contents = Vec::new();
+    for entry in std::fs::read_dir(artifact_dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension() != expected_extension || !path.is_file() {
+            continue;
+        }
+        let Some(candidate_stem) = path.file_stem().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(hash) = candidate_stem.strip_prefix(&expected_prefix) else {
+            continue;
+        };
+        if !is_cargo_artifact_hash(hash) {
+            continue;
+        }
+        if files_have_same_identity(executable, &path) {
+            return Some(hash.to_string());
+        }
+        if files_have_same_contents(executable, &path) {
+            matching_contents.push(hash.to_string());
+        }
+    }
+    // If file identity is unavailable (or Cargo copied rather than hard-linked
+    // the top-level artifact), accept only an unambiguous content match.
+    (matching_contents.len() == 1).then(|| matching_contents.remove(0))
+}
+
+fn is_cargo_artifact_hash(value: &str) -> bool {
+    value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[cfg(unix)]
+fn files_have_same_identity(left: &Path, right: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let (Ok(left), Ok(right)) = (std::fs::metadata(left), std::fs::metadata(right)) else {
+        return false;
+    };
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(windows)]
+fn files_have_same_identity(_left: &Path, _right: &Path) -> bool {
+    // Stable Windows file IDs are not exposed by std. The caller falls back
+    // to accepting exactly one content-identical Cargo artifact.
+    false
+}
+
+#[cfg(not(any(unix, windows)))]
+fn files_have_same_identity(_left: &Path, _right: &Path) -> bool {
+    false
+}
+
+fn files_have_same_contents(left: &Path, right: &Path) -> bool {
+    let Ok(left_meta) = std::fs::metadata(left) else {
+        return false;
+    };
+    let Ok(right_meta) = std::fs::metadata(right) else {
+        return false;
+    };
+    if left_meta.len() != right_meta.len() {
+        return false;
+    }
+    let Ok(left_file) = std::fs::File::open(left) else {
+        return false;
+    };
+    let Ok(right_file) = std::fs::File::open(right) else {
+        return false;
+    };
+    let mut left_reader = std::io::BufReader::new(left_file);
+    let mut right_reader = std::io::BufReader::new(right_file);
+    let mut left_buf = [0_u8; 64 * 1024];
+    let mut right_buf = [0_u8; 64 * 1024];
+    loop {
+        let Ok(left_read) = left_reader.read(&mut left_buf) else {
+            return false;
+        };
+        let Ok(right_read) = right_reader.read(&mut right_buf) else {
+            return false;
+        };
+        if left_read != right_read || left_buf[..left_read] != right_buf[..right_read] {
+            return false;
+        }
+        if left_read == 0 {
+            return true;
+        }
     }
 }
 
@@ -616,6 +763,7 @@ mod tests {
                 rustflags: vec![],
                 target_features: vec![],
                 cargo_profile: None,
+                cargo_profile_fingerprint: None,
                 cargo_lto: None,
                 cargo_codegen_units: None,
                 cargo_incremental: None,
@@ -623,6 +771,7 @@ mod tests {
                 cargo_profile_config: None,
                 cuda_arch: None,
                 ptx_version: None,
+                target_triple: None,
                 host_arch: "x86_64".into(),
                 host_os: "linux".into(),
                 cpu_model: None,
@@ -699,6 +848,40 @@ mod tests {
             Path::new("a.manifest.json"),
             Path::new("b.manifest.json"),
         ));
+    }
+
+    #[test]
+    fn cargo_profile_fingerprint_resolves_top_level_cargo_artifact() {
+        let dir = std::env::temp_dir().join(format!(
+            "myelin-cargo-profile-fingerprint-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let examples = dir.join("debug/examples");
+        let fingerprint = dir.join(format!(
+            "debug/.fingerprint/{}-0123456789abcdef",
+            env!("CARGO_PKG_NAME")
+        ));
+        std::fs::create_dir_all(&examples).expect("artifact directory");
+        std::fs::create_dir_all(&fingerprint).expect("fingerprint directory");
+        let top_level = examples.join("benchmark");
+        let hashed = examples.join("benchmark-0123456789abcdef");
+        std::fs::write(&top_level, b"synthetic executable").expect("top-level artifact");
+        std::fs::hard_link(&top_level, &hashed).expect("Cargo-style hard link");
+        std::fs::write(
+            fingerprint.join("example-benchmark.json"),
+            br#"{"profile":123456789}"#,
+        )
+        .expect("fingerprint JSON");
+
+        assert_eq!(
+            cargo_profile_fingerprint_for_executable(&top_level).as_deref(),
+            Some("123456789")
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -960,22 +1143,17 @@ mod tests {
         );
         assert!(
             toolchain
-                .cargo_lto
+                .cargo_profile_fingerprint
                 .as_deref()
                 .is_some_and(|v| !v.is_empty())
         );
-        assert!(
-            toolchain
-                .cargo_codegen_units
-                .as_deref()
-                .is_some_and(|v| !v.is_empty())
+        assert_eq!(
+            toolchain.target_triple.as_deref(),
+            option_env!("MYELIN_BUILD_TARGET")
         );
-        assert!(
-            toolchain
-                .cargo_incremental
-                .as_deref()
-                .is_some_and(|v| !v.is_empty())
-        );
+        assert_eq!(toolchain.cargo_lto, None);
+        assert_eq!(toolchain.cargo_codegen_units, None);
+        assert_eq!(toolchain.cargo_incremental, None);
         assert!(
             toolchain
                 .panic_strategy
