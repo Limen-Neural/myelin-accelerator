@@ -1,0 +1,43 @@
+build.rs
+  s_2e936c8275887f::t_3ed627a29bfbcc 54,86,117-130,134-165,167-193
+  s_2e936c8275887f::t_424f5a87592dec 444-454
+docs/BENCHMARKS.md
+  s_2e936c8275887f::t_5473bed854426e 81-83,97-99
+  s_2e936c8275887f::t_f9a7bc6b20b2f2 43-45
+src/bench/manifest.rs
+  s_2e936c8275887f::t_82eb84ee7b32f8 63-78,242-246,248-249,618-625
+  s_2e936c8275887f::t_0277e661beb96c 382
+  s_2e936c8275887f::t_0d494bdf1d1a71 895
+  s_2e936c8275887f::t_500dff326a2fc4 247,836
+  s_2e936c8275887f::t_ccb777e66e1c36 955-984,992-1003,1006-1007
+tests/bench_repro.rs
+  s_2e936c8275887f::t_c49829c6fcd93c 95,105-107
+tests/fixtures/bench/manifest.sanitized.json
+  s_2e936c8275887f::t_73aac0a2e29832 52-56,59,65-66
+examples/benchmark.rs
+  s_2e936c8275887f::t_504596b7a01a94 53,55,930-937,1204-1211,1249-1256,1340,1342-1355,1358-1360
+  s_2e936c8275887f::t_18728f47c08b7d 1174,1257-1258,1263-1305,1337-1338,1368-1379
+  s_2e936c8275887f::t_0d494bdf1d1a71 2220-2233,2235-2255,2257-2302,2451-2551
+  s_2e936c8275887f::t_c49829c6fcd93c 159-163
+  s_2e936c8275887f::t_0e4ebc34913ca5 923-924,1259-1262,2234,2256
+src/bench/mod.rs
+  s_2e936c8275887f::t_c49829c6fcd93c 40-49
+src/bench/compare.rs
+  s_2e936c8275887f::t_c49829c6fcd93c 238,240-247,252
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1fd8a8b6cbdda23920b619f81ec7009bc014930b",
+  "prompts": {},
+  "sessions": {
+    "s_2e936c8275887f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c474-16c9-7241-89e4-7f6b425b2e5c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
