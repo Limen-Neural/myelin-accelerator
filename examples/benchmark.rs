@@ -51,8 +51,8 @@ use myelin_accelerator::bench::{
     BenchmarkManifest, ComparisonCase, ComparisonRejection, ComparisonRejectionReason,
     CudaDeviceUuid, DeviceIdentity, MANIFEST_SCHEMA_VERSION, ManifestCase, RegressionBudget,
     RegressionClass, SampleSource, SampleStats, capture_toolchain, compare_one, comparison_report,
-    enforce_budget_requested, paths_refer_to_same_file, probe_power_clock, write_canonical_json,
-    write_canonical_manifest,
+    enforce_budget_requested, paths_refer_to_same_file, probe_power_clock, write_atomic_bytes,
+    write_canonical_json, write_canonical_manifest,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -865,7 +865,7 @@ fn bench_gpu_kernels(_config: &Config) -> Vec<Capture> {
 
 // ── Baseline comparison ─────────────────────────────────────────────────────
 
-fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
+fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
     let Some(baseline_path) = config.baseline.as_deref() else {
         return 0;
     };
@@ -886,6 +886,7 @@ fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
         }
     };
     let rows = baseline.rows;
+    let current_cases = &current.cases;
 
     println!("\n{:=>70}", "");
     println!("  Baseline comparison: {baseline_path}");
@@ -905,7 +906,8 @@ fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
     println!("{:-<110}", "");
 
     let duplicate_baseline_names = duplicate_names(rows.iter().map(|row| row.name.as_str()));
-    let duplicate_current_names = duplicate_names(current.iter().map(|case| case.name.as_str()));
+    let duplicate_current_names =
+        duplicate_names(current_cases.iter().map(|case| case.name.as_str()));
     for name in &duplicate_baseline_names {
         eprintln!("[bench] Duplicate baseline case name: {name}");
     }
@@ -928,6 +930,28 @@ fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
             case_name: None,
         });
     }
+    let hardware_identity_mismatch = baseline
+        .device
+        .as_ref()
+        .is_some_and(|device| !same_hardware_identity(device, &current.device));
+    if hardware_identity_mismatch {
+        eprintln!("[bench] Hardware identity mismatch: baseline and current devices differ");
+        rejections.push(ComparisonRejection {
+            reason: ComparisonRejectionReason::HardwareIdentityMismatch,
+            case_name: None,
+        });
+    }
+    let feature_set_mismatch = baseline
+        .features
+        .as_ref()
+        .is_some_and(|features| !same_feature_set(features, &current.features));
+    if feature_set_mismatch {
+        eprintln!("[bench] Feature-set mismatch: baseline and current Cargo features differ");
+        rejections.push(ComparisonRejection {
+            reason: ComparisonRejectionReason::FeatureSetMismatch,
+            case_name: None,
+        });
+    }
     for name in &duplicate_baseline_names {
         rejections.push(ComparisonRejection {
             reason: ComparisonRejectionReason::DuplicateBaselineName,
@@ -943,7 +967,7 @@ fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
 
     let unmatched_baseline: Vec<&str> = rows
         .iter()
-        .filter(|base| !current.iter().any(|case| case.name == base.name))
+        .filter(|base| !current_cases.iter().any(|case| case.name == base.name))
         .map(|base| base.name.as_str())
         .collect();
     for name in &unmatched_baseline {
@@ -956,7 +980,9 @@ fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
 
     let mut cases: Vec<ComparisonCase> = Vec::new();
     let mut mismatched_workloads = Vec::new();
-    for curr in current {
+    let run_provenance_mismatch =
+        build_profile_mismatch || hardware_identity_mismatch || feature_set_mismatch;
+    for curr in current_cases {
         if duplicate_baseline_names.contains(&curr.name)
             || duplicate_current_names.contains(&curr.name)
         {
@@ -965,7 +991,7 @@ fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
         let Some(base) = rows.iter().find(|r| r.name == curr.name) else {
             continue;
         };
-        if build_profile_mismatch {
+        if run_provenance_mismatch {
             continue;
         }
         if base.warmup.is_some_and(|warmup| warmup != curr.warmup) {
@@ -1101,6 +1127,20 @@ struct BuildProfile {
 struct LoadedBaseline {
     rows: Vec<BaselineRow>,
     build_profile: Option<BuildProfile>,
+    device: Option<DeviceIdentity>,
+    features: Option<Vec<String>>,
+}
+
+fn same_hardware_identity(baseline: &DeviceIdentity, current: &DeviceIdentity) -> bool {
+    baseline.name == current.name
+        && baseline.uuid == current.uuid
+        && baseline.compute_capability == current.compute_capability
+        && baseline.sm_arch == current.sm_arch
+        && baseline.vram_total_mb == current.vram_total_mb
+}
+
+fn same_feature_set(baseline: &[String], current: &[String]) -> bool {
+    baseline.iter().collect::<BTreeSet<_>>() == current.iter().collect::<BTreeSet<_>>()
 }
 
 impl BaselineRow {
@@ -1138,6 +1178,8 @@ fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
             opt_level: manifest.toolchain.opt_level,
             debug_assertions: manifest.toolchain.debug_assertions,
         };
+        let device = manifest.device;
+        let features = manifest.features;
         let rows = manifest
             .cases
             .into_iter()
@@ -1166,6 +1208,8 @@ fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
         return Ok(LoadedBaseline {
             rows,
             build_profile: Some(build_profile),
+            device: Some(device),
+            features: Some(features),
         });
     }
     let report: BenchmarkReport = serde_json::from_str(data).map_err(|e| e.to_string())?;
@@ -1198,6 +1242,8 @@ fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
     Ok(LoadedBaseline {
         rows,
         build_profile: None,
+        device: None,
+        features: None,
     })
 }
 
@@ -1272,8 +1318,7 @@ fn device_from_gpu(
 
 fn write_json(report: &BenchmarkReport, prefix: &str) {
     let path = format!("{prefix}.json");
-    let data = serde_json::to_string_pretty(report).expect("serialize report");
-    std::fs::write(&path, data).expect("write JSON");
+    write_canonical_json(Path::new(&path), report).expect("write JSON");
     println!("[bench] Results written to {path}");
 }
 
@@ -1296,7 +1341,7 @@ fn write_csv(results: &[BenchmarkResult], prefix: &str) {
             r.throughput_ops_per_sec,
         ));
     }
-    std::fs::write(&path, csv).expect("write CSV");
+    write_atomic_bytes(Path::new(&path), csv).expect("write CSV");
     println!("[bench] Results written to {path}");
 }
 
@@ -1409,7 +1454,7 @@ fn main() {
 
     let mut exit_code = 0;
     if config.baseline.is_some() {
-        exit_code = compare_with_baseline(&manifest.cases, &config);
+        exit_code = compare_with_baseline(&manifest, &config);
     }
 
     println!("[bench] Done.");
@@ -1480,6 +1525,18 @@ mod tests {
             .iter()
             .map(|rejection| rejection["reason"].as_str().expect("rejection reason"))
             .collect()
+    }
+
+    fn compare_cases_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
+        let manifest = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: config.warmup,
+                samples: config.iterations,
+                seed: None,
+            },
+            current.to_vec(),
+        );
+        compare_with_baseline(&manifest, config)
     }
 
     fn legacy_result(name: &str, median_us: f64) -> BenchmarkResult {
@@ -1576,7 +1633,7 @@ mod tests {
         };
         let current = vec![manifest_case("same-name", "variant-b", 256, 100.0)];
 
-        let exit_code = compare_with_baseline(&current, &config);
+        let exit_code = compare_cases_with_baseline(&current, &config);
 
         assert_eq!(exit_code, 1);
         let report = comparison_json(&config.output_prefix);
@@ -1616,12 +1673,89 @@ mod tests {
             budget: RegressionBudget::default(),
         };
 
-        assert_eq!(compare_with_baseline(&[baseline_case], &config), 1);
+        assert_eq!(compare_cases_with_baseline(&[baseline_case], &config), 1);
         let report = comparison_json(&config.output_prefix);
         assert_eq!(report["gate_passed"], false);
         assert_eq!(
             rejection_reasons(&report),
             vec!["build_profile_mismatch", "no_comparable_cases"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_rejects_mismatched_device_identity() {
+        let dir = temp_dir("device-mismatch");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let mut baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case.clone()],
+        );
+        baseline.device.name = Some("definitely-not-the-current-device".to_string());
+        baseline.device.uuid = Some("GPU-00000000-0000-0000-0000-000000000000".to_string());
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline).expect("serialize manifest"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_cases_with_baseline(&[baseline_case], &config), 1);
+        let report = comparison_json(&config.output_prefix);
+        assert_eq!(report["gate_passed"], false);
+        assert_eq!(
+            rejection_reasons(&report),
+            vec!["hardware_identity_mismatch", "no_comparable_cases"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_rejects_mismatched_feature_set() {
+        let dir = temp_dir("feature-mismatch");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let mut baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case.clone()],
+        );
+        baseline.features = vec!["definitely-not-enabled".to_string()];
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline).expect("serialize manifest"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_cases_with_baseline(&[baseline_case], &config), 1);
+        let report = comparison_json(&config.output_prefix);
+        assert_eq!(report["gate_passed"], false);
+        assert_eq!(
+            rejection_reasons(&report),
+            vec!["feature_set_mismatch", "no_comparable_cases"]
         );
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1655,7 +1789,7 @@ mod tests {
         };
         let current = manifest_case("same-name", "variant", 128, 100.0);
 
-        assert_eq!(compare_with_baseline(&[current], &config), 1);
+        assert_eq!(compare_cases_with_baseline(&[current], &config), 1);
         let report = comparison_json(&config.output_prefix);
         assert_eq!(report["gate_passed"], false);
         assert_eq!(
@@ -1704,7 +1838,7 @@ mod tests {
             Some(2),
         )];
 
-        assert_eq!(compare_with_baseline(&current, &config), 1);
+        assert_eq!(compare_cases_with_baseline(&current, &config), 1);
         let report = comparison_json(&config.output_prefix);
         assert_eq!(report["gate_passed"], false);
         assert!(rejection_reasons(&report).contains(&"workload_metadata_mismatch"));
@@ -1741,7 +1875,7 @@ mod tests {
             budget: RegressionBudget::default(),
         };
 
-        let exit_code = compare_with_baseline(&[baseline_case], &config);
+        let exit_code = compare_cases_with_baseline(&[baseline_case], &config);
 
         assert_eq!(exit_code, 1);
         let _ = std::fs::remove_dir_all(dir);
@@ -1773,7 +1907,7 @@ mod tests {
             budget: RegressionBudget::default(),
         };
 
-        let exit_code = compare_with_baseline(&[], &config);
+        let exit_code = compare_cases_with_baseline(&[], &config);
 
         assert_eq!(exit_code, 1);
         let report = comparison_json(&config.output_prefix);
@@ -1794,7 +1928,7 @@ mod tests {
             budget: RegressionBudget::default(),
         };
 
-        assert_eq!(compare_with_baseline(&[], &config), 1);
+        assert_eq!(compare_cases_with_baseline(&[], &config), 1);
         let report = comparison_json(&config.output_prefix);
         assert_eq!(report["gate_passed"], false);
         assert_eq!(
@@ -1818,7 +1952,7 @@ mod tests {
             budget: RegressionBudget::default(),
         };
 
-        assert_eq!(compare_with_baseline(&[], &config), 1);
+        assert_eq!(compare_cases_with_baseline(&[], &config), 1);
         let report = comparison_json(&config.output_prefix);
         assert_eq!(report["gate_passed"], false);
         assert_eq!(
@@ -1854,7 +1988,7 @@ mod tests {
             budget: RegressionBudget::default(),
         };
 
-        assert_eq!(compare_with_baseline(&[], &config), 1);
+        assert_eq!(compare_cases_with_baseline(&[], &config), 1);
         let report = comparison_json(&config.output_prefix);
         assert_eq!(report["gate_passed"], false);
         assert!(rejection_reasons(&report).contains(&"missing_current_case"));
@@ -1891,7 +2025,7 @@ mod tests {
         current.samples_us = vec![3_000.0];
         current.samples = 1;
 
-        assert_eq!(compare_with_baseline(&[current], &config), 1);
+        assert_eq!(compare_cases_with_baseline(&[current], &config), 1);
         let report = comparison_json(&config.output_prefix);
         assert_eq!(report["gate_passed"], false);
         assert_eq!(report["cases"][0]["class"], "insufficient_samples");
@@ -1928,7 +2062,7 @@ mod tests {
         };
         let current = vec![manifest_case("duplicate", "variant-a", 128, 100.0)];
 
-        assert_eq!(compare_with_baseline(&current, &config), 1);
+        assert_eq!(compare_cases_with_baseline(&current, &config), 1);
         let report = comparison_json(&config.output_prefix);
         assert_eq!(report["gate_passed"], false);
         assert!(rejection_reasons(&report).contains(&"duplicate_baseline_name"));
@@ -1963,10 +2097,73 @@ mod tests {
         };
         let current = vec![baseline_case.clone(), baseline_case];
 
-        assert_eq!(compare_with_baseline(&current, &config), 1);
+        assert_eq!(compare_cases_with_baseline(&current, &config), 1);
         let report = comparison_json(&config.output_prefix);
         assert_eq!(report["gate_passed"], false);
         assert!(rejection_reasons(&report).contains(&"duplicate_current_name"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_json_output_does_not_follow_final_path_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir("legacy-json-symlink");
+        let prefix = dir.join("results");
+        let output = prefix.with_extension("json");
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "do not overwrite").expect("victim");
+        symlink(&victim, &output).expect("output symlink");
+        let report = BenchmarkReport {
+            timestamp: "2026-09-22T00:00:00Z".to_string(),
+            gpu_info: None,
+            config: RunConfig {
+                warmup: 1,
+                iterations: 8,
+            },
+            results: vec![legacy_result("case", 100.0)],
+        };
+
+        write_json(&report, &prefix.to_string_lossy());
+
+        assert_eq!(
+            std::fs::read_to_string(&victim).expect("read victim"),
+            "do not overwrite"
+        );
+        assert!(
+            !std::fs::symlink_metadata(&output)
+                .expect("output metadata")
+                .file_type()
+                .is_symlink()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_csv_output_does_not_follow_final_path_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir("legacy-csv-symlink");
+        let prefix = dir.join("results");
+        let output = prefix.with_extension("csv");
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "do not overwrite").expect("victim");
+        symlink(&victim, &output).expect("output symlink");
+
+        write_csv(&[legacy_result("case", 100.0)], &prefix.to_string_lossy());
+
+        assert_eq!(
+            std::fs::read_to_string(&victim).expect("read victim"),
+            "do not overwrite"
+        );
+        assert!(
+            !std::fs::symlink_metadata(&output)
+                .expect("output metadata")
+                .file_type()
+                .is_symlink()
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

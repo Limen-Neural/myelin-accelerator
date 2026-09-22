@@ -24,8 +24,8 @@ pub use compare::{
 pub use manifest::{
     BenchmarkManifest, CudaDeviceUuid, DeviceIdentity, GitProvenance, MANIFEST_SCHEMA_VERSION,
     ManifestCase, PowerClockControls, RunTiming, ToolchainInfo, capture_git, capture_toolchain,
-    enabled_features, paths_refer_to_same_file, probe_power_clock, write_canonical_json,
-    write_canonical_manifest,
+    enabled_features, paths_refer_to_same_file, probe_power_clock, write_atomic_bytes,
+    write_canonical_json, write_canonical_manifest,
 };
 pub use redact::{RedactionContext, canonicalize_json_value, redact_and_canonicalize};
 pub use stats::{SampleStats, sample_stats};

@@ -400,7 +400,9 @@ fn lexical_absolute(path: &Path) -> PathBuf {
     out
 }
 
-fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+/// Write bytes through a collision-resistant, exclusively created sibling and
+/// atomically rename them into place.
+pub fn write_atomic_bytes(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
 
     let dir = path
@@ -456,7 +458,7 @@ pub fn write_canonical_json<T: Serialize>(path: &Path, value: &T) -> std::io::Re
     let ctx = RedactionContext::from_env();
     let text = redact_and_canonicalize(value, &ctx)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    write_atomic(path, text)
+    write_atomic_bytes(path, text)
 }
 
 /// Write a redacted, key-sorted pretty JSON manifest atomically.

@@ -114,7 +114,7 @@ fn canonical_json_never_leaks_home_or_tokens() {
     };
     let value = serde_json::json!({
         "nvcc": "/home/alice/cuda/bin/nvcc",
-        "note": "token=ghp_abcdefghijklmnopqrstuvwxyz012345",
+        "note": format!("token=ghp_{}", "a".repeat(36)),
         "z": 1,
         "a": 2,
     });

@@ -144,12 +144,12 @@ fn is_path_delim_char(c: char) -> bool {
 
 fn redact_secret_tokens(input: &str) -> String {
     let prefixes = [
-        ("ghp_", 1),
-        ("gho_", 1),
-        ("ghu_", 1),
-        ("ghs_", 1),
-        ("ghr_", 1),
-        ("github_pat_", 1),
+        ("ghp_", 36),
+        ("gho_", 36),
+        ("ghu_", 36),
+        ("ghs_", 36),
+        ("ghr_", 36),
+        ("github_pat_", 40),
         ("sk-", 20),
     ];
     let mut s = input.to_string();
@@ -310,7 +310,7 @@ mod tests {
     fn redacts_github_and_openai_style_tokens() {
         let ctx = alice();
         assert_eq!(
-            ctx.redact_str("token=ghp_abcdefghijklmnopqrstuvwxyz012345"),
+            ctx.redact_str(&format!("token=ghp_{}", "a".repeat(36))),
             "token=$REDACTED"
         );
         let openai_key = format!("key=sk-{}", "a".repeat(32));
@@ -323,6 +323,21 @@ mod tests {
         let ctx = alice();
         assert_eq!(ctx.redact_str("mask-kernel"), "mask-kernel");
         assert_eq!(ctx.redact_str("key=sk-short"), "key=sk-short");
+    }
+
+    #[test]
+    fn preserves_implausibly_short_github_token_prefixes() {
+        let ctx = alice();
+        for value in [
+            "ghp_kernel",
+            "gho_kernel",
+            "ghu_kernel",
+            "ghs_kernel",
+            "ghr_kernel",
+            "github_pat_kernel",
+        ] {
+            assert_eq!(ctx.redact_str(value), value);
+        }
     }
 
     #[test]
