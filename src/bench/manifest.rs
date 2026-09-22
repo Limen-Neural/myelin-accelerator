@@ -56,6 +56,10 @@ pub struct GitProvenance {
 pub struct ToolchainInfo {
     pub rustc: Option<String>,
     pub nvcc: Option<String>,
+    #[serde(default)]
+    pub rustflags: Vec<String>,
+    #[serde(default)]
+    pub target_features: Vec<String>,
     pub host_arch: String,
     pub host_os: String,
     #[serde(default)]
@@ -201,9 +205,24 @@ pub fn capture_git() -> GitProvenance {
 
 /// rustc / nvcc versions and host identity. Paths are never stored.
 pub fn capture_toolchain() -> ToolchainInfo {
+    let mut target_features = option_env!("MYELIN_BUILD_TARGET_FEATURES")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|feature| !feature.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    target_features.sort();
     ToolchainInfo {
         rustc: option_env!("MYELIN_BUILD_RUSTC_VERSION").map(str::to_string),
         nvcc: option_env!("MYELIN_BUILD_NVCC_VERSION").map(str::to_string),
+        rustflags: option_env!("MYELIN_BUILD_RUSTFLAGS")
+            .unwrap_or_default()
+            .split('\u{1f}')
+            .filter(|flag| !flag.is_empty())
+            .map(str::to_string)
+            .collect(),
+        target_features,
         host_arch: std::env::consts::ARCH.to_string(),
         host_os: std::env::consts::OS.to_string(),
         cpu_model: capture_cpu_model(),
@@ -473,12 +492,59 @@ pub fn write_atomic_bytes(path: &Path, contents: impl AsRef<[u8]>) -> std::io::R
         return Err(err);
     }
     drop(file);
-    match std::fs::rename(&tmp, path) {
+    match replace_file(&tmp, path) {
         Ok(()) => Ok(()),
         Err(err) => {
             let _ = std::fs::remove_file(&tmp);
             Err(err)
         }
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::null;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    match std::fs::rename(source, destination) {
+        Ok(()) => return Ok(()),
+        Err(err) if !destination.exists() => return Err(err),
+        Err(_) => {}
+    }
+
+    let destination_wide = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(once(0))
+        .collect::<Vec<_>>();
+    let source_wide = source
+        .as_os_str()
+        .encode_wide()
+        .chain(once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: both paths are NUL-terminated UTF-16 buffers that remain alive
+    // for the duration of the call; optional backup/exclusion pointers are null.
+    let replaced = unsafe {
+        ReplaceFileW(
+            destination_wide.as_ptr(),
+            source_wide.as_ptr(),
+            null(),
+            0,
+            null(),
+            null(),
+        )
+    };
+    if replaced != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -524,6 +590,8 @@ mod tests {
             toolchain: ToolchainInfo {
                 rustc: None,
                 nvcc: None,
+                rustflags: vec![],
+                target_features: vec![],
                 host_arch: "x86_64".into(),
                 host_os: "linux".into(),
                 cpu_model: None,
@@ -819,12 +887,39 @@ mod tests {
     #[test]
     fn toolchain_versions_are_the_compilers_recorded_at_build_time() {
         let toolchain = capture_toolchain();
+        let expected_rustflags = option_env!("MYELIN_BUILD_RUSTFLAGS")
+            .unwrap_or_default()
+            .split('\u{1f}')
+            .filter(|flag| !flag.is_empty())
+            .collect::<Vec<_>>();
+        let mut expected_target_features = option_env!("MYELIN_BUILD_TARGET_FEATURES")
+            .unwrap_or_default()
+            .split(',')
+            .filter(|feature| !feature.is_empty())
+            .collect::<Vec<_>>();
+        expected_target_features.sort();
 
         assert!(
             toolchain
                 .rustc
                 .as_deref()
                 .is_some_and(|version| version.starts_with("rustc "))
+        );
+        assert_eq!(
+            toolchain
+                .rustflags
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            expected_rustflags
+        );
+        assert_eq!(
+            toolchain
+                .target_features
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            expected_target_features
         );
         if cfg!(feature = "cuda") {
             assert!(

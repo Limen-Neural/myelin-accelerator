@@ -920,6 +920,8 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
     let build_profile_mismatch = baseline.build_profile.as_ref().is_some_and(|profile| {
         profile.rustc != current_toolchain.rustc
             || profile.nvcc != current_toolchain.nvcc
+            || profile.rustflags != current_toolchain.rustflags
+            || profile.target_features != current_toolchain.target_features
             || profile.opt_level != current_toolchain.opt_level
             || profile.debug_assertions != current_toolchain.debug_assertions
     });
@@ -1184,6 +1186,8 @@ struct BaselineRow {
 struct BuildProfile {
     rustc: Option<String>,
     nvcc: Option<String>,
+    rustflags: Vec<String>,
+    target_features: Vec<String>,
     opt_level: String,
     debug_assertions: bool,
 }
@@ -1255,6 +1259,8 @@ fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
         let build_profile = BuildProfile {
             rustc: manifest.toolchain.rustc.clone(),
             nvcc: manifest.toolchain.nvcc.clone(),
+            rustflags: manifest.toolchain.rustflags.clone(),
+            target_features: manifest.toolchain.target_features.clone(),
             opt_level: manifest.toolchain.opt_level,
             debug_assertions: manifest.toolchain.debug_assertions,
         };
@@ -2232,6 +2238,46 @@ mod tests {
         assert_eq!(
             rejection_reasons(&report),
             vec!["cuda_environment_mismatch", "no_comparable_cases"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_rejects_mismatched_rust_codegen_flags() {
+        let dir = temp_dir("rust-codegen-mismatch");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case.clone()],
+        );
+        let mut baseline_json = serde_json::to_value(&baseline).expect("serialize manifest");
+        baseline_json["toolchain"]["rustflags"] =
+            serde_json::json!(["-C", "target-cpu=definitely-not-current"]);
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline_json).expect("serialize manifest JSON"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_cases_with_baseline(&[baseline_case], &config), 1);
+        let report = comparison_json(&config.output_prefix);
+        assert_eq!(report["gate_passed"], false);
+        assert_eq!(
+            rejection_reasons(&report),
+            vec!["build_profile_mismatch", "no_comparable_cases"]
         );
         let _ = std::fs::remove_dir_all(dir);
     }

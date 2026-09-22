@@ -56,6 +56,12 @@
     "host_os": "linux",
     "nvcc": null,
     "opt_level": "3",
-    "rustc": "rustc 1.98.1"
+    "rustc": "rustc 1.98.1",
+    "rustflags": [],
+    "target_features": [
+      "fxsr",
+      "sse",
+      "sse2"
+    ]
   }
 }

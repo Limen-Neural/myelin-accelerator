@@ -31,6 +31,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=CUDA_NVCC");
     println!("cargo:rerun-if-env-changed=RUSTC");
+    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
     println!("cargo:rerun-if-env-changed=MYELIN_CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=MYELIN_PTX_VERSION");
     println!("cargo:rerun-if-env-changed=MYELIN_NVCC_THREADS");
@@ -45,6 +47,10 @@ fn main() {
     if let Some(version) = rustc_version() {
         println!("cargo:rustc-env=MYELIN_BUILD_RUSTC_VERSION={version}");
     }
+    let rustflags = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    println!("cargo:rustc-env=MYELIN_BUILD_RUSTFLAGS={rustflags}");
+    let target_features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+    println!("cargo:rustc-env=MYELIN_BUILD_TARGET_FEATURES={target_features}");
     emit_git_provenance(&manifest_dir);
 
     let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();

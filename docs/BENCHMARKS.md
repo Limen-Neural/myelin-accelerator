@@ -39,7 +39,9 @@ The manifest includes build-time git commit/tracked-source dirty state, enabled
 Cargo features, kernel variant and input dimensions per case, seed,
 warmup/sample counts, device
 identity, compute capability, the NVIDIA driver reported by `nvidia-smi`, and
-the exact rustc/nvcc versions selected at build time. It also records
+the exact rustc/nvcc versions selected at build time, effective encoded
+Rust codegen flags and target features, host architecture/OS/CPU identity, and
+release/debug profile settings. It also records
 `nvidia-smi` power controls plus configured application clocks when available.
 GPUs where application-clock controls are unsupported or deprecated record
 those clock fields as `null` rather than substituting a post-run idle-clock
