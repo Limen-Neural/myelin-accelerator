@@ -1,0 +1,20 @@
+src/bench/redact.rs
+  s_2e936c8275887f::t_19155d6aacfbb7 315-322
+  s_2e936c8275887f::t_bfa459bc226b1f 159,191-199,202,214-215
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "67419258ed5be3ecd19076bffeb279d918439fe8",
+  "prompts": {},
+  "sessions": {
+    "s_2e936c8275887f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c474-16c9-7241-89e4-7f6b425b2e5c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
