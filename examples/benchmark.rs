@@ -48,10 +48,10 @@
 //! ```
 
 use myelin_accelerator::bench::{
-    BenchmarkManifest, ComparisonCase, DeviceIdentity, MANIFEST_SCHEMA_VERSION, ManifestCase,
-    RegressionBudget, RegressionClass, SampleSource, SampleStats, compare_one, comparison_report,
-    enforce_budget_requested, paths_refer_to_same_file, probe_power_clock, write_canonical_json,
-    write_canonical_manifest,
+    BenchmarkManifest, ComparisonCase, CudaDeviceUuid, DeviceIdentity, MANIFEST_SCHEMA_VERSION,
+    ManifestCase, RegressionBudget, RegressionClass, SampleSource, SampleStats, compare_one,
+    comparison_report, enforce_budget_requested, paths_refer_to_same_file, probe_power_clock,
+    write_canonical_json, write_canonical_manifest,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -282,6 +282,8 @@ struct GpuInfo {
     cuda_version: String,
     sm_arch: String,
     vram_total_mb: u64,
+    #[serde(skip)]
+    cuda_device_uuid: Option<CudaDeviceUuid>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -391,6 +393,20 @@ fn run_benchmark<F: FnMut()>(
 
 // ── GPU info collection ─────────────────────────────────────────────────────
 
+#[cfg(feature = "cuda")]
+fn cuda_device_uuid(device: cust::device::Device) -> Option<CudaDeviceUuid> {
+    let mut uuid = cust::sys::CUuuid::default();
+    // SAFETY: CUDA is initialized before this helper is called, `device` came
+    // from `Device::get_device`, and `uuid` is valid writable storage.
+    let result = unsafe { cust::sys::cuDeviceGetUuid_v2(&mut uuid, device.as_raw()) };
+    if result != cust::sys::cudaError_enum::CUDA_SUCCESS {
+        return None;
+    }
+    Some(CudaDeviceUuid::from_bytes(
+        uuid.bytes.map(|byte| byte as u8),
+    ))
+}
+
 /// Probe device 0 via the CUDA driver API when built with `cuda`.
 ///
 /// `cust::init` is idempotent, so calling this before `GpuAccelerator::new`
@@ -402,6 +418,7 @@ fn collect_gpu_info() -> Option<GpuInfo> {
 
     cust::init(CudaFlags::empty()).ok()?;
     let device = Device::get_device(0).ok()?;
+    let cuda_device_uuid = cuda_device_uuid(device);
     let device_name = device.name().ok()?;
     let total_bytes = device.total_memory().ok()? as u64;
     let major = device
@@ -457,6 +474,7 @@ fn collect_gpu_info() -> Option<GpuInfo> {
         cuda_version: cuda_toolkit,
         sm_arch: format!("sm_{major}{minor}"),
         vram_total_mb: total_bytes / (1024 * 1024),
+        cuda_device_uuid,
     })
 }
 
@@ -1235,7 +1253,11 @@ fn main() {
         std::process::exit(1);
     }
 
-    let (uuid, driver_version, power_clock) = probe_power_clock();
+    let (uuid, driver_version, power_clock) = probe_power_clock(
+        gpu_info
+            .as_ref()
+            .and_then(|info| info.cuda_device_uuid.as_ref()),
+    );
     let cases: Vec<ManifestCase> = captures.into_iter().map(|c| c.case).collect();
     let mut manifest = BenchmarkManifest::new(
         myelin_accelerator::bench::RunTiming {
@@ -1325,6 +1347,7 @@ mod tests {
             vram_total_mb: 16_384,
             driver_version: "runtime-api-should-not-be-driver".to_string(),
             cuda_version: "runtime-path-nvcc-should-not-win".to_string(),
+            cuda_device_uuid: None,
         };
 
         let device = device_from_gpu(

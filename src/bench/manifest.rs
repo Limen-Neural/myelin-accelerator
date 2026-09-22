@@ -205,22 +205,69 @@ pub fn capture_toolchain() -> ToolchainInfo {
     }
 }
 
-/// Probe `nvidia-smi` for UUID, driver, and configured power/clock controls.
+/// The 16-byte UUID reported by the CUDA driver for the selected logical device.
+///
+/// CUDA returns the physical GPU UUID for an ordinary device and the compute
+/// instance UUID for a MIG device. The binary value itself does not encode
+/// which `nvidia-smi` namespace prefix applies, so probing tries both canonical
+/// selector forms and retains the prefix-free UUID if enrichment is unavailable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CudaDeviceUuid([u8; 16]);
+
+impl CudaDeviceUuid {
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    fn hyphenated(&self) -> String {
+        let bytes = &self.0;
+        format!(
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            bytes[0],
+            bytes[1],
+            bytes[2],
+            bytes[3],
+            bytes[4],
+            bytes[5],
+            bytes[6],
+            bytes[7],
+            bytes[8],
+            bytes[9],
+            bytes[10],
+            bytes[11],
+            bytes[12],
+            bytes[13],
+            bytes[14],
+            bytes[15],
+        )
+    }
+
+    fn nvidia_smi_selectors(&self) -> [String; 2] {
+        let uuid = self.hyphenated();
+        [format!("GPU-{uuid}"), format!("MIG-{uuid}")]
+    }
+}
+
+/// Probe `nvidia-smi` for UUID, driver, and configured power/clock controls
+/// for the CUDA-selected device.
 ///
 /// Stable identity/power fields and optional application clocks are queried
 /// separately so drivers that reject the deprecated clock fields do not erase
-/// otherwise available provenance.
-pub fn probe_power_clock() -> (Option<String>, Option<String>, PowerClockControls) {
-    probe_power_clock_with_command(Path::new("nvidia-smi"))
+/// otherwise available provenance. When no benchmark GPU was selected, all
+/// fields remain unavailable and `nvidia-smi` is not invoked.
+pub fn probe_power_clock(
+    selected_device: Option<&CudaDeviceUuid>,
+) -> (Option<String>, Option<String>, PowerClockControls) {
+    probe_power_clock_with_command(Path::new("nvidia-smi"), selected_device)
 }
 
-fn smi_query(binary: &Path, fields: &str) -> Option<String> {
+fn smi_query(binary: &Path, device_selector: &str, fields: &str) -> Option<String> {
     Command::new(binary)
         .args([
             &format!("--query-gpu={fields}"),
             "--format=csv,noheader,nounits",
             "-i",
-            "0",
+            device_selector,
         ])
         .output()
         .ok()
@@ -230,18 +277,39 @@ fn smi_query(binary: &Path, fields: &str) -> Option<String> {
 
 fn probe_power_clock_with_command(
     binary: &Path,
+    selected_device: Option<&CudaDeviceUuid>,
 ) -> (Option<String>, Option<String>, PowerClockControls) {
-    probe_power_clock_with_query(|fields| smi_query(binary, fields))
+    probe_power_clock_with_optional_query(selected_device, |selector, fields| {
+        smi_query(binary, selector, fields)
+    })
+}
+
+fn probe_power_clock_with_optional_query(
+    selected_device: Option<&CudaDeviceUuid>,
+    query: impl FnMut(&str, &str) -> Option<String>,
+) -> (Option<String>, Option<String>, PowerClockControls) {
+    let Some(selected_device) = selected_device else {
+        return (None, None, PowerClockControls::unavailable());
+    };
+    probe_power_clock_with_query(selected_device, query)
 }
 
 fn probe_power_clock_with_query(
-    mut query: impl FnMut(&str) -> Option<String>,
+    selected_device: &CudaDeviceUuid,
+    mut query: impl FnMut(&str, &str) -> Option<String>,
 ) -> (Option<String>, Option<String>, PowerClockControls) {
     let mut controls = PowerClockControls::unavailable();
-    let mut uuid = None;
+    let mut uuid = Some(selected_device.hyphenated());
     let mut driver_version = None;
+    let mut selected_smi_selector = None;
 
-    if let Some(raw) = query("uuid,driver_version,persistence_mode,power.limit") {
+    for selector in selected_device.nvidia_smi_selectors() {
+        let Some(raw) = query(
+            &selector,
+            "uuid,driver_version,persistence_mode,power.limit",
+        ) else {
+            continue;
+        };
         let parts: Vec<&str> = raw
             .lines()
             .next()
@@ -250,14 +318,21 @@ fn probe_power_clock_with_query(
             .map(str::trim)
             .collect();
         if parts.len() >= 4 {
-            uuid = optional_smi(parts[0]);
+            uuid = optional_smi(parts[0]).or(uuid);
             driver_version = optional_smi(parts[1]);
             controls.persistence_mode = optional_smi(parts[2]);
             controls.power_limit_w = optional_smi(parts[3]).and_then(|s| s.parse().ok());
+            selected_smi_selector = Some(selector);
+            break;
         }
     }
 
-    if let Some(raw) = query("clocks.applications.graphics,clocks.applications.memory") {
+    if let Some(raw) = selected_smi_selector.as_deref().and_then(|selector| {
+        query(
+            selector,
+            "clocks.applications.graphics,clocks.applications.memory",
+        )
+    }) {
         let parts: Vec<&str> = raw
             .lines()
             .next()
@@ -511,21 +586,105 @@ mod tests {
 
     #[test]
     fn power_clock_probe_preserves_stable_fields_when_application_clocks_fail() {
+        let selected = CudaDeviceUuid::from_bytes([
+            0xce, 0x87, 0xfa, 0x7e, 0x0d, 0xd6, 0x4e, 0x65, 0x35, 0x05, 0x7b, 0x07, 0x53, 0xef,
+            0xeb, 0x5e,
+        ]);
         let (uuid, driver_version, controls) =
-            probe_power_clock_with_query(|fields| match fields {
-                "uuid,driver_version,persistence_mode,power.limit" => {
-                    Some("GPU-test, 610.43.03, Enabled, 360.00\n".to_string())
+            probe_power_clock_with_query(&selected, |selector, fields| {
+                assert_eq!(selector, "GPU-ce87fa7e-0dd6-4e65-3505-7b0753efeb5e");
+                match fields {
+                    "uuid,driver_version,persistence_mode,power.limit" => Some(
+                        "GPU-ce87fa7e-0dd6-4e65-3505-7b0753efeb5e, 610.43.03, Enabled, 360.00\n"
+                            .to_string(),
+                    ),
+                    "clocks.applications.graphics,clocks.applications.memory" => None,
+                    unexpected => panic!("unexpected nvidia-smi query: {unexpected}"),
                 }
-                "clocks.applications.graphics,clocks.applications.memory" => None,
-                unexpected => panic!("unexpected nvidia-smi query: {unexpected}"),
             });
 
-        assert_eq!(uuid.as_deref(), Some("GPU-test"));
+        assert_eq!(
+            uuid.as_deref(),
+            Some("GPU-ce87fa7e-0dd6-4e65-3505-7b0753efeb5e")
+        );
         assert_eq!(driver_version.as_deref(), Some("610.43.03"));
         assert_eq!(controls.persistence_mode.as_deref(), Some("Enabled"));
         assert_eq!(controls.graphics_clock_mhz, None);
         assert_eq!(controls.memory_clock_mhz, None);
         assert_eq!(controls.power_limit_w, Some(360.0));
+    }
+
+    #[test]
+    fn power_clock_probe_without_selected_gpu_is_unavailable() {
+        let (uuid, driver_version, controls) =
+            probe_power_clock_with_optional_query(None, |_, _| {
+                panic!("nvidia-smi query must not run without a selected GPU")
+            });
+
+        assert_eq!(uuid, None);
+        assert_eq!(driver_version, None);
+        assert_eq!(controls, PowerClockControls::unavailable());
+    }
+
+    #[test]
+    fn mig_uuid_uses_mig_selector_after_gpu_selector_is_rejected() {
+        let selected = CudaDeviceUuid::from_bytes([
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+            0xff, 0x00,
+        ]);
+        let mut selectors = Vec::new();
+
+        let (uuid, driver_version, controls) =
+            probe_power_clock_with_query(&selected, |selector, fields| {
+                selectors.push(selector.to_string());
+                match (selector, fields) {
+                    ("GPU-11223344-5566-7788-99aa-bbccddeeff00", _) => None,
+                    (
+                        "MIG-11223344-5566-7788-99aa-bbccddeeff00",
+                        "uuid,driver_version,persistence_mode,power.limit",
+                    ) => Some(
+                        "MIG-11223344-5566-7788-99aa-bbccddeeff00, 610.43.03, N/A, N/A\n"
+                            .to_string(),
+                    ),
+                    (
+                        "MIG-11223344-5566-7788-99aa-bbccddeeff00",
+                        "clocks.applications.graphics,clocks.applications.memory",
+                    ) => None,
+                    unexpected => panic!("unexpected query: {unexpected:?}"),
+                }
+            });
+
+        assert_eq!(
+            selectors,
+            vec![
+                "GPU-11223344-5566-7788-99aa-bbccddeeff00",
+                "MIG-11223344-5566-7788-99aa-bbccddeeff00",
+                "MIG-11223344-5566-7788-99aa-bbccddeeff00",
+            ]
+        );
+        assert_eq!(
+            uuid.as_deref(),
+            Some("MIG-11223344-5566-7788-99aa-bbccddeeff00")
+        );
+        assert_eq!(driver_version.as_deref(), Some("610.43.03"));
+        assert_eq!(controls, PowerClockControls::unavailable());
+    }
+
+    #[test]
+    fn cuda_uuid_is_retained_when_nvidia_smi_enrichment_fails() {
+        let selected = CudaDeviceUuid::from_bytes([
+            0xce, 0x87, 0xfa, 0x7e, 0x0d, 0xd6, 0x4e, 0x65, 0x35, 0x05, 0x7b, 0x07, 0x53, 0xef,
+            0xeb, 0x5e,
+        ]);
+
+        let (uuid, driver_version, controls) = probe_power_clock_with_query(&selected, |_, _| None);
+
+        assert_eq!(
+            uuid.as_deref(),
+            Some("ce87fa7e-0dd6-4e65-3505-7b0753efeb5e")
+        );
+        assert_eq!(driver_version, None);
+        assert_eq!(controls, PowerClockControls::unavailable());
     }
 
     #[test]

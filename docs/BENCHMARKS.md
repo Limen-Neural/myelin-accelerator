@@ -43,7 +43,12 @@ the exact rustc/nvcc versions selected at build time. It also records
 GPUs where application-clock controls are unsupported or deprecated record
 those clock fields as `null` rather than substituting a post-run idle-clock
 snapshot. Failure to query those optional clock fields does not discard the
-stable UUID, driver, persistence-mode, or power-limit fields.
+stable UUID, driver, persistence-mode, or power-limit fields. The CUDA-selected
+device UUID is used to resolve either the canonical `GPU-…` or `MIG-…`
+`nvidia-smi` selector, so `CUDA_VISIBLE_DEVICES` remapping cannot mix metadata
+from another device. If `nvidia-smi` enrichment fails, the authoritative CUDA
+UUID is retained without an assumed namespace prefix. CPU-only runs leave all
+device and power/clock fields unavailable.
 
 ## Compare (informational)
 
