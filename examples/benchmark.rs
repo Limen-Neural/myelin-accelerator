@@ -867,6 +867,7 @@ fn bench_ternary_gpu(acc: &myelin_accelerator::GpuAccelerator, config: &Config) 
     results
 }
 
+#[cfg(any(feature = "cuda", test))]
 fn host_benchmark_iterations(config: &Config) -> usize {
     config
         .iterations
