@@ -641,6 +641,46 @@ mod tests {
     }
 
     #[test]
+    fn canonical_manifest_preserves_numeric_secret_like_dimension_values() {
+        let dir = std::env::temp_dir().join(format!(
+            "myelin-manifest-typed-redaction-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("out.manifest.json");
+        let manifest = BenchmarkManifest::new(
+            RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![ManifestCase::from_samples(
+                "typed-dimensions",
+                "host",
+                BTreeMap::from([
+                    ("token_count".to_string(), 128),
+                    ("num_tokens".to_string(), 256),
+                ]),
+                None,
+                1,
+                vec![100.0; 8],
+            )],
+        );
+
+        write_canonical_manifest(&path, &manifest).expect("write manifest");
+
+        let text = std::fs::read_to_string(&path).expect("read manifest");
+        let parsed: BenchmarkManifest = serde_json::from_str(&text).expect("reparse manifest");
+        assert_eq!(parsed.cases[0].input_dimensions["token_count"], 128);
+        assert_eq!(parsed.cases[0].input_dimensions["num_tokens"], 256);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn power_clock_probe_preserves_stable_fields_when_application_clocks_fail() {
         let selected = CudaDeviceUuid::from_bytes([
             0xce, 0x87, 0xfa, 0x7e, 0x0d, 0xd6, 0x4e, 0x65, 0x35, 0x05, 0x7b, 0x07, 0x53, 0xef,

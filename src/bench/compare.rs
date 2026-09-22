@@ -91,6 +91,8 @@ pub enum ComparisonRejectionReason {
     MissingCurrentCase,
     BuildProfileMismatch,
     HardwareIdentityMismatch,
+    PowerClockMismatch,
+    HostIdentityMismatch,
     FeatureSetMismatch,
     WarmupMismatch,
     WorkloadMetadataMismatch,

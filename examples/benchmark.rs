@@ -49,10 +49,10 @@
 
 use myelin_accelerator::bench::{
     BenchmarkManifest, ComparisonCase, ComparisonRejection, ComparisonRejectionReason,
-    CudaDeviceUuid, DeviceIdentity, MANIFEST_SCHEMA_VERSION, ManifestCase, RegressionBudget,
-    RegressionClass, SampleSource, SampleStats, capture_toolchain, compare_one, comparison_report,
-    enforce_budget_requested, paths_refer_to_same_file, probe_power_clock, write_atomic_bytes,
-    write_canonical_json, write_canonical_manifest,
+    CudaDeviceUuid, DeviceIdentity, MANIFEST_SCHEMA_VERSION, ManifestCase, PowerClockControls,
+    RegressionBudget, RegressionClass, SampleSource, SampleStats, capture_toolchain, compare_one,
+    comparison_report, enforce_budget_requested, paths_refer_to_same_file, probe_power_clock,
+    write_atomic_bytes, write_canonical_json, write_canonical_manifest,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -941,6 +941,27 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
             case_name: None,
         });
     }
+    let power_clock_mismatch = baseline
+        .power_clock
+        .as_ref()
+        .is_some_and(|controls| controls != &current.power_clock);
+    if power_clock_mismatch {
+        eprintln!("[bench] GPU control mismatch: baseline and current power/clock settings differ");
+        rejections.push(ComparisonRejection {
+            reason: ComparisonRejectionReason::PowerClockMismatch,
+            case_name: None,
+        });
+    }
+    let host_identity_mismatch = baseline.host_identity.as_ref().is_some_and(|host| {
+        host.arch != current.toolchain.host_arch || host.os != current.toolchain.host_os
+    });
+    if host_identity_mismatch {
+        eprintln!("[bench] Host identity mismatch: baseline and current architecture/OS differ");
+        rejections.push(ComparisonRejection {
+            reason: ComparisonRejectionReason::HostIdentityMismatch,
+            case_name: None,
+        });
+    }
     let feature_set_mismatch = baseline
         .features
         .as_ref()
@@ -980,8 +1001,11 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
 
     let mut cases: Vec<ComparisonCase> = Vec::new();
     let mut mismatched_workloads = Vec::new();
-    let run_provenance_mismatch =
-        build_profile_mismatch || hardware_identity_mismatch || feature_set_mismatch;
+    let run_provenance_mismatch = build_profile_mismatch
+        || hardware_identity_mismatch
+        || power_clock_mismatch
+        || host_identity_mismatch
+        || feature_set_mismatch;
     for curr in current_cases {
         if duplicate_baseline_names.contains(&curr.name)
             || duplicate_current_names.contains(&curr.name)
@@ -1124,10 +1148,17 @@ struct BuildProfile {
     debug_assertions: bool,
 }
 
+struct HostIdentity {
+    arch: String,
+    os: String,
+}
+
 struct LoadedBaseline {
     rows: Vec<BaselineRow>,
     build_profile: Option<BuildProfile>,
     device: Option<DeviceIdentity>,
+    power_clock: Option<PowerClockControls>,
+    host_identity: Option<HostIdentity>,
     features: Option<Vec<String>>,
 }
 
@@ -1178,7 +1209,12 @@ fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
             opt_level: manifest.toolchain.opt_level,
             debug_assertions: manifest.toolchain.debug_assertions,
         };
+        let host_identity = HostIdentity {
+            arch: manifest.toolchain.host_arch.clone(),
+            os: manifest.toolchain.host_os.clone(),
+        };
         let device = manifest.device;
+        let power_clock = manifest.power_clock;
         let features = manifest.features;
         let rows = manifest
             .cases
@@ -1209,6 +1245,8 @@ fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
             rows,
             build_profile: Some(build_profile),
             device: Some(device),
+            power_clock: Some(power_clock),
+            host_identity: Some(host_identity),
             features: Some(features),
         });
     }
@@ -1243,6 +1281,8 @@ fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
         rows,
         build_profile: None,
         device: None,
+        power_clock: None,
+        host_identity: None,
         features: None,
     })
 }
@@ -1756,6 +1796,82 @@ mod tests {
         assert_eq!(
             rejection_reasons(&report),
             vec!["feature_set_mismatch", "no_comparable_cases"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_rejects_mismatched_power_clock_controls() {
+        let dir = temp_dir("power-clock-mismatch");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let mut baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case.clone()],
+        );
+        baseline.power_clock.power_limit_w = Some(300.0);
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline).expect("serialize manifest"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_cases_with_baseline(&[baseline_case], &config), 1);
+        let report = comparison_json(&config.output_prefix);
+        assert_eq!(report["gate_passed"], false);
+        assert_eq!(
+            rejection_reasons(&report),
+            vec!["power_clock_mismatch", "no_comparable_cases"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_rejects_mismatched_host_identity() {
+        let dir = temp_dir("host-identity-mismatch");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let mut baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case.clone()],
+        );
+        baseline.toolchain.host_arch = "definitely-not-the-current-arch".to_string();
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline).expect("serialize manifest"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_cases_with_baseline(&[baseline_case], &config), 1);
+        let report = comparison_json(&config.output_prefix);
+        assert_eq!(report["gate_passed"], false);
+        assert_eq!(
+            rejection_reasons(&report),
+            vec!["host_identity_mismatch", "no_comparable_cases"]
         );
         let _ = std::fs::remove_dir_all(dir);
     }

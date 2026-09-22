@@ -69,10 +69,33 @@ pub fn canonicalize_json_value(value: Value, ctx: &RedactionContext) -> Value {
             for key in keys {
                 let val = map.get(&key).cloned().unwrap_or(Value::Null);
                 if key_looks_secret(&key) {
-                    out.insert(key, Value::String("$REDACTED".into()));
+                    out.insert(key, redact_secret_value_preserving_types(val));
                 } else {
                     out.insert(key, canonicalize_json_value(val, ctx));
                 }
+            }
+            Value::Object(out)
+        }
+        other => other,
+    }
+}
+
+fn redact_secret_value_preserving_types(value: Value) -> Value {
+    match value {
+        Value::String(_) => Value::String("$REDACTED".into()),
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(redact_secret_value_preserving_types)
+                .collect(),
+        ),
+        Value::Object(map) => {
+            let mut keys: Vec<String> = map.keys().cloned().collect();
+            keys.sort();
+            let mut out = Map::new();
+            for key in keys {
+                let val = map.get(&key).cloned().unwrap_or(Value::Null);
+                out.insert(key, redact_secret_value_preserving_types(val));
             }
             Value::Object(out)
         }
