@@ -868,11 +868,10 @@ fn bench_ternary_gpu(acc: &myelin_accelerator::GpuAccelerator, config: &Config) 
 }
 
 fn host_benchmark_iterations(config: &Config) -> usize {
-    if config.enforce_budget {
-        config.iterations
-    } else {
-        config.iterations.min(50)
-    }
+    config
+        .iterations
+        .min(50)
+        .max(config.budget.min_samples.min(config.iterations))
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -2665,7 +2664,13 @@ mod tests {
             enforce_budget: false,
             ..config
         };
-        assert_eq!(host_benchmark_iterations(&informational), 50);
+        assert_eq!(host_benchmark_iterations(&informational), 100);
+
+        let capped_informational = Config {
+            budget: RegressionBudget::default(),
+            ..informational
+        };
+        assert_eq!(host_benchmark_iterations(&capped_informational), 50);
     }
 
     #[test]
