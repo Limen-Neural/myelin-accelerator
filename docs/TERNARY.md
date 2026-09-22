@@ -143,6 +143,9 @@ CUDA_NVCC=/usr/local/cuda/bin/nvcc \
 Rows include `ternary_gemv_1024x4096`, `ternary_gemv_1024x4096_skip_zeros`,
 `ternary_gemm_256x1024x64`, and a host dense f32 GEMV compare.
 
+Each run also writes `{prefix}.manifest.json`. Recording, comparing, and
+refreshing baselines is documented in [BENCHMARKS.md](BENCHMARKS.md).
+
 ### Profiling (optional local gate)
 
 NVTX ranges: `ternary_gemv` / `ternary_gemm` (feature `cuda`).

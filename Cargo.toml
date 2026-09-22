@@ -15,15 +15,20 @@ path = "src/lib.rs"
 default = []
 # nvtx ranges under the cuda feature (kernel load + ternary launch wrappers).
 cuda = ["dep:cust", "dep:nvtx"]
-bench = ["dep:serde", "dep:serde_json"]
+# Example harness flag. Kept so existing `--features bench` commands stay
+# valid; serde is always on so CPU CI can validate manifest schema.
+bench = []
 
 [dependencies]
 cust      = { version = "0.3.2", optional = true }
 anyhow    = { version = "1", features = ["backtrace"] }
 tracing   = "0.1"
-serde     = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
+serde     = { version = "1", features = ["derive"] }
+serde_json = "1"
 nvtx      = { version = "1", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 proptest = "1"

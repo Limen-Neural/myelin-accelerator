@@ -240,6 +240,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "windows-sys",
 ]
 
 [[package]]

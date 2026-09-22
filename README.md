@@ -24,13 +24,15 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 | `src/lib.rs` | Crate root re-exports | yes |
 | `src/bitpacking.rs` | Host binary/ternary pack/unpack, scales, ref GEMV/GEMM | yes (`bitpacking`) |
 | `src/oracle.rs` | Scalar CPU oracles + seed/shape mismatch helpers | yes (`oracle`) |
+| `src/bench/` | Manifest schema, redaction, opt-in regression budgets | yes (`bench`) |
 | `src/gpu/` | CUDA context, PTX load, buffers, launches | via re-exports when `cuda` |
 | `src/gpu_stub.rs` | CPU-safe stand-ins without toolkit | used when `cuda` off |
 | `cu/*.cu` | Device kernels (spiking, similarity, SAT, ternary) | via PTX + wrappers |
-| `examples/benchmark.rs` | Latency / GPU info harness | feature `bench` (+ `cuda` for GPU) |
+| `examples/benchmark.rs` | Latency / GPU info harness + versioned manifest | feature `bench` (+ `cuda` for GPU) |
 | `build.rs` / `CMakeLists.txt` | `nvcc -ptx` quality path | build-only |
 | `docs/ARCHITECTURE.md` | Ownership + API boundary | docs |
 | `docs/TERNARY.md` | Ternary encoding, scales, GOZ1 interop, kernels | docs |
+| `docs/BENCHMARKS.md` | Record / compare / refresh baselines; opt-in budgets | docs |
 
 ### Features
 
@@ -38,11 +40,11 @@ This repo is the **low-level compute layer** behind the stack: CUDA PTX modules,
 |---------|---------|
 | *(default)* | Stub GPU API; no `nvcc` |
 | `cuda` | Real GPU path (`cust`, `nvtx`) |
-| `bench` | Benchmark example serde deps |
+| `bench` | Benchmark example (`required-features`); serde is always available for manifest schema tests |
 
 ### Public symbols (crate root)
 
-`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError`, plus capability types (`probe_capabilities`, `CapabilityReport`, `ExecutionPolicy`, `FallbackReason`, `Backend`, …) and the `bitpacking` module. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError`, plus capability types (`probe_capabilities`, `CapabilityReport`, `ExecutionPolicy`, `FallbackReason`, `Backend`, …) and the `bitpacking`, `oracle`, and `bench` modules. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## What Changed
 
@@ -86,6 +88,10 @@ assert_eq!(
 let packed = bitpacking::pack_ternary(&[-1, 0, 1, 1]);
 let _ = packed;
 ```
+
+See **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** for recording a run, comparing
+against a committed baseline, and refreshing that baseline as a reviewable file
+change. Ordinary CI does not enforce hardware budgets.
 
 CPU-safe checks:
 
