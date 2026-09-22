@@ -50,7 +50,7 @@
 use myelin_accelerator::bench::{
     BenchmarkManifest, ComparisonCase, ComparisonRejection, ComparisonRejectionReason,
     CudaDeviceUuid, DeviceIdentity, MANIFEST_SCHEMA_VERSION, ManifestCase, RegressionBudget,
-    RegressionClass, SampleSource, SampleStats, compare_one, comparison_report,
+    RegressionClass, SampleSource, SampleStats, capture_toolchain, compare_one, comparison_report,
     enforce_budget_requested, paths_refer_to_same_file, probe_power_clock, write_canonical_json,
     write_canonical_manifest,
 };
@@ -875,8 +875,8 @@ fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
         return write_rejected_comparison(config, ComparisonRejectionReason::BaselineReadFailure);
     };
 
-    let rows = match load_baseline_rows(&data) {
-        Ok(rows) => rows,
+    let baseline = match load_baseline_rows(&data) {
+        Ok(baseline) => baseline,
         Err(err) => {
             eprintln!("[bench] Could not parse baseline JSON: {err}");
             return write_rejected_comparison(
@@ -885,6 +885,7 @@ fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
             );
         }
     };
+    let rows = baseline.rows;
 
     println!("\n{:=>70}", "");
     println!("  Baseline comparison: {baseline_path}");
@@ -913,6 +914,20 @@ fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
     }
 
     let mut rejections = Vec::new();
+    let current_toolchain = capture_toolchain();
+    let build_profile_mismatch = baseline.build_profile.as_ref().is_some_and(|profile| {
+        profile.opt_level != current_toolchain.opt_level
+            || profile.debug_assertions != current_toolchain.debug_assertions
+    });
+    if build_profile_mismatch {
+        eprintln!(
+            "[bench] Build profile mismatch: baseline and current opt-level/debug-assertion settings differ"
+        );
+        rejections.push(ComparisonRejection {
+            reason: ComparisonRejectionReason::BuildProfileMismatch,
+            case_name: None,
+        });
+    }
     for name in &duplicate_baseline_names {
         rejections.push(ComparisonRejection {
             reason: ComparisonRejectionReason::DuplicateBaselineName,
@@ -950,6 +965,21 @@ fn compare_with_baseline(current: &[ManifestCase], config: &Config) -> i32 {
         let Some(base) = rows.iter().find(|r| r.name == curr.name) else {
             continue;
         };
+        if build_profile_mismatch {
+            continue;
+        }
+        if base.warmup.is_some_and(|warmup| warmup != curr.warmup) {
+            eprintln!(
+                "[bench] Warmup mismatch for {}: baseline and current warmup counts differ",
+                curr.name
+            );
+            mismatched_workloads.push(curr.name.as_str());
+            rejections.push(ComparisonRejection {
+                reason: ComparisonRejectionReason::WarmupMismatch,
+                case_name: Some(curr.name.clone()),
+            });
+            continue;
+        }
         if !base.matches_workload(curr) {
             eprintln!(
                 "[bench] Workload metadata mismatch for {}: baseline and current kernel variant/input dimensions/seed differ",
@@ -1057,9 +1087,20 @@ struct BaselineRow {
     kernel_variant: Option<String>,
     input_dimensions: Option<BTreeMap<String, i64>>,
     seed: Option<u64>,
+    warmup: Option<usize>,
     samples_us: Vec<f64>,
     stats: SampleStats,
     dispersion_known: bool,
+}
+
+struct BuildProfile {
+    opt_level: String,
+    debug_assertions: bool,
+}
+
+struct LoadedBaseline {
+    rows: Vec<BaselineRow>,
+    build_profile: Option<BuildProfile>,
 }
 
 impl BaselineRow {
@@ -1085,7 +1126,7 @@ impl BaselineRow {
     }
 }
 
-fn load_baseline_rows(data: &str) -> Result<Vec<BaselineRow>, String> {
+fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
     if let Ok(manifest) = serde_json::from_str::<BenchmarkManifest>(data) {
         if manifest.schema_version != MANIFEST_SCHEMA_VERSION {
             return Err(format!(
@@ -1093,7 +1134,11 @@ fn load_baseline_rows(data: &str) -> Result<Vec<BaselineRow>, String> {
                 manifest.schema_version, MANIFEST_SCHEMA_VERSION
             ));
         }
-        return Ok(manifest
+        let build_profile = BuildProfile {
+            opt_level: manifest.toolchain.opt_level,
+            debug_assertions: manifest.toolchain.debug_assertions,
+        };
+        let rows = manifest
             .cases
             .into_iter()
             .map(|c| BaselineRow {
@@ -1101,6 +1146,7 @@ fn load_baseline_rows(data: &str) -> Result<Vec<BaselineRow>, String> {
                 kernel_variant: Some(c.kernel_variant),
                 input_dimensions: Some(c.input_dimensions),
                 seed: c.seed,
+                warmup: Some(c.warmup),
                 stats: SampleStats {
                     n: c.samples,
                     mean: c.mean_us,
@@ -1116,10 +1162,15 @@ fn load_baseline_rows(data: &str) -> Result<Vec<BaselineRow>, String> {
                 samples_us: c.samples_us,
                 dispersion_known: true,
             })
-            .collect());
+            .collect();
+        return Ok(LoadedBaseline {
+            rows,
+            build_profile: Some(build_profile),
+        });
     }
     let report: BenchmarkReport = serde_json::from_str(data).map_err(|e| e.to_string())?;
-    Ok(report
+    let warmup = report.config.warmup;
+    let rows = report
         .results
         .into_iter()
         .map(|r| BaselineRow {
@@ -1127,6 +1178,7 @@ fn load_baseline_rows(data: &str) -> Result<Vec<BaselineRow>, String> {
             kernel_variant: None,
             input_dimensions: None,
             seed: None,
+            warmup: Some(warmup),
             samples_us: Vec::new(),
             dispersion_known: false,
             stats: SampleStats {
@@ -1142,7 +1194,11 @@ fn load_baseline_rows(data: &str) -> Result<Vec<BaselineRow>, String> {
                 p99: r.p99_us,
             },
         })
-        .collect())
+        .collect();
+    Ok(LoadedBaseline {
+        rows,
+        build_profile: None,
+    })
 }
 
 fn class_label(class: RegressionClass) -> &'static str {
@@ -1478,12 +1534,13 @@ mod tests {
             },
             results: vec![legacy_result("legacy", 100.0)],
         };
-        let rows = load_baseline_rows(&serde_json::to_string(&legacy).expect("serialize legacy"))
-            .expect("load legacy baseline");
+        let baseline =
+            load_baseline_rows(&serde_json::to_string(&legacy).expect("serialize legacy"))
+                .expect("load legacy baseline");
         let current = vec![130.0; 8];
         let comparison = compare_one(
             "legacy",
-            rows[0].source(),
+            baseline.rows[0].source(),
             SampleSource::Samples(&current),
             &RegressionBudget::default(),
         );
@@ -1527,6 +1584,83 @@ mod tests {
         assert_eq!(
             rejection_reasons(&report),
             vec!["workload_metadata_mismatch", "no_comparable_cases"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_rejects_mismatched_build_profile() {
+        let dir = temp_dir("build-profile-mismatch");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let mut baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case.clone()],
+        );
+        baseline.toolchain.opt_level = format!("{}-different", baseline.toolchain.opt_level);
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline).expect("serialize manifest"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_with_baseline(&[baseline_case], &config), 1);
+        let report = comparison_json(&config.output_prefix);
+        assert_eq!(report["gate_passed"], false);
+        assert_eq!(
+            rejection_reasons(&report),
+            vec!["build_profile_mismatch", "no_comparable_cases"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_rejects_mismatched_warmup_count() {
+        let dir = temp_dir("warmup-mismatch");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let mut baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        baseline_case.warmup = 2;
+        let baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 2,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case],
+        );
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline).expect("serialize manifest"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+        let current = manifest_case("same-name", "variant", 128, 100.0);
+
+        assert_eq!(compare_with_baseline(&[current], &config), 1);
+        let report = comparison_json(&config.output_prefix);
+        assert_eq!(report["gate_passed"], false);
+        assert_eq!(
+            rejection_reasons(&report),
+            vec!["warmup_mismatch", "no_comparable_cases"]
         );
         let _ = std::fs::remove_dir_all(dir);
     }

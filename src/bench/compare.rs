@@ -89,6 +89,8 @@ pub enum ComparisonRejectionReason {
     BaselineReadFailure,
     BaselineParseFailure,
     MissingCurrentCase,
+    BuildProfileMismatch,
+    WarmupMismatch,
     WorkloadMetadataMismatch,
     DuplicateBaselineName,
     DuplicateCurrentName,

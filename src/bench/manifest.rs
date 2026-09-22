@@ -7,8 +7,10 @@ use crate::bench::redact::{RedactionContext, redact_and_canonicalize};
 use crate::bench::stats::{SampleStats, sample_stats};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Manifest schema version emitted by this crate.
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -399,6 +401,8 @@ fn lexical_absolute(path: &Path) -> PathBuf {
 }
 
 fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
+
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -406,15 +410,35 @@ fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> 
     let name = path
         .file_name()
         .unwrap_or_else(|| std::ffi::OsStr::new("manifest.json"));
-    let tmp = dir.join(format!(
-        ".{}.tmp.{}",
-        name.to_string_lossy(),
-        std::process::id()
-    ));
-    if let Err(err) = std::fs::write(&tmp, contents) {
+    let (tmp, mut file) = loop {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let nonce = TEMP_NONCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = dir.join(format!(
+            ".{}.tmp.{}.{}.{}",
+            name.to_string_lossy(),
+            std::process::id(),
+            timestamp,
+            nonce
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => break (candidate, file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    };
+    if let Err(err) = file.write_all(contents.as_ref()) {
+        drop(file);
         let _ = std::fs::remove_file(&tmp);
         return Err(err);
     }
+    drop(file);
     match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
         Err(err) => {
@@ -572,6 +596,45 @@ mod tests {
             .filter_map(|e| e.ok())
             .count();
         assert_eq!(leftover, 1, "temp sibling must be renamed away");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_canonical_manifest_does_not_follow_predictable_temp_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!(
+            "myelin-manifest-symlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("out.manifest.json");
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "do not overwrite").expect("victim");
+        let predictable_tmp = dir.join(format!(".out.manifest.json.tmp.{}", std::process::id()));
+        symlink(&victim, &predictable_tmp).expect("predictable temp symlink");
+        let manifest = BenchmarkManifest::new(
+            RunTiming {
+                warmup: 0,
+                samples: 0,
+                seed: None,
+            },
+            vec![],
+        );
+
+        write_canonical_manifest(&path, &manifest).expect("safe atomic write");
+
+        assert_eq!(
+            std::fs::read_to_string(&victim).expect("read victim"),
+            "do not overwrite"
+        );
+        let text = std::fs::read_to_string(&path).expect("read manifest");
+        serde_json::from_str::<BenchmarkManifest>(&text).expect("complete JSON");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
