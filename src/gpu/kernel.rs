@@ -18,8 +18,10 @@
 //  so consumers can profile the unfused baseline via get_function.
 // ════════════════════════════════════════════════════════════════════
 
+use crate::capability::{KernelAvailability, sanitize_diagnostic};
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::launch_hook::{LaunchFailure, LaunchType, report_launch_failure};
+use cust::error::CudaError;
 use cust::function::Function;
 use cust::module::Module;
 use cust::sys as cuda;
@@ -86,39 +88,65 @@ pub struct KernelModule {
     func_map: HashMap<String, String>,
 }
 
+pub(crate) struct KernelLoadFailure {
+    pub(crate) error: GpuError,
+    pub(crate) availability: KernelAvailability,
+}
+
 impl KernelModule {
     /// Load all modules from their compile-time-embedded images.
     ///
     /// On sm_120 hardware the driver picks precompiled SASS from the fatbin.
     /// Embedded PTX is used only when SASS is missing or incompatible.
     pub fn load() -> GpuResult<Self> {
+        Self::load_with_availability().map_err(|failure| failure.error)
+    }
+
+    pub(crate) fn load_with_availability() -> Result<Self, KernelLoadFailure> {
         range_push!("KernelModule::load");
         let result = Self::load_inner();
         range_pop!();
         result
     }
 
-    fn load_inner() -> GpuResult<Self> {
+    fn load_inner() -> Result<Self, KernelLoadFailure> {
         let mut modules = HashMap::new();
         let mut func_map = HashMap::new();
+        let mut availability = KernelAvailability::compiled_unverified();
 
-        Self::load_and_map(
+        if let Err(error) = Self::load_and_map(
             &mut modules,
             &mut func_map,
             SPIKING_NETWORK_FATBIN,
             SPIKING_NETWORK_PTX,
             "spiking_network",
             SPIKING_NETWORK_SYMBOLS,
-        )?;
-        Self::load_and_map(
+        ) {
+            availability.spiking_network = Some(false);
+            return Err(KernelLoadFailure {
+                error,
+                availability,
+            });
+        }
+        availability.spiking_network = Some(true);
+
+        if let Err(error) = Self::load_and_map(
             &mut modules,
             &mut func_map,
             VECTOR_SIMILARITY_FATBIN,
             VECTOR_SIMILARITY_PTX,
             "vector_similarity",
             &["cosine_similarity_batched", "cosine_similarity_top_k"],
-        )?;
-        Self::load_and_map(
+        ) {
+            availability.vector_similarity = Some(false);
+            return Err(KernelLoadFailure {
+                error,
+                availability,
+            });
+        }
+        availability.vector_similarity = Some(true);
+
+        if let Err(error) = Self::load_and_map(
             &mut modules,
             &mut func_map,
             SATSOLVER_FATBIN,
@@ -133,15 +161,29 @@ impl KernelModule {
                 "satsolver_best_reduce_pass1",
                 "satsolver_best_reduce_pass2",
             ],
-        )?;
-        Self::load_and_map(
+        ) {
+            availability.satsolver = Some(false);
+            return Err(KernelLoadFailure {
+                error,
+                availability,
+            });
+        }
+        availability.satsolver = Some(true);
+
+        if let Err(error) = Self::load_and_map(
             &mut modules,
             &mut func_map,
             TERNARY_GEMM_FATBIN,
             TERNARY_GEMM_PTX,
             "ternary_gemm",
             &["ternary_gemv", "ternary_gemm"],
-        )?;
+        ) {
+            availability.ternary_gemm = Some(false);
+            return Err(KernelLoadFailure {
+                error,
+                availability,
+            });
+        }
 
         Ok(Self { modules, func_map })
     }

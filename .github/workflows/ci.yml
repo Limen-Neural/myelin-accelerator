@@ -69,6 +69,9 @@ jobs:
       - name: Cargo test (experimental saaq)
         run: cargo test --locked --features saaq
 
+      - name: Benchmark harness tests
+        run: cargo test --locked --features bench --example benchmark
+
       - name: Cargo build without default features
         run: cargo build --locked --no-default-features
 

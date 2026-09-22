@@ -1,0 +1,1332 @@
+// Copyright 2026 Raul Montoya Cardenas
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Structured CUDA capability probes and fallback reason codes.
+//!
+//! Call [`probe_capabilities`] before launching work. Selection follows one
+//! documented policy ([`ExecutionPolicy`]):
+//!
+//! * [`ExecutionPolicy::PreferGpu`] — caller-approved CPU fallback, recorded
+//!   as a [`FallbackRecord`].
+//! * [`ExecutionPolicy::RequireGpu`] — fail closed; never execute on CPU.
+//!
+//! Decision table (first matching row wins):
+//!
+//! | `cuda_built` | runtime | device | CC meets PTX target | PTX compiled | kernel runtime | selected | reason |
+//! |--------------|---------|--------|-----------|--------------|----------------|----------|--------|
+//! | false | * | * | * | * | * | `Cpu` | `cuda_feature_not_built` |
+//! | true | false | * | * | * | * | `Cpu` | `driver_runtime_failure` |
+//! | true | true | false | * | * | * | `Cpu` | `device_unavailable` |
+//! | true | true | true | missing | * | * | `Cpu` | `driver_runtime_failure` |
+//! | true | true | true | false | * | * | `Cpu` | `unsupported_hardware` |
+//! | true | true | true | true | false | * | `Cpu` | `cuda_feature_not_built` |
+//! | true | true | true | true | true | any `false` | `Cpu` | `kernel_specialization_unavailable` |
+//! | true | true | true | true | true | any unknown | `Cpu` | `kernel_specialization_unavailable` |
+//! | true | true | true | true | true | all `true` | `Cuda` | — |
+//!
+//! `invalid_input` is a request-level reason (bad launch arguments), not a
+//! host-probe outcome. Stream setup can still fail after a successful probe
+//! with `driver_runtime_failure` while leaving observed runtime/device/kernel
+//! facts intact.
+
+use std::fmt;
+
+/// Selected implementation for a probe or accelerator instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Backend {
+    /// CUDA device kernels (requires the `cuda` feature and a usable GPU).
+    Cuda,
+    /// Host/CPU path (stub buffers, no device launches).
+    Cpu,
+}
+
+impl Backend {
+    /// Stable telemetry token.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Cuda => "cuda",
+            Self::Cpu => "cpu",
+        }
+    }
+}
+
+impl fmt::Display for Backend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// How public entry points choose a backend when GPU is unusable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExecutionPolicy {
+    /// Use GPU when capable; otherwise CPU with an explicit [`FallbackRecord`].
+    PreferGpu,
+    /// Require GPU. Construction and launch fail; CPU is never selected.
+    RequireGpu,
+}
+
+impl ExecutionPolicy {
+    /// Stable telemetry token.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::PreferGpu => "prefer_gpu",
+            Self::RequireGpu => "require_gpu",
+        }
+    }
+}
+
+impl fmt::Display for ExecutionPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// Stable reason code explaining why GPU was not selected (or why a request failed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FallbackReason {
+    /// Built without the `cuda` Cargo feature (PTX/kernels not compiled in).
+    CudaFeatureNotBuilt,
+    /// CUDA driver/runtime init or post-init stream setup failed.
+    DriverRuntimeFailure,
+    /// No accessible CUDA device.
+    DeviceUnavailable,
+    /// Device compute capability is below [`REQUIRED_COMPUTE_CAPABILITY`].
+    UnsupportedHardware,
+    /// Required PTX family or kernel symbol is missing after JIT.
+    KernelSpecializationUnavailable,
+    /// Caller-supplied launch arguments are invalid.
+    InvalidInput,
+}
+
+impl FallbackReason {
+    /// Stable snake_case code for tests and telemetry.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::CudaFeatureNotBuilt => "cuda_feature_not_built",
+            Self::DriverRuntimeFailure => "driver_runtime_failure",
+            Self::DeviceUnavailable => "device_unavailable",
+            Self::UnsupportedHardware => "unsupported_hardware",
+            Self::KernelSpecializationUnavailable => "kernel_specialization_unavailable",
+            Self::InvalidInput => "invalid_input",
+        }
+    }
+}
+
+impl fmt::Display for FallbackReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// CUDA compute capability (`major.minor`), e.g. Blackwell `12.0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ComputeCapability {
+    pub major: u32,
+    pub minor: u32,
+}
+
+/// Compute-capability floor encoded by the PTX target selected at build time.
+///
+/// This is `12.0` for the default `sm_120` build and follows an explicit
+/// `MYELIN_CUDA_ARCH` override.
+pub const REQUIRED_COMPUTE_CAPABILITY: ComputeCapability =
+    include!(concat!(env!("OUT_DIR"), "/compiled_cuda_capability.rs"));
+
+impl ComputeCapability {
+    /// Same as [`REQUIRED_COMPUTE_CAPABILITY`].
+    pub const REQUIRED: Self = REQUIRED_COMPUTE_CAPABILITY;
+
+    /// `true` when this capability meets the compiled PTX target.
+    ///
+    /// The default floor is `12.0`; `MYELIN_CUDA_ARCH` can select another
+    /// target at build time.
+    pub const fn meets_minimum(self) -> bool {
+        (self.major as u64) * 10 + self.minor as u64
+            >= (Self::REQUIRED.major as u64) * 10 + Self::REQUIRED.minor as u64
+    }
+}
+
+impl fmt::Display for ComputeCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.major, self.minor)
+    }
+}
+
+/// Compile-time and optional runtime availability of the four PTX families.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KernelAvailability {
+    /// PTX for the first-party kernels was compiled into this binary.
+    pub compiled: bool,
+    /// Spiking-network family after JIT, if attempted.
+    pub spiking_network: Option<bool>,
+    /// Vector-similarity family after JIT, if attempted.
+    pub vector_similarity: Option<bool>,
+    /// SAT-solver family after JIT, if attempted.
+    pub satsolver: Option<bool>,
+    /// Ternary GEMV/GEMM family after JIT, if attempted.
+    pub ternary_gemm: Option<bool>,
+}
+
+impl KernelAvailability {
+    /// Nothing compiled in (CPU-only / stub build).
+    pub const fn not_compiled() -> Self {
+        Self {
+            compiled: false,
+            spiking_network: None,
+            vector_similarity: None,
+            satsolver: None,
+            ternary_gemm: None,
+        }
+    }
+
+    /// PTX is embedded; driver JIT has not been attempted.
+    pub const fn compiled_unverified() -> Self {
+        Self {
+            compiled: true,
+            spiking_network: None,
+            vector_similarity: None,
+            satsolver: None,
+            ternary_gemm: None,
+        }
+    }
+
+    /// All four families JIT-loaded successfully.
+    pub const fn all_available() -> Self {
+        Self {
+            compiled: true,
+            spiking_network: Some(true),
+            vector_similarity: Some(true),
+            satsolver: Some(true),
+            ternary_gemm: Some(true),
+        }
+    }
+
+    /// PTX is present but runtime specialization failed.
+    pub const fn all_unavailable() -> Self {
+        Self {
+            compiled: true,
+            spiking_network: Some(false),
+            vector_similarity: Some(false),
+            satsolver: Some(false),
+            ternary_gemm: Some(false),
+        }
+    }
+
+    /// `true` when a runtime probe reported at least one missing family.
+    pub const fn any_runtime_unavailable(self) -> bool {
+        matches!(self.spiking_network, Some(false))
+            || matches!(self.vector_similarity, Some(false))
+            || matches!(self.satsolver, Some(false))
+            || matches!(self.ternary_gemm, Some(false))
+    }
+
+    /// `true` only after all required PTX families JIT-loaded successfully.
+    pub const fn all_runtime_available(self) -> bool {
+        matches!(self.spiking_network, Some(true))
+            && matches!(self.vector_similarity, Some(true))
+            && matches!(self.satsolver, Some(true))
+            && matches!(self.ternary_gemm, Some(true))
+    }
+}
+
+impl Default for KernelAvailability {
+    fn default() -> Self {
+        Self::not_compiled()
+    }
+}
+
+/// Observable inputs to [`evaluate_capabilities`].
+///
+/// Production code uses [`probe_capabilities`]; tests inject mocks here.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CapabilityFacts {
+    pub cuda_built: bool,
+    pub runtime_available: bool,
+    pub device_available: bool,
+    pub compute_capability: Option<ComputeCapability>,
+    pub kernels: KernelAvailability,
+}
+
+impl CapabilityFacts {
+    /// Honest CPU-only / not-built snapshot.
+    pub const fn not_built() -> Self {
+        Self {
+            cuda_built: false,
+            runtime_available: false,
+            device_available: false,
+            compute_capability: None,
+            kernels: KernelAvailability::not_compiled(),
+        }
+    }
+}
+
+/// Recorded CPU (or reduced-kernel) selection with a stable reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FallbackRecord {
+    pub reason: FallbackReason,
+    pub selected_backend: Backend,
+    /// Path-free, secret-free diagnostic suitable for tests and telemetry.
+    pub detail: String,
+}
+
+impl FallbackRecord {
+    /// CPU fallback with a sanitized detail string.
+    pub fn cpu(reason: FallbackReason, detail: impl Into<String>) -> Self {
+        Self {
+            reason,
+            selected_backend: Backend::Cpu,
+            detail: sanitize_diagnostic(&detail.into()),
+        }
+    }
+}
+
+/// Typed capability snapshot for callers and telemetry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityReport {
+    pub cuda_built: bool,
+    pub runtime_available: bool,
+    pub device_available: bool,
+    pub compute_capability: Option<ComputeCapability>,
+    pub kernels: KernelAvailability,
+    pub selected_backend: Backend,
+    pub fallback: Option<FallbackRecord>,
+}
+
+impl CapabilityReport {
+    /// `true` when CUDA is the selected backend and no fallback was recorded.
+    pub fn gpu_usable(&self) -> bool {
+        self.selected_backend == Backend::Cuda && self.fallback.is_none()
+    }
+
+    /// Apply an execution policy to this probe.
+    ///
+    /// [`ExecutionPolicy::PreferGpu`] returns the selected backend (possibly
+    /// CPU). [`ExecutionPolicy::RequireGpu`] returns `Err` instead of CPU.
+    pub fn select_backend(&self, policy: ExecutionPolicy) -> Result<Backend, FallbackRecord> {
+        match policy {
+            ExecutionPolicy::PreferGpu => Ok(self.selected_backend),
+            ExecutionPolicy::RequireGpu => {
+                if self.gpu_usable() {
+                    Ok(Backend::Cuda)
+                } else {
+                    Err(self.fallback.clone().unwrap_or_else(|| {
+                        FallbackRecord::cpu(
+                            FallbackReason::DeviceUnavailable,
+                            "GPU was required but is not usable",
+                        )
+                    }))
+                }
+            }
+        }
+    }
+}
+
+/// Probe this process, including driver/device checks and required PTX JIT.
+///
+/// A CUDA backend is reported usable only after constructing an accelerator
+/// has verified every required kernel family.
+///
+/// With the `cuda` feature and an available GPU, every call creates a CUDA
+/// context and loads/JIT-validates all four PTX modules. Cache the returned
+/// report instead of probing repeatedly.
+#[must_use]
+pub fn probe_capabilities() -> CapabilityReport {
+    #[cfg(feature = "cuda")]
+    let _restore_current_context = crate::gpu::context::CurrentContextGuard::capture();
+    crate::GpuAccelerator::new().capabilities().clone()
+}
+
+/// Pure decision function over [`CapabilityFacts`] (mocked tests welcome).
+#[must_use]
+pub fn evaluate_capabilities(facts: &CapabilityFacts) -> CapabilityReport {
+    let (selected_backend, fallback) = select_from_facts(facts);
+    CapabilityReport {
+        cuda_built: facts.cuda_built,
+        runtime_available: facts.runtime_available,
+        device_available: facts.device_available,
+        compute_capability: facts.compute_capability,
+        kernels: facts.kernels,
+        selected_backend,
+        fallback,
+    }
+}
+
+/// Overlay a construction-time fallback onto observed [`CapabilityFacts`].
+///
+/// After every kernel family has JIT-loaded, `DriverRuntimeFailure` is treated
+/// as a later stream/setup failure: runtime and device stay available.
+pub(crate) fn apply_failure_to_facts(facts: &mut CapabilityFacts, reason: FallbackReason) {
+    match reason {
+        FallbackReason::CudaFeatureNotBuilt => {
+            facts.cuda_built = false;
+            facts.kernels = KernelAvailability::not_compiled();
+        }
+        FallbackReason::DriverRuntimeFailure => {
+            if !facts.kernels.all_runtime_available() {
+                facts.runtime_available = false;
+            }
+        }
+        FallbackReason::DeviceUnavailable => {
+            facts.device_available = false;
+        }
+        FallbackReason::UnsupportedHardware
+        | FallbackReason::KernelSpecializationUnavailable
+        | FallbackReason::InvalidInput => {}
+    }
+}
+
+fn select_from_facts(facts: &CapabilityFacts) -> (Backend, Option<FallbackRecord>) {
+    if !facts.cuda_built {
+        return cpu(
+            FallbackReason::CudaFeatureNotBuilt,
+            "crate built without the cuda feature",
+        );
+    }
+    if !facts.runtime_available {
+        return cpu(
+            FallbackReason::DriverRuntimeFailure,
+            "CUDA driver or runtime init failed",
+        );
+    }
+    if !facts.device_available {
+        return cpu(
+            FallbackReason::DeviceUnavailable,
+            "no CUDA device is accessible",
+        );
+    }
+    match facts.compute_capability {
+        None => {
+            return cpu(
+                FallbackReason::DriverRuntimeFailure,
+                "compute capability query failed",
+            );
+        }
+        Some(cc) if !cc.meets_minimum() => {
+            return cpu(
+                FallbackReason::UnsupportedHardware,
+                format!(
+                    "compute capability {cc} is below required {}",
+                    ComputeCapability::REQUIRED
+                ),
+            );
+        }
+        Some(_) => {}
+    }
+    if !facts.kernels.compiled {
+        return cpu(
+            FallbackReason::CudaFeatureNotBuilt,
+            "required PTX families were not compiled into this binary",
+        );
+    }
+    if !facts.kernels.all_runtime_available() {
+        return cpu(
+            FallbackReason::KernelSpecializationUnavailable,
+            "required kernel specialization is unavailable",
+        );
+    }
+    (Backend::Cuda, None)
+}
+
+fn cpu(reason: FallbackReason, detail: impl Into<String>) -> (Backend, Option<FallbackRecord>) {
+    (Backend::Cpu, Some(FallbackRecord::cpu(reason, detail)))
+}
+
+/// Strip absolute user paths and obvious secret assignments from diagnostics.
+#[must_use]
+pub fn sanitize_diagnostic(input: &str) -> String {
+    if input.is_empty() {
+        return String::new();
+    }
+    let tokens = diagnostic_tokens(input);
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut index = 0;
+    while index < tokens.len() {
+        if let Some((redacted, consumed)) = redact_authorization_sequence(&tokens[index..]) {
+            out.extend(redacted);
+            index += consumed;
+            continue;
+        }
+        if let Some((redacted, consumed)) = redact_secret_sequence(&tokens[index..]) {
+            out.extend(redacted);
+            index += consumed;
+            continue;
+        }
+        if json_secret_key_without_value(tokens[index]) && index + 1 < tokens.len() {
+            out.push(sanitize_token(tokens[index]));
+            out.push(redact_following_value_token(tokens[index + 1]));
+            index += 2;
+            continue;
+        }
+        out.push(sanitize_token(tokens[index]));
+        index += 1;
+    }
+    out.join(" ")
+}
+
+fn redact_secret_sequence(tokens: &[&str]) -> Option<(Vec<String>, usize)> {
+    let (_, core, suffix) = split_wrapping_punct(tokens[0]);
+    if core.contains('=')
+        || core
+            .split_once(':')
+            .is_some_and(|(_, value)| !value.is_empty())
+        || json_assignment_parts(core).is_some()
+    {
+        return None;
+    }
+    let key = core
+        .trim_end_matches(':')
+        .trim_matches(|ch| matches!(ch, '"' | '\''))
+        .trim_start_matches('-');
+    if key.is_empty()
+        || key.chars().any(char::is_whitespace)
+        || !is_secret_key(&key.to_ascii_lowercase())
+    {
+        return None;
+    }
+
+    let key_has_separator = core.ends_with(':') || suffix.contains(':');
+    if key_has_separator {
+        let value = tokens.get(1)?;
+        return Some((
+            vec![
+                sanitize_token(tokens[0]),
+                redact_following_value_token(value),
+            ],
+            2,
+        ));
+    }
+
+    if matches!(tokens.get(1).copied(), Some("=" | ":")) {
+        let value = tokens.get(2)?;
+        return Some((
+            vec![
+                sanitize_token(tokens[0]),
+                sanitize_token(tokens[1]),
+                redact_following_value_token(value),
+            ],
+            3,
+        ));
+    }
+
+    let value = tokens.get(1)?;
+    Some((
+        vec![
+            sanitize_token(tokens[0]),
+            redact_following_value_token(value),
+        ],
+        2,
+    ))
+}
+
+fn diagnostic_tokens(input: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+
+    for (index, ch) in input.char_indices() {
+        if start.is_none() {
+            if ch.is_whitespace() {
+                continue;
+            }
+            start = Some(index);
+        }
+
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if matches!(ch, '"' | '\'')
+                && quote_opens_group(input, start.expect("token start is set"), index) =>
+            {
+                quote = Some(ch);
+            }
+            None if ch.is_whitespace() => {
+                if let Some(token_start) = start.take() {
+                    tokens.push(&input[token_start..index]);
+                }
+            }
+            None => {}
+        }
+    }
+
+    if let Some(token_start) = start {
+        tokens.push(&input[token_start..]);
+    }
+    tokens
+}
+
+fn quote_opens_group(input: &str, token_start: usize, quote_index: usize) -> bool {
+    let before_quote = &input[token_start..quote_index];
+    before_quote.ends_with('=') || before_quote.chars().all(|ch| matches!(ch, '(' | '[' | '{'))
+}
+
+fn sanitize_token(tok: &str) -> String {
+    if tok.contains([',', ';']) {
+        let mut sanitized = String::with_capacity(tok.len());
+        let mut field_start = 0;
+        for (index, separator) in tok.match_indices([',', ';']) {
+            sanitized.push_str(&sanitize_token(&tok[field_start..index]));
+            sanitized.push_str(separator);
+            field_start = index + separator.len();
+        }
+        sanitized.push_str(&sanitize_token(&tok[field_start..]));
+        return sanitized;
+    }
+    let (prefix, core, suffix) = split_wrapping_punct(tok);
+    let lower = core.to_ascii_lowercase();
+    if is_user_path(&lower) {
+        return format!("{prefix}<path>{suffix}");
+    }
+    if let Some(redacted) = redact_authorization_core(core) {
+        return format!("{prefix}{redacted}{suffix}");
+    }
+    if let Some(redacted) = redact_json_assignment(core) {
+        return format!("{prefix}{redacted}{suffix}");
+    }
+    if let Some((key, value)) = lower.split_once('=') {
+        let orig_key = core.split_once('=').map(|(k, _)| k).unwrap_or(core);
+        let value_quote = value.chars().next().filter(|ch| matches!(ch, '"' | '\''));
+        let bare_value = value_quote
+            .and_then(|quote| value.strip_prefix(quote))
+            .unwrap_or(value);
+        let assignment_suffix = value_quote
+            .and_then(|quote| suffix.strip_prefix(quote))
+            .unwrap_or(suffix);
+        if is_secret_key(key.trim_start_matches('-')) {
+            return format!("{prefix}{orig_key}=<redacted>{assignment_suffix}");
+        }
+        if is_user_path(bare_value) {
+            return format!("{prefix}{orig_key}=<path>{assignment_suffix}");
+        }
+    }
+    if let Some((key, value)) = lower.split_once(':')
+        && !value.is_empty()
+    {
+        let orig_key = core.split_once(':').map(|(key, _)| key).unwrap_or(core);
+        let normalized_key = key.trim_start_matches('-');
+        if is_secret_key(normalized_key) {
+            return format!("{prefix}{orig_key}:<redacted>{suffix}");
+        }
+        if is_user_path(value) {
+            return format!("{prefix}{orig_key}:<path>{suffix}");
+        }
+    }
+    tok.to_string()
+}
+
+fn redact_authorization_sequence(tokens: &[&str]) -> Option<(Vec<String>, usize)> {
+    let (header_prefix, header_core, header_suffix) = split_wrapping_punct(tokens[0]);
+    if attached_authorization_scheme(header_core) {
+        if tokens.len() < 2 {
+            return None;
+        }
+        return Some((
+            vec![
+                format!("{header_prefix}{header_core}{header_suffix}"),
+                redact_following_value_token(tokens[1]),
+            ],
+            2,
+        ));
+    }
+    if !authorization_header_token(header_core, header_suffix) {
+        return None;
+    }
+    if redact_authorization_core(header_core).is_some() {
+        return None;
+    }
+    if tokens.len() < 2 || !is_http_auth_scheme_token(tokens[1]) {
+        return None;
+    }
+    let mut redacted = vec![
+        format!("{header_prefix}{header_core}{header_suffix}"),
+        sanitize_token(tokens[1]),
+    ];
+    if tokens.len() >= 3 && !json_secret_key_without_value(tokens[2]) {
+        let (_, scheme_core, _) = split_wrapping_punct(tokens[1]);
+        if scheme_core.split_whitespace().nth(1).is_none() {
+            redacted.push(redact_following_value_token(tokens[2]));
+            return Some((redacted, 3));
+        }
+    }
+    Some((redacted, 2))
+}
+
+fn attached_authorization_scheme(core: &str) -> bool {
+    core.to_ascii_lowercase()
+        .strip_prefix("authorization:")
+        .is_some_and(|rest| matches!(rest, "bearer" | "basic"))
+}
+
+fn authorization_header_token(core: &str, suffix: &str) -> bool {
+    let lower = core.to_ascii_lowercase();
+    if lower == "authorization" {
+        return suffix.starts_with(':');
+    }
+    lower
+        .strip_prefix("authorization:")
+        .map(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        .unwrap_or(false)
+}
+
+fn is_http_auth_scheme_token(tok: &str) -> bool {
+    let (_, core, _) = split_wrapping_punct(tok);
+    let scheme = core
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '\''))
+        .find(|part| !part.is_empty())
+        .unwrap_or(core);
+    scheme.eq_ignore_ascii_case("bearer") || scheme.eq_ignore_ascii_case("basic")
+}
+
+fn redact_authorization_core(core: &str) -> Option<String> {
+    let lower = core.to_ascii_lowercase();
+    const HEADER: &str = "authorization:";
+    let after_header = lower.strip_prefix(HEADER)?;
+    let trim_len = after_header.len() - after_header.trim_start().len();
+    let rest_lower = after_header.trim_start();
+    for scheme in ["bearer", "basic"] {
+        let Some(after_scheme) = rest_lower.strip_prefix(scheme) else {
+            continue;
+        };
+        if after_scheme.is_empty() {
+            return None;
+        }
+        let sep = after_scheme.chars().next()?;
+        if !(sep.is_whitespace() || matches!(sep, '"' | '\'')) {
+            continue;
+        }
+        let prefix_len = HEADER.len() + trim_len + scheme.len();
+        let orig_prefix = &core[..prefix_len];
+        if sep == '"' {
+            return Some(format!("{orig_prefix}\"<redacted>\""));
+        }
+        if sep == '\'' {
+            return Some(format!("{orig_prefix}'<redacted>'"));
+        }
+        return Some(format!("{orig_prefix} <redacted>"));
+    }
+    None
+}
+
+fn json_assignment_parts(core: &str) -> Option<(&str, &'static str, &str)> {
+    const SEPARATORS: [&str; 6] = [r#"":""#, "':'", r#"":'"#, r#"':""#, r#"":"#, "':"];
+    for sep in SEPARATORS {
+        if let Some((key, value)) = core.split_once(sep) {
+            if key.is_empty() || key.chars().any(char::is_whitespace) {
+                continue;
+            }
+            return Some((key, sep, value));
+        }
+    }
+    None
+}
+
+fn redact_json_assignment(core: &str) -> Option<String> {
+    let (key, sep, value) = json_assignment_parts(core)?;
+    let key_lower = key
+        .trim_matches(|ch| matches!(ch, '"' | '\''))
+        .to_ascii_lowercase();
+    let (bare_value, remainder) = split_json_value(value, sep);
+    let replacement = if is_secret_key(&key_lower) {
+        "<redacted>"
+    } else if is_user_path(&bare_value.to_ascii_lowercase()) {
+        "<path>"
+    } else {
+        return None;
+    };
+    Some(format!("{key}{sep}{replacement}{remainder}"))
+}
+
+fn split_json_value<'a>(value: &'a str, sep: &str) -> (&'a str, &'a str) {
+    if let Some(quote) = sep.chars().last().filter(|ch| matches!(ch, '"' | '\''))
+        && let Some(idx) = value.find(quote)
+    {
+        return (&value[..idx], &value[idx..]);
+    }
+    (value, "")
+}
+
+fn json_secret_key_without_value(tok: &str) -> bool {
+    let (_, core, suffix) = split_wrapping_punct(tok);
+    if json_assignment_parts(core).is_some() {
+        return false;
+    }
+    let had_colon = suffix.contains(':') || core.ends_with(':');
+    if !had_colon {
+        return false;
+    }
+    let key = core
+        .trim_end_matches(':')
+        .trim_matches(|ch| matches!(ch, '"' | '\''));
+    if key.is_empty() || key.chars().any(char::is_whitespace) {
+        return false;
+    }
+    is_secret_key(&key.to_ascii_lowercase())
+}
+
+fn redact_following_value_token(tok: &str) -> String {
+    let (prefix, core, suffix) = split_wrapping_punct(tok);
+    if is_user_path(&core.to_ascii_lowercase()) {
+        return format!("{prefix}<path>{suffix}");
+    }
+    format!("{prefix}<redacted>{suffix}")
+}
+
+fn split_wrapping_punct(tok: &str) -> (&str, &str, &str) {
+    let prefix_len: usize = tok
+        .chars()
+        .take_while(|c| matches!(c, '(' | '[' | '{' | '"' | '\''))
+        .map(char::len_utf8)
+        .sum();
+    let suffix_len: usize = tok
+        .chars()
+        .rev()
+        .take_while(|c| matches!(c, ')' | ']' | '}' | '"' | '\'' | ',' | ';' | '.' | ':'))
+        .map(char::len_utf8)
+        .sum();
+    if prefix_len + suffix_len >= tok.len() {
+        return ("", tok, "");
+    }
+    let core_end = tok.len() - suffix_len;
+    (
+        &tok[..prefix_len],
+        &tok[prefix_len..core_end],
+        &tok[core_end..],
+    )
+}
+
+fn is_user_path(lower: &str) -> bool {
+    lower.starts_with('/')
+        || lower.starts_with(r"\\")
+        || lower.contains("/.ssh/")
+        || lower.contains("/.aws/")
+        || (lower.len() >= 3
+            && lower.as_bytes()[1] == b':'
+            && (lower.as_bytes()[2] == b'\\' || lower.as_bytes()[2] == b'/'))
+}
+
+fn is_secret_key(key: &str) -> bool {
+    let key = key.replace('-', "_");
+    matches!(
+        key.as_str(),
+        "token"
+            | "password"
+            | "secret"
+            | "authorization"
+            | "api_key"
+            | "credential"
+            | "access_key"
+            | "secret_key"
+    ) || key.ends_with("token")
+        || key.ends_with("password")
+        || key.ends_with("secret")
+        || key.ends_with("api_key")
+        || key.ends_with("access_key")
+        || key.ends_with("secret_key")
+        || key.ends_with("credential")
+        || key.ends_with("authorization")
+        || key.contains("_secret_")
+        || key.contains("_access_key")
+        || key.contains("_api_key")
+        || key.contains("_secret_key")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Case {
+        name: &'static str,
+        facts: CapabilityFacts,
+        backend: Backend,
+        reason: Option<FallbackReason>,
+    }
+
+    fn facts(
+        cuda_built: bool,
+        runtime: bool,
+        device: bool,
+        cc: Option<ComputeCapability>,
+        kernels: KernelAvailability,
+    ) -> CapabilityFacts {
+        CapabilityFacts {
+            cuda_built,
+            runtime_available: runtime,
+            device_available: device,
+            compute_capability: cc,
+            kernels,
+        }
+    }
+
+    #[test]
+    fn decision_table_covers_build_runtime_device_kernel_outcomes() {
+        let sm89 = ComputeCapability { major: 8, minor: 9 };
+        let sm120 = ComputeCapability {
+            major: 12,
+            minor: 0,
+        };
+        let sm121 = ComputeCapability {
+            major: 12,
+            minor: 1,
+        };
+
+        let cases = [
+            Case {
+                name: "cpu-only build",
+                facts: CapabilityFacts::not_built(),
+                backend: Backend::Cpu,
+                reason: Some(FallbackReason::CudaFeatureNotBuilt),
+            },
+            Case {
+                name: "driver/runtime failure",
+                facts: facts(
+                    true,
+                    false,
+                    false,
+                    None,
+                    KernelAvailability::compiled_unverified(),
+                ),
+                backend: Backend::Cpu,
+                reason: Some(FallbackReason::DriverRuntimeFailure),
+            },
+            Case {
+                name: "device unavailable",
+                facts: facts(
+                    true,
+                    true,
+                    false,
+                    None,
+                    KernelAvailability::compiled_unverified(),
+                ),
+                backend: Backend::Cpu,
+                reason: Some(FallbackReason::DeviceUnavailable),
+            },
+            Case {
+                name: "CC query failed",
+                facts: facts(
+                    true,
+                    true,
+                    true,
+                    None,
+                    KernelAvailability::compiled_unverified(),
+                ),
+                backend: Backend::Cpu,
+                reason: Some(FallbackReason::DriverRuntimeFailure),
+            },
+            Case {
+                name: "unsupported hardware",
+                facts: facts(
+                    true,
+                    true,
+                    true,
+                    Some(sm89),
+                    KernelAvailability::compiled_unverified(),
+                ),
+                backend: Backend::Cpu,
+                reason: Some(FallbackReason::UnsupportedHardware),
+            },
+            Case {
+                name: "kernel specialization missing",
+                facts: facts(
+                    true,
+                    true,
+                    true,
+                    Some(sm120),
+                    KernelAvailability::all_unavailable(),
+                ),
+                backend: Backend::Cpu,
+                reason: Some(FallbackReason::KernelSpecializationUnavailable),
+            },
+            Case {
+                name: "compiled but JIT not attempted (probe)",
+                facts: facts(
+                    true,
+                    true,
+                    true,
+                    Some(sm120),
+                    KernelAvailability::compiled_unverified(),
+                ),
+                backend: Backend::Cpu,
+                reason: Some(FallbackReason::KernelSpecializationUnavailable),
+            },
+            Case {
+                name: "all kernels available",
+                facts: facts(
+                    true,
+                    true,
+                    true,
+                    Some(sm121),
+                    KernelAvailability::all_available(),
+                ),
+                backend: Backend::Cuda,
+                reason: None,
+            },
+            Case {
+                name: "PTX not compiled despite cuda_built flag",
+                facts: facts(
+                    true,
+                    true,
+                    true,
+                    Some(sm120),
+                    KernelAvailability::not_compiled(),
+                ),
+                backend: Backend::Cpu,
+                reason: Some(FallbackReason::CudaFeatureNotBuilt),
+            },
+        ];
+
+        for case in cases {
+            let report = evaluate_capabilities(&case.facts);
+            assert_eq!(
+                report.selected_backend, case.backend,
+                "{}: backend",
+                case.name
+            );
+            assert_eq!(
+                report.fallback.as_ref().map(|f| f.reason),
+                case.reason,
+                "{}: reason",
+                case.name
+            );
+            if let Some(fb) = &report.fallback {
+                assert_eq!(fb.selected_backend, Backend::Cpu, "{}", case.name);
+                assert_eq!(fb.reason.code(), fb.reason.to_string());
+                assert!(!fb.detail.contains("/home/"), "{}", case.name);
+            } else {
+                assert!(report.gpu_usable(), "{}", case.name);
+            }
+        }
+    }
+
+    #[test]
+    fn require_gpu_policy_fails_closed_on_cpu_selection() {
+        let report = evaluate_capabilities(&CapabilityFacts::not_built());
+        let err = report
+            .select_backend(ExecutionPolicy::RequireGpu)
+            .unwrap_err();
+        assert_eq!(err.reason, FallbackReason::CudaFeatureNotBuilt);
+        assert_eq!(err.selected_backend, Backend::Cpu);
+        assert_eq!(
+            report.select_backend(ExecutionPolicy::PreferGpu).unwrap(),
+            Backend::Cpu
+        );
+    }
+
+    #[test]
+    fn require_gpu_policy_accepts_cuda_selection() {
+        let report = evaluate_capabilities(&facts(
+            true,
+            true,
+            true,
+            Some(ComputeCapability::REQUIRED),
+            KernelAvailability::all_available(),
+        ));
+        assert_eq!(
+            report.select_backend(ExecutionPolicy::RequireGpu).unwrap(),
+            Backend::Cuda
+        );
+    }
+
+    #[test]
+    fn fallback_reason_codes_are_stable() {
+        let expected = [
+            (
+                FallbackReason::CudaFeatureNotBuilt,
+                "cuda_feature_not_built",
+            ),
+            (
+                FallbackReason::DriverRuntimeFailure,
+                "driver_runtime_failure",
+            ),
+            (FallbackReason::DeviceUnavailable, "device_unavailable"),
+            (FallbackReason::UnsupportedHardware, "unsupported_hardware"),
+            (
+                FallbackReason::KernelSpecializationUnavailable,
+                "kernel_specialization_unavailable",
+            ),
+            (FallbackReason::InvalidInput, "invalid_input"),
+        ];
+        for (reason, code) in expected {
+            assert_eq!(reason.code(), code);
+            assert_eq!(reason.to_string(), code);
+        }
+    }
+
+    #[test]
+    fn stream_setup_driver_failure_keeps_observed_runtime_and_device() {
+        let mut facts = facts(
+            true,
+            true,
+            true,
+            Some(ComputeCapability::REQUIRED),
+            KernelAvailability::all_available(),
+        );
+        apply_failure_to_facts(&mut facts, FallbackReason::DriverRuntimeFailure);
+
+        assert!(facts.runtime_available);
+        assert!(facts.device_available);
+        assert!(facts.kernels.all_runtime_available());
+
+        let mut report = evaluate_capabilities(&facts);
+        report.selected_backend = Backend::Cpu;
+        report.fallback = Some(FallbackRecord::cpu(
+            FallbackReason::DriverRuntimeFailure,
+            "stream creation failed",
+        ));
+
+        assert!(report.runtime_available);
+        assert!(report.device_available);
+        assert_eq!(report.selected_backend, Backend::Cpu);
+        assert!(!report.gpu_usable());
+        assert_eq!(
+            report.fallback.as_ref().map(|fb| fb.reason),
+            Some(FallbackReason::DriverRuntimeFailure)
+        );
+    }
+
+    #[test]
+    fn driver_runtime_failure_before_jit_still_clears_runtime() {
+        let mut facts = facts(
+            true,
+            true,
+            true,
+            Some(ComputeCapability::REQUIRED),
+            KernelAvailability::compiled_unverified(),
+        );
+        apply_failure_to_facts(&mut facts, FallbackReason::DriverRuntimeFailure);
+        assert!(!facts.runtime_available);
+    }
+
+    #[test]
+    fn compute_capability_floor_tracks_compiled_target() {
+        let required = ComputeCapability::REQUIRED;
+        let arch_digits: String = env!("MYELIN_COMPILED_CUDA_ARCH")
+            .chars()
+            .skip_while(|ch| !ch.is_ascii_digit())
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let encoded = arch_digits.parse::<u32>().expect("validated build target");
+        assert_eq!(required.major, encoded / 10);
+        assert_eq!(required.minor, encoded % 10);
+        assert!(required.meets_minimum());
+        assert!(
+            ComputeCapability {
+                major: required.major + 1,
+                minor: 0,
+            }
+            .meets_minimum()
+        );
+        if required.major > 0 {
+            assert!(
+                !ComputeCapability {
+                    major: required.major - 1,
+                    minor: 9,
+                }
+                .meets_minimum()
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_user_paths_and_secrets() {
+        let raw = "failed /home/alice/.ssh/id_rsa token=supersecret C:\\Users\\bob\\key.pem ok";
+        let clean = sanitize_diagnostic(raw);
+        assert!(!clean.contains("/home/alice"));
+        assert!(!clean.contains("supersecret"));
+        assert!(!clean.contains("bob"));
+        assert!(clean.contains("<path>"));
+        assert!(clean.contains("token=<redacted>"));
+        assert!(clean.contains("ok"));
+    }
+
+    #[test]
+    fn sanitize_diagnostic_keeps_stable_reason_tokens() {
+        let s = sanitize_diagnostic("cuda_feature_not_built sm_120 driver_runtime_failure");
+        assert_eq!(s, "cuda_feature_not_built sm_120 driver_runtime_failure");
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_paths_after_assignment_keys() {
+        let clean = sanitize_diagnostic(
+            "path=/home/alice/private.ptx file=/Users/bob/key cache=C:\\Users\\eve\\cache.bin",
+        );
+        assert_eq!(clean, "path=<path> file=<path> cache=<path>");
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_quoted_assignment_paths() {
+        let cases = [
+            (
+                r#"module="/home/alice/private.ptx" tail"#,
+                "module=<path> tail",
+            ),
+            (
+                r#"module="/home/alice/My Models/private.ptx" tail"#,
+                "module=<path> tail",
+            ),
+            (
+                r#"file='C:\Users\bob\private.ptx' tail"#,
+                "file=<path> tail",
+            ),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(sanitize_diagnostic(input), expected, "input={input}");
+        }
+    }
+
+    #[test]
+    fn sanitize_diagnostic_does_not_treat_contractions_as_quotes() {
+        assert_eq!(
+            sanitize_diagnostic("driver can't load /home/alice/private.ptx"),
+            "driver can't load <path>"
+        );
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_namespaced_credentials() {
+        let clean = sanitize_diagnostic(
+            "AWS_SECRET_ACCESS_KEY=abc MY_API_KEY=def service_authorization=ghi AWS_ACCESS_KEY_ID=AKIA x-api-key=xyz",
+        );
+        assert_eq!(
+            clean,
+            "AWS_SECRET_ACCESS_KEY=<redacted> MY_API_KEY=<redacted> service_authorization=<redacted> AWS_ACCESS_KEY_ID=<redacted> x-api-key=<redacted>"
+        );
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_separated_credentials() {
+        let cases = [
+            ("password = hunter2 ok", "password = <redacted> ok"),
+            ("token: hunter2 ok", "token: <redacted> ok"),
+            ("--api-key hunter2 ok", "--api-key <redacted> ok"),
+            (
+                "AWS_SECRET_ACCESS_KEY = abc ok",
+                "AWS_SECRET_ACCESS_KEY = <redacted> ok",
+            ),
+            ("token:hunter2 ok", "token:<redacted> ok"),
+            ("api-key:supersecret ok", "api-key:<redacted> ok"),
+            (
+                "state=bad,password=hunter2 ok",
+                "state=bad,password=<redacted> ok",
+            ),
+            (
+                "state=bad;file=/workspace/alice/private.ptx ok",
+                "state=bad;file=<path> ok",
+            ),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(sanitize_diagnostic(input), expected, "input={input}");
+            assert!(
+                !sanitize_diagnostic(input).contains("hunter2"),
+                "input={input}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_arbitrary_absolute_paths() {
+        let clean = sanitize_diagnostic(
+            "failed /workspace/alice/private.ptx file=/mnt/data/model.ptx system=/usr/local/cuda",
+        );
+        assert_eq!(clean, "failed <path> file=<path> system=<path>");
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_windows_absolute_paths_without_users() {
+        let cases = [
+            (
+                r"failed C:\workspace\alice\private.ptx ok",
+                "failed <path> ok",
+            ),
+            (r"file=C:\builds\alice\secret.ptx", "file=<path>"),
+            (
+                r"cache=D:/builds/alice/cache.bin leftover",
+                "cache=<path> leftover",
+            ),
+            (
+                r"failed \\server\share\alice\private.ptx ok",
+                "failed <path> ok",
+            ),
+            (r"file=\\server\share\alice\private.ptx", "file=<path>"),
+            (r"device=\\?\C:\private.ptx", "device=<path>"),
+            (
+                r#"module="C:\workspace\alice\private.ptx" tail"#,
+                "module=<path> tail",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(sanitize_diagnostic(input), expected, "input={input}");
+            assert!(
+                !sanitize_diagnostic(input)
+                    .to_ascii_lowercase()
+                    .contains("alice"),
+                "input={input}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_http_authorization_headers() {
+        let cases = [
+            (
+                "probe Authorization: Bearer supersecret ok",
+                "probe Authorization: Bearer <redacted> ok",
+            ),
+            (
+                "probe Authorization: Basic dXNlcjpwYXNz ok",
+                "probe Authorization: Basic <redacted> ok",
+            ),
+            (
+                r#"probe "Authorization: Bearer supersecret" ok"#,
+                r#"probe "Authorization: Bearer <redacted>" ok"#,
+            ),
+            (
+                "probe authorization: bearer SUPERSECRET ok",
+                "probe authorization: bearer <redacted> ok",
+            ),
+            (
+                "probe Authorization:Bearer supersecret ok",
+                "probe Authorization:Bearer <redacted> ok",
+            ),
+            (
+                "probe Authorization:Basic dXNlcjpwYXNz ok",
+                "probe Authorization:Basic <redacted> ok",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(sanitize_diagnostic(input), expected, "input={input}");
+            assert!(
+                !sanitize_diagnostic(input)
+                    .to_ascii_lowercase()
+                    .contains("supersecret"),
+                "input={input}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_diagnostic_redacts_json_credential_fields() {
+        let cases = [
+            (
+                r#"{"authToken":"supersecret","ok":true}"#,
+                r#"{"authToken":"<redacted>","ok":true}"#,
+            ),
+            (
+                r#"{"password":"hunter2"} tail"#,
+                r#"{"password":"<redacted>"} tail"#,
+            ),
+            (
+                r#"{"authToken": "supersecret"} tail"#,
+                r#"{"authToken": "<redacted>"} tail"#,
+            ),
+            (
+                r#"{"file":"/home/alice/private.ptx"}"#,
+                r#"{"file":"<path>"}"#,
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(sanitize_diagnostic(input), expected, "input={input}");
+        }
+    }
+}

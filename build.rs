@@ -33,10 +33,28 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let cu_dir = manifest_dir.join("cu");
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+    let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
+    let arch = if cuda_feature_enabled {
+        env::var("MYELIN_CUDA_ARCH").unwrap_or_else(|_| "sm_120".to_string())
+    } else {
+        "sm_120".to_string()
+    };
+    let (arch_major, arch_minor) = compute_capability_from_arch(&arch).unwrap_or_else(|| {
+        panic!("MYELIN_CUDA_ARCH must look like sm_120 or compute_120, got \"{arch}\"")
+    });
+    fs::write(
+        out_dir.join("compiled_cuda_capability.rs"),
+        format!("ComputeCapability {{ major: {arch_major}, minor: {arch_minor} }}\n"),
+    )
+    .expect("write compiled CUDA capability");
+    println!("cargo:rustc-env=MYELIN_COMPILED_CUDA_ARCH={arch}");
 
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=CUDA_NVCC");
+    println!("cargo:rerun-if-env-changed=RUSTC");
+    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
     println!("cargo:rerun-if-env-changed=MYELIN_CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=MYELIN_PTX_VERSION");
     println!("cargo:rerun-if-env-changed=MYELIN_NVCC_THREADS");
@@ -48,8 +66,21 @@ fn main() {
         println!("cargo:rerun-if-changed=cu/{cu_name}");
     }
 
-    let cuda_feature_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
     let saaq_feature_enabled = env::var("CARGO_FEATURE_SAAQ").is_ok();
+    let opt_level = env::var("OPT_LEVEL").unwrap_or_else(|_| "unknown".to_string());
+    println!("cargo:rustc-env=OPT_LEVEL={opt_level}");
+    if let Some(version) = rustc_version() {
+        println!("cargo:rustc-env=MYELIN_BUILD_RUSTC_VERSION={version}");
+    }
+    let rustflags = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    println!("cargo:rustc-env=MYELIN_BUILD_RUSTFLAGS={rustflags}");
+    let target_features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+    println!("cargo:rustc-env=MYELIN_BUILD_TARGET_FEATURES={target_features}");
+    if let Ok(target) = env::var("TARGET") {
+        println!("cargo:rustc-env=MYELIN_BUILD_TARGET={target}");
+    }
+    emit_cargo_profile_provenance();
+    emit_git_provenance(&manifest_dir);
     if !cuda_feature_enabled {
         emit_stub_ptx(&out_dir);
         println!("cargo:warning=cuda feature not enabled; wrote stub PTX files");
@@ -57,7 +88,6 @@ fn main() {
     }
 
     let nvcc = find_nvcc();
-    let arch = env::var("MYELIN_CUDA_ARCH").unwrap_or_else(|_| "sm_120".to_string());
     // Treat empty MYELIN_PTX_VERSION as unset (Some("") would write ".version ").
     let ptx_version_override = env::var("MYELIN_PTX_VERSION")
         .ok()
@@ -71,10 +101,14 @@ fn main() {
     };
 
     match nvcc_version(&nvcc_path) {
-        Some(v) => println!("cargo:warning=using nvcc: {v}"),
+        Some(v) => {
+            println!("cargo:warning=using nvcc: {v}");
+            println!("cargo:rustc-env=MYELIN_BUILD_NVCC_VERSION={v}");
+        }
         None => println!("cargo:warning=using nvcc at {}", nvcc_path.display()),
     }
 
+    let mut emitted_ptx_version = None;
     for &(cu_name, ptx_name) in KERNELS {
         let source = cu_dir.join(cu_name);
         let output = out_dir.join(ptx_name);
@@ -112,6 +146,16 @@ fn main() {
                 "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx=nvcc-default)"
             );
         }
+        if let Some(version) = read_ptx_version(&output) {
+            if let Some(previous) = emitted_ptx_version.as_deref() {
+                assert_eq!(
+                    previous, version,
+                    "compiled kernels use different PTX versions"
+                );
+            } else {
+                emitted_ptx_version = Some(version.to_string());
+            }
+        }
     }
 
     for &(cu_name, fatbin_name) in FATBINS {
@@ -134,6 +178,110 @@ fn main() {
     } else {
         println!("cargo:warning=saaq feature off; skipped myelin_shim.cu and cudart link");
     }
+    println!("cargo:rustc-env=MYELIN_BUILD_CUDA_ARCH={arch}");
+    if let Some(version) = emitted_ptx_version {
+        println!("cargo:rustc-env=MYELIN_BUILD_PTX_VERSION={version}");
+    }
+}
+
+fn emit_cargo_profile_provenance() {
+    let profile_class = env::var("PROFILE").unwrap_or_else(|_| "unknown".to_string());
+    let panic_strategy = env::var("CARGO_CFG_PANIC").unwrap_or_else(|_| "unwind".to_string());
+
+    // Cargo exposes the effective profile *class* (debug/release), not the
+    // selected custom profile name. Do not infer a name from the output
+    // directory: built-in `bench`, for example, also writes to `release/`.
+    // Effective profile settings are recorded at runtime from Cargo's exact
+    // unit fingerprint instead of guessing LTO/codegen-unit defaults here.
+    println!("cargo:rustc-env=MYELIN_BUILD_CARGO_PROFILE={profile_class}");
+    println!("cargo:rustc-env=MYELIN_BUILD_PANIC_STRATEGY={panic_strategy}");
+}
+
+fn emit_git_provenance(manifest_dir: &Path) {
+    if let Some(commit) = git_stdout(manifest_dir, &["rev-parse", "HEAD"]) {
+        println!("cargo:rustc-env=MYELIN_BUILD_GIT_COMMIT={commit}");
+    }
+    if let Some(status) = git_stdout(
+        manifest_dir,
+        &["status", "--porcelain", "--untracked-files=no"],
+    ) {
+        println!(
+            "cargo:rustc-env=MYELIN_BUILD_GIT_DIRTY={}",
+            !status.is_empty()
+        );
+    }
+
+    if let Some(files) = git_stdout_bytes(manifest_dir, &["ls-files", "-z"]) {
+        for file in files
+            .split(|byte| *byte == 0)
+            .filter(|file| !file.is_empty())
+        {
+            let path = manifest_dir.join(String::from_utf8_lossy(file).as_ref());
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+
+    for git_path in ["HEAD", "index", "packed-refs"] {
+        emit_git_rerun_path(manifest_dir, git_path);
+    }
+    if let Some(symbolic_ref) = git_stdout(manifest_dir, &["symbolic-ref", "-q", "HEAD"]) {
+        emit_git_rerun_path(manifest_dir, &symbolic_ref);
+    }
+}
+
+fn emit_git_rerun_path(manifest_dir: &Path, git_path: &str) {
+    let Some(path) = git_stdout(manifest_dir, &["rev-parse", "--git-path", git_path]) else {
+        return;
+    };
+    let path = PathBuf::from(path);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        manifest_dir.join(path)
+    };
+    println!("cargo:rerun-if-changed={}", path.display());
+}
+
+fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
+    let bytes = git_stdout_bytes(dir, args)?;
+    String::from_utf8(bytes)
+        .ok()
+        .map(|output| output.trim().to_string())
+}
+
+fn git_stdout_bytes(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    output.status.success().then_some(output.stdout)
+}
+
+fn rustc_version() -> Option<String> {
+    let rustc = env::var_os("RUSTC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(exe_name("rustc")));
+    let out = Command::new(rustc).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout)
+        .ok()
+        .and_then(|s| s.lines().next().map(|line| line.trim().to_string()))
+        .filter(|line| !line.is_empty())
+}
+
+fn compute_capability_from_arch(arch: &str) -> Option<(u32, u32)> {
+    let suffix = arch
+        .strip_prefix("sm_")
+        .or_else(|| arch.strip_prefix("compute_"))?;
+    let digits: String = suffix.chars().take_while(char::is_ascii_digit).collect();
+    if digits.len() < 2 {
+        return None;
+    }
+    let value = digits.parse::<u32>().ok()?;
+    Some((value / 10, value % 10))
 }
 
 fn find_nvcc() -> Option<PathBuf> {
@@ -210,9 +358,12 @@ fn nvcc_version(nvcc: &Path) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    String::from_utf8(out.stdout)
-        .ok()
-        .and_then(|s| s.lines().last().map(|l| l.trim().to_string()))
+    String::from_utf8(out.stdout).ok().and_then(|s| {
+        s.lines()
+            .map(str::trim)
+            .find(|line| line.contains("Cuda compilation tools, release "))
+            .map(str::to_string)
+    })
 }
 
 fn nvcc_feature_defines(cu_name: &str, saaq_feature_enabled: bool) -> Vec<String> {
@@ -524,6 +675,17 @@ fn ensure_min_ptx_version(path: &Path, min_ver: &str) {
     if ptx_version_less(current, min_ver) {
         patch_ptx_version_any(path, min_ver);
     }
+}
+
+fn read_ptx_version(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    text.lines().find_map(|line| {
+        line.trim_start()
+            .strip_prefix(".version ")
+            .map(str::trim)
+            .filter(|version| !version.is_empty())
+            .map(str::to_string)
+    })
 }
 
 fn ptx_version_less(a: &str, b: &str) -> bool {

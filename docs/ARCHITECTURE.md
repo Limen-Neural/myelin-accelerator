@@ -25,12 +25,12 @@ local quality/benchmark harness. Not a research orchestrator.
 | CUDA kernels | `cu/*.cu`, shared headers (`cu/common.cuh`), `sm_120`-tuned reductions |
 | PTX / fatbin build path | `build.rs` (`nvcc -ptx` sidecar + `-fatbin` SASS with PTX fallback), CMake `cuda_kernels` target, embedded images |
 | Safe GPU FFI | `GpuContext`, `KernelModule`, `GpuBuffer`, launch wrappers |
-| Feature gates | `cuda` (cust + nvtx), `saaq` (experimental GIF/SAAQ), `bench` (serde JSON/CSV harness) |
+| Feature gates | `cuda` (cust + nvtx), `saaq` (experimental GIF/SAAQ), `bench` (example harness flag); manifest schema lives in `src/bench` |
 | CPU-safe stub | `src/gpu_stub.rs` when `cuda` is off (CI / sandboxes) |
 | Host packing utilities | Binary / ternary bitpacking (`src/bitpacking.rs`) — host-side layout helpers that match future device kernels |
 | CPU oracles | Scalar reference implementations (`src/oracle.rs`) for differential tests against public kernel wrappers |
 | Launch / stream helpers | Default streams, aux buffers for multi-pass reductions |
-| Local QA | CTest matrix, GPU `#[ignore]` tests, `examples/benchmark.rs` |
+| Local QA | CTest matrix, GPU `#[ignore]` tests, `examples/benchmark.rs`, `docs/BENCHMARKS.md` |
 | Kernel-level telemetry primitives | On-device reduce passes (entropy, membrane stats) that stay generic |
 
 **Rule of thumb:** if another project would copy a `.cu` file or re-implement
@@ -85,6 +85,9 @@ myelin-accelerator/
 │   └── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
 ├── src/
 │   ├── lib.rs                   # Crate root; public re-exports
+│   ├── bench/                   # Manifest schema, redaction, regression budgets
+│   ├── capability.rs            # Probe types, decision table, sanitizer
+│   ├── error.rs                 # GpuError / GpuResult (CUDA + stub)
 │   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
 │   ├── gif.rs                   # GIF/SAAQ constants + CPU refs (`feature = "saaq"`)
 │   ├── launch_hook.rs           # Consumer-installed launch-failure callback
@@ -99,10 +102,12 @@ myelin-accelerator/
 │       ├── error.rs             # GpuError / GpuResult
 │       └── accelerator.rs       # High-level launch wrappers; TemporalState if `saaq`
 ├── examples/benchmark.rs        # Optional bench harness (feature = "bench")
+├── tests/fixtures/bench/        # Sanitized manifest + classification fixtures
 ├── build.rs                     # nvcc → PTX into OUT_DIR
 ├── CMakeLists.txt               # CLion/CTest quality gate (nvcc -ptx)
 └── docs/
     ├── ARCHITECTURE.md          # This file
+    ├── BENCHMARKS.md            # Manifests, compare, baseline refresh
     └── TERNARY.md               # Ternary encoding, scales, GOZ1, kernels
 ```
 
@@ -113,7 +118,7 @@ myelin-accelerator/
 | *(default empty)* | Stub GPU API; no `nvcc` required; **no** GIF/SAAQ public surface |
 | `cuda` | Real `src/gpu/*`, `cust`, optional `nvtx` profiling ranges |
 | `saaq` | Experimental GIF/SAAQ modules, TemporalState APIs, and (with `cuda`) `myelin_shim` + GIF/SAAQ device kernels. **Not** on `default`. May split to its own crate later. |
-| `bench` | Serde deps for `examples/benchmark` (pair with `cuda` for GPU) |
+| `bench` | Example `required-features` flag so existing `--features bench` commands stay valid |
 
 ---
 
@@ -131,8 +136,12 @@ Re-exported from `src/lib.rs` (names available with or without `cuda` via stub):
 | `KernelModule` | Loaded fatbin/PTX modules + `get_function` |
 | `GpuError` | Error type re-exported at the crate root |
 | `set_launch_failure_hook` | Consumer-installed launch-failure reporter (no `sentry` dep) |
+| `probe_capabilities` / `CapabilityReport` | Typed pre-launch probe (build, runtime, device, CC, kernels, backend) |
+| `ExecutionPolicy` | `PreferGpu` (recorded CPU fallback) or `RequireGpu` (fail closed) |
+| `FallbackReason` / `FallbackRecord` | Stable reason codes + selected implementation |
 | `bitpacking` module | Host packing APIs (`pack_ternary`, `pack_binary`, …) |
 | `oracle` module | Named CPU oracles + seed/shape mismatch reporting |
+| `bench` module | Manifest schema, redaction, median/MAD stats, opt-in regression budgets |
 
 With **`--features saaq`** (experimental; not crates.io default):
 
@@ -148,11 +157,33 @@ boundary, or `myelin_accelerator::gpu::GpuResult` if you want the alias (via the
 `use myelin_accelerator::{GpuAccelerator, GpuError, …}` over deep paths into
 internal files.
 
+### Capability probe and fallback policy
+
+Call `probe_capabilities()` (or `evaluate_capabilities` with mocked
+`CapabilityFacts`) for a typed snapshot: build-time CUDA support, driver
+runtime, device presence, compute capability, kernel-family availability, and
+the selected backend. The production probe constructs an accelerator and
+JIT-loads every required PTX family before reporting CUDA as usable.
+Diagnostics are sanitized (no absolute user paths or secret assignments) and
+reason codes are stable snake_case tokens.
+
+`GpuAccelerator` construction uses one policy:
+
+| Policy | API | If GPU is unusable |
+|--------|-----|--------------------|
+| Prefer GPU (caller-approved fallback) | `GpuAccelerator::new()` / `with_policy(PreferGpu)` | CPU backend + `FallbackRecord` |
+| Require GPU (fail closed) | `require_gpu()` / `with_policy(RequireGpu)` | `GpuError::Unavailable { reason, detail }` — never CPU |
+
+`GpuAccelerator::new()` remains infallible and may select CPU; it no longer
+fails silently: `fallback()` always explains a CPU selection. Launch wrappers
+on a CPU instance return `Unavailable` with the same reason rather than
+executing reduced kernels without a record.
+
 ### High-level launches today (`GpuAccelerator`)
 
 These are the **ergonomic** wrappers currently implemented:
 
-- Lifecycle: `new`, `is_ready` (context+stream), `kernels_ready`, `kernels` (returns `ModuleLoadFailed` rather than `NoGpu` when a context exists but fatbin/PTX did not load), `synchronize`
+- Lifecycle: `new` (PreferGpu), `require_gpu` / `with_policy`, `is_ready` (context+stream), `kernels_ready`, `capabilities`, `selected_backend`, `fallback`, `kernels` (returns `ModuleLoadFailed` rather than `NoGpu` when a context exists but fatbin/PTX did not load), `synchronize`
 - SAT: `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
 - Spiking: `poisson_encode` / `_async`
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
