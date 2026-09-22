@@ -156,7 +156,7 @@ fn redact_secret_tokens(input: &str) -> String {
     for (prefix, min_payload_len) in prefixes {
         s = redact_prefix_token(&s, prefix, min_payload_len);
     }
-    redact_akia(&s)
+    redact_aws_access_key_ids(&s)
 }
 
 fn redact_prefix_token(input: &str, prefix: &str, min_payload_len: usize) -> String {
@@ -188,10 +188,18 @@ fn is_token_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
 }
 
-fn redact_akia(input: &str) -> String {
+fn redact_aws_access_key_ids(input: &str) -> String {
+    ["AKIA", "ASIA"]
+        .into_iter()
+        .fold(input.to_string(), |value, prefix| {
+            redact_aws_access_key_prefix(&value, prefix)
+        })
+}
+
+fn redact_aws_access_key_prefix(input: &str, prefix: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
-    while let Some(idx) = rest.find("AKIA") {
+    while let Some(idx) = rest.find(prefix) {
         out.push_str(&rest[..idx]);
         let candidate = &rest[idx..];
         let token: String = candidate.chars().take(20).collect();
@@ -203,8 +211,8 @@ fn redact_akia(input: &str) -> String {
             out.push_str("$REDACTED");
             rest = &rest[idx + 20..];
         } else {
-            out.push_str("AKIA");
-            rest = &rest[idx + 4..];
+            out.push_str(prefix);
+            rest = &rest[idx + prefix.len()..];
         }
     }
     out.push_str(rest);
@@ -301,6 +309,15 @@ mod tests {
         let ctx = alice();
         assert_eq!(ctx.redact_str("mask-kernel"), "mask-kernel");
         assert_eq!(ctx.redact_str("key=sk-short"), "key=sk-short");
+    }
+
+    #[test]
+    fn redacts_temporary_aws_access_key_ids_under_ordinary_keys() {
+        let ctx = alice();
+        let temporary_key = format!("ASIA{}", "A".repeat(16));
+        let out = canonicalize_json_value(json!({ "identity": temporary_key }), &ctx);
+
+        assert_eq!(out["identity"], json!("$REDACTED"));
     }
 
     #[test]
