@@ -127,6 +127,10 @@ add_test(NAME cargo_build_bench_example
         COMMAND cargo build --locked --features bench --example benchmark
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+add_test(NAME cargo_test_bench_example
+        COMMAND cargo test --locked --features bench --example benchmark
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 # CUDA PTX compile check — only when nvcc is present. Building the
 # indexing-only cuda_kernels target does not compile PTX.
 if(MYELIN_HAS_NVCC)

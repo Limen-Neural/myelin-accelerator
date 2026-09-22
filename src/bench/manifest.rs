@@ -252,7 +252,9 @@ pub fn capture_toolchain() -> ToolchainInfo {
         cargo_codegen_units: option_env!("MYELIN_BUILD_CARGO_CODEGEN_UNITS").map(str::to_string),
         cargo_incremental: option_env!("MYELIN_BUILD_CARGO_INCREMENTAL").map(str::to_string),
         panic_strategy: option_env!("MYELIN_BUILD_PANIC_STRATEGY").map(str::to_string),
-        cargo_profile_config: option_env!("MYELIN_BUILD_CARGO_PROFILE_CONFIG").map(str::to_string),
+        // Retained for schema compatibility with earlier v1 manifests. Raw
+        // Cargo.toml profile text is not effective build provenance.
+        cargo_profile_config: None,
         cuda_arch: option_env!("MYELIN_BUILD_CUDA_ARCH").map(str::to_string),
         ptx_version: option_env!("MYELIN_BUILD_PTX_VERSION").map(str::to_string),
         target_triple: option_env!("MYELIN_BUILD_TARGET").map(str::to_string),

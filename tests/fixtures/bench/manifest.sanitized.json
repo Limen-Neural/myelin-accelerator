@@ -53,7 +53,7 @@
     "cargo_incremental": null,
     "cargo_lto": null,
     "cargo_profile": "release",
-    "cargo_profile_config": "",
+    "cargo_profile_config": null,
     "cargo_profile_fingerprint": "2040997289075261528",
     "crate_version": "0.2.0",
     "cpu_model": "Synthetic CPU",

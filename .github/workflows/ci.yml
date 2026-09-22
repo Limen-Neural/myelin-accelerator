@@ -63,6 +63,9 @@ jobs:
       - name: Cargo test
         run: cargo test --locked
 
+      - name: Benchmark harness tests
+        run: cargo test --locked --features bench --example benchmark
+
       - name: Cargo build without default features
         run: cargo build --locked --no-default-features
 

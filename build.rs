@@ -69,7 +69,7 @@ fn main() {
     if let Ok(target) = env::var("TARGET") {
         println!("cargo:rustc-env=MYELIN_BUILD_TARGET={target}");
     }
-    emit_cargo_profile_provenance(&manifest_dir);
+    emit_cargo_profile_provenance();
     emit_git_provenance(&manifest_dir);
     if !cuda_feature_enabled {
         emit_stub_ptx(&out_dir);
@@ -146,10 +146,9 @@ fn main() {
     }
 }
 
-fn emit_cargo_profile_provenance(manifest_dir: &Path) {
+fn emit_cargo_profile_provenance() {
     let profile_class = env::var("PROFILE").unwrap_or_else(|_| "unknown".to_string());
     let panic_strategy = env::var("CARGO_CFG_PANIC").unwrap_or_else(|_| "unwind".to_string());
-    let profile_config = cargo_profile_config(manifest_dir);
 
     // Cargo exposes the effective profile *class* (debug/release), not the
     // selected custom profile name. Do not infer a name from the output
@@ -158,25 +157,6 @@ fn emit_cargo_profile_provenance(manifest_dir: &Path) {
     // unit fingerprint instead of guessing LTO/codegen-unit defaults here.
     println!("cargo:rustc-env=MYELIN_BUILD_CARGO_PROFILE={profile_class}");
     println!("cargo:rustc-env=MYELIN_BUILD_PANIC_STRATEGY={panic_strategy}");
-    println!("cargo:rustc-env=MYELIN_BUILD_CARGO_PROFILE_CONFIG={profile_config}");
-}
-
-fn cargo_profile_config(manifest_dir: &Path) -> String {
-    let Ok(text) = fs::read_to_string(manifest_dir.join("Cargo.toml")) else {
-        return String::new();
-    };
-    let mut in_profile = false;
-    text.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with('[') {
-                in_profile = trimmed.starts_with("[profile.");
-            }
-            (in_profile && !trimmed.is_empty() && !trimmed.starts_with('#'))
-                .then_some(trimmed.to_string())
-        })
-        .collect::<Vec<_>>()
-        .join(";")
 }
 
 fn emit_git_provenance(manifest_dir: &Path) {

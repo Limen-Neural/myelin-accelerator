@@ -843,7 +843,7 @@ fn bench_ternary_gpu(acc: &myelin_accelerator::GpuAccelerator, config: &Config) 
     // Reuse `y_host` outside the timed loop so allocation is not in the sample.
     let dense_w: Vec<f32> = weights.iter().map(|&t| t as f32).collect();
     let mut y_host = vec![0.0f32; m];
-    let host_iters = config.iterations.min(50);
+    let host_iters = host_benchmark_iterations(config);
     results.push(capture(
         "dense_f32_gemv_1024x4096_host",
         "dense-f32-gemv-host",
@@ -865,6 +865,14 @@ fn bench_ternary_gpu(acc: &myelin_accelerator::GpuAccelerator, config: &Config) 
     ));
 
     results
+}
+
+fn host_benchmark_iterations(config: &Config) -> usize {
+    if config.enforce_budget {
+        config.iterations
+    } else {
+        config.iterations.min(50)
+    }
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -929,7 +937,9 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
     let current_toolchain =
         canonicalize_toolchain(&current.toolchain).expect("toolchain provenance must canonicalize");
     let build_profile_mismatch = baseline.build_profile.as_ref().is_some_and(|profile| {
-        profile.rustc != current_toolchain.rustc
+        profile.cargo_profile_fingerprint.is_none()
+            || current_toolchain.cargo_profile_fingerprint.is_none()
+            || profile.rustc != current_toolchain.rustc
             || profile.nvcc != current_toolchain.nvcc
             || profile.rustflags != current_toolchain.rustflags
             || profile.target_features != current_toolchain.target_features
@@ -939,7 +949,6 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
             || profile.cargo_codegen_units != current_toolchain.cargo_codegen_units
             || profile.cargo_incremental != current_toolchain.cargo_incremental
             || profile.panic_strategy != current_toolchain.panic_strategy
-            || profile.cargo_profile_config != current_toolchain.cargo_profile_config
             || profile.cuda_arch != current_toolchain.cuda_arch
             || profile.ptx_version != current_toolchain.ptx_version
             || profile.target_triple != current_toolchain.target_triple
@@ -1215,7 +1224,6 @@ struct BuildProfile {
     cargo_codegen_units: Option<String>,
     cargo_incremental: Option<String>,
     panic_strategy: Option<String>,
-    cargo_profile_config: Option<String>,
     cuda_arch: Option<String>,
     ptx_version: Option<String>,
     target_triple: Option<String>,
@@ -1359,7 +1367,6 @@ fn load_baseline_rows(data: &str) -> Result<LoadedBaseline, String> {
             cargo_codegen_units: toolchain.cargo_codegen_units.clone(),
             cargo_incremental: toolchain.cargo_incremental.clone(),
             panic_strategy: toolchain.panic_strategy.clone(),
-            cargo_profile_config: toolchain.cargo_profile_config.clone(),
             cuda_arch: toolchain.cuda_arch.clone(),
             ptx_version: toolchain.ptx_version.clone(),
             target_triple: toolchain.target_triple.clone(),
@@ -2563,6 +2570,102 @@ mod tests {
                 .contains(&"build_profile_mismatch")
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_rejects_missing_cargo_profile_fingerprints() {
+        let dir = temp_dir("cargo-profile-fingerprint-missing");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let mut baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case.clone()],
+        );
+        baseline.toolchain.cargo_profile_fingerprint = None;
+        let mut current = baseline.clone();
+        current.toolchain.cargo_profile_fingerprint = None;
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline).expect("serialize manifest"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_with_baseline(&current, &config), 1);
+        assert!(
+            rejection_reasons(&comparison_json(&config.output_prefix))
+                .contains(&"build_profile_mismatch")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_comparison_ignores_nonsemantic_profile_source_text() {
+        let dir = temp_dir("cargo-profile-source-text");
+        let baseline_path = dir.join("baseline.manifest.json");
+        let baseline_case = manifest_case("same-name", "variant", 128, 100.0);
+        let mut baseline = BenchmarkManifest::new(
+            myelin_accelerator::bench::RunTiming {
+                warmup: 1,
+                samples: 8,
+                seed: None,
+            },
+            vec![baseline_case],
+        );
+        baseline.toolchain.cargo_profile_config = Some("[profile.release];lto=false".into());
+        let mut current = baseline.clone();
+        current.toolchain.cargo_profile_config =
+            Some("[profile.unused];# semantically irrelevant".into());
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_vec(&baseline).expect("serialize manifest"),
+        )
+        .expect("write baseline");
+        let config = Config {
+            warmup: 1,
+            iterations: 8,
+            baseline: Some(baseline_path.to_string_lossy().into_owned()),
+            output_prefix: dir.join("current").to_string_lossy().into_owned(),
+            enforce_budget: true,
+            budget: RegressionBudget::default(),
+        };
+
+        assert_eq!(compare_with_baseline(&current, &config), 0);
+        assert!(rejection_reasons(&comparison_json(&config.output_prefix)).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforced_host_benchmark_honors_requested_iterations() {
+        let config = Config {
+            warmup: 1,
+            iterations: 100,
+            baseline: Some("baseline.manifest.json".into()),
+            output_prefix: "current".into(),
+            enforce_budget: true,
+            budget: RegressionBudget {
+                min_samples: 100,
+                ..RegressionBudget::default()
+            },
+        };
+        assert_eq!(host_benchmark_iterations(&config), 100);
+
+        let informational = Config {
+            enforce_budget: false,
+            ..config
+        };
+        assert_eq!(host_benchmark_iterations(&informational), 50);
     }
 
     #[test]
