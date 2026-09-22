@@ -60,6 +60,14 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Verify crate package boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/test-package-boundary.sh
+          cargo package --locked --allow-dirty --no-verify --list \
+            | ./scripts/check-package-boundary.sh
+
       - name: Cargo test
         run: cargo test --locked
 

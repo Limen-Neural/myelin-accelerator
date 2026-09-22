@@ -60,11 +60,18 @@ device and power/clock fields unavailable.
 
 ## Compare (informational)
 
+The sanitized baseline under `tests/fixtures/bench/` lives in the **git repository**
+for CI/local regression checks; it is intentionally **not** part of the Cargo
+crate archive (see the package allowlist in `Cargo.toml`). From a full clone:
+
 ```bash
 cargo run --locked --example benchmark --features bench -- \
   --baseline tests/fixtures/bench/manifest.sanitized.json \
   --output /tmp/myelin-bench-cmp
 ```
+
+From a crates.io / `cargo package` checkout, point `--baseline` at any prior
+local `{prefix}.manifest.json` you already produced instead.
 
 `--baseline` is read-only. The harness refuses to use an `--output` prefix that
 would overwrite the baseline file.
