@@ -320,7 +320,7 @@ fn capture_jit_log_split(bytes: &[u8]) -> (String, String) {
         LOG_CAP as *mut c_void,
         info_buf.as_mut_ptr() as *mut c_void,
         LOG_CAP as *mut c_void,
-        1 as *mut c_void,
+        ptr::dangling_mut::<c_void>(),
     ];
 
     let mut module: cuda::CUmodule = ptr::null_mut();
