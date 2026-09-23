@@ -21,7 +21,6 @@
 use crate::capability::KernelAvailability;
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::launch_hook::{LaunchFailure, LaunchType, report_launch_failure};
-use cust::error::CudaError;
 use cust::function::Function;
 use cust::module::Module;
 use cust::sys as cuda;
