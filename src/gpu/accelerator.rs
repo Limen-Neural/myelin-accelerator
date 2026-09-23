@@ -195,7 +195,7 @@ impl GpuAccelerator {
             }
         };
 
-        let capabilities = capability_report_for_success(facts);
+        let capabilities = capability_report_for_success(facts, modules.is_some());
         let accelerator = Self {
             _ctx: Some(ctx),
             modules,
@@ -373,14 +373,20 @@ impl GpuAccelerator {
     ) -> GpuResult<()> {
         self.ensure_temporal_state(neuron_count)?;
 
+        {
+            let state = self
+                .temporal_state
+                .as_mut()
+                .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+            state.snapshot.upload(&snapshot.as_array())?;
+        }
+
         let modules = self.kernels()?;
         let project_snapshot_current = modules.get_function("project_snapshot_current")?;
         let state = self
             .temporal_state
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
-
-        state.snapshot.upload(&snapshot.as_array())?;
 
         let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
         let grid = Self::temporal_grid(neuron_count)?;
@@ -786,7 +792,11 @@ impl GpuAccelerator {
             input_current: GpuBuffer::<f32>::from_slice(&vec![0.0f32; neuron_count])?,
             input_spikes: GpuBuffer::<f32>::from_slice(&vec![0.0f32; n_inputs])?,
             adaptation: GpuBuffer::<f32>::from_slice(&vec![0.0f32; neuron_count])?,
-            weights_f32: GpuBuffer::<f32>::from_slice(&vec![0.0f32; weight_size])?,
+            weights_f32: {
+                let mut weights = GpuBuffer::<f32>::alloc(weight_size)?;
+                weights.zero_prefix(weight_size)?;
+                weights
+            },
             weights_f16: None,
             synapse_precision: SynapsePrecision::None,
             synapse_signature: None,
@@ -1329,7 +1339,7 @@ impl Default for GpuAccelerator {
 }
 
 #[cfg(all(test, feature = "saaq"))]
-mod tests {
+mod saaq_tests {
     use super::*;
     use crate::gif::{GIF_ADAPTATION_SCALE, project_snapshot_current, saaq_find_best_walker};
 
@@ -1460,10 +1470,15 @@ fn classify_context_failure(facts: &CapabilityFacts, error: &GpuError) -> Fallba
         .unwrap_or_else(|| classify_init_failure(facts))
 }
 
-fn capability_report_for_success(mut facts: CapabilityFacts) -> CapabilityReport {
+fn capability_report_for_success(
+    mut facts: CapabilityFacts,
+    kernels_loaded: bool,
+) -> CapabilityReport {
     facts.runtime_available = true;
     facts.device_available = true;
-    facts.kernels = KernelAvailability::all_available();
+    if kernels_loaded {
+        facts.kernels = KernelAvailability::all_available();
+    }
     evaluate_capabilities(&facts)
 }
 
@@ -1535,7 +1550,7 @@ mod tests {
             kernels: KernelAvailability::compiled_unverified(),
         };
 
-        let report = capability_report_for_success(facts);
+        let report = capability_report_for_success(facts, true);
 
         assert!(report.runtime_available);
         assert!(report.device_available);
