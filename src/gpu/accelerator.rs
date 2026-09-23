@@ -1473,18 +1473,24 @@ fn capability_report_for_success(
     if kernels_loaded {
         facts.kernels = KernelAvailability::all_available();
     }
-    let mut report = evaluate_capabilities(&facts);
     #[cfg(feature = "saaq")]
-    if !kernels_loaded
-        && matches!(
-            report.fallback.as_ref().map(|f| f.reason),
-            Some(FallbackReason::KernelSpecializationUnavailable)
-        )
     {
-        report.selected_backend = Backend::Cuda;
-        report.fallback = None;
+        let mut report = evaluate_capabilities(&facts);
+        if !kernels_loaded
+            && matches!(
+                report.fallback.as_ref().map(|f| f.reason),
+                Some(FallbackReason::KernelSpecializationUnavailable)
+            )
+        {
+            report.selected_backend = Backend::Cuda;
+            report.fallback = None;
+        }
+        report
     }
-    report
+    #[cfg(not(feature = "saaq"))]
+    {
+        evaluate_capabilities(&facts)
+    }
 }
 
 fn capability_report_for_failure(
