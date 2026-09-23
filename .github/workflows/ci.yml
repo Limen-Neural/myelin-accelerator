@@ -204,9 +204,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
+          ptx_dir=""
+          for candidate in target/debug/build/myelin-accelerator-*/out; do
+            [ -d "$candidate" ] || continue
+            ptx="$candidate/spiking_network_sm_120.ptx"
+            [ -f "$ptx" ] || continue
+            if grep -Eq '\.entry[[:space:]]+project_snapshot_current[[:space:]]*\(' "$ptx"; then
+              ptx_dir="$candidate"
+            fi
+          done
           if [ -z "$ptx_dir" ]; then
-            echo "::error::Could not find PTX output directory after cuda,saaq build"
+            echo "::error::Could not find cuda,saaq PTX OUT_DIR (missing SAAQ kernel entries)"
             exit 1
           fi
           for kernel in project_snapshot_current gif_step_weighted gif_step_weighted_f16 \
@@ -410,7 +418,19 @@ jobs:
           done
           echo ""
           echo "All kernel entry points verified for both debug and release."
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          ptx_dir=""
+          for candidate in target/debug/build/myelin-accelerator-*/out; do
+            [ -d "$candidate" ] || continue
+            ptx="$candidate/spiking_network_sm_120.ptx"
+            [ -f "$ptx" ] || continue
+            if grep -Eq '\.entry[[:space:]]+project_snapshot_current[[:space:]]*\(' "$ptx"; then
+              ptx_dir="$candidate"
+            fi
+          done
+          if [ -z "$ptx_dir" ]; then
+            echo "::error::Could not find cuda,saaq debug PTX OUT_DIR (missing SAAQ kernel entries)"
+            exit 1
+          fi
           for kernel in project_snapshot_current gif_step_weighted gif_step_weighted_f16 \
                         saaq_find_best_walker saaq_reduce_partials_f16; do
             if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
@@ -421,7 +441,19 @@ jobs:
               exit 1
             fi
           done
-          ptx_dir="$(ls -td target/release/build/myelin-accelerator-*/out | head -n1)"
+          ptx_dir=""
+          for candidate in target/release/build/myelin-accelerator-*/out; do
+            [ -d "$candidate" ] || continue
+            ptx="$candidate/spiking_network_sm_120.ptx"
+            [ -f "$ptx" ] || continue
+            if ! grep -Eq '\.entry[[:space:]]+project_snapshot_current[[:space:]]*\(' "$ptx"; then
+              ptx_dir="$candidate"
+            fi
+          done
+          if [ -z "$ptx_dir" ]; then
+            echo "::error::Could not find cuda-only release PTX OUT_DIR"
+            exit 1
+          fi
           for kernel in project_snapshot_current gif_step_weighted gif_step_weighted_f16 \
                         saaq_find_best_walker saaq_reduce_partials_f16; do
             if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
@@ -437,7 +469,19 @@ jobs:
         run: |
           set -euo pipefail
           PTXAS="$(dirname "$CUDA_NVCC")/ptxas"
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          ptx_dir=""
+          for candidate in target/debug/build/myelin-accelerator-*/out; do
+            [ -d "$candidate" ] || continue
+            ptx="$candidate/spiking_network_sm_120.ptx"
+            [ -f "$ptx" ] || continue
+            if grep -Eq '\.entry[[:space:]]+project_snapshot_current[[:space:]]*\(' "$ptx"; then
+              ptx_dir="$candidate"
+            fi
+          done
+          if [ -z "$ptx_dir" ]; then
+            echo "::error::Could not find debug PTX OUT_DIR for ptxas (missing SAAQ kernel entries)"
+            exit 1
+          fi
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
                    satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
             "$PTXAS" -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
