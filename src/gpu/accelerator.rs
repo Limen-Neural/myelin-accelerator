@@ -7,10 +7,16 @@ use crate::capability::{
     FallbackRecord, KernelAvailability, apply_failure_to_facts, evaluate_capabilities,
     sanitize_diagnostic,
 };
+#[cfg(feature = "saaq")]
+use crate::gif::{GIF_ADAPTATION_SCALE, GIF_BLOCK_SIZE, SnapshotChannels, gif_saaq_grid};
 use crate::gpu::context::{CurrentContextGuard, GpuContext};
 use crate::gpu::error::{GpuError, GpuResult};
+#[cfg(feature = "saaq")]
+use crate::gpu::ffi;
 use crate::gpu::kernel::KernelModule;
 use crate::gpu::memory::GpuBuffer;
+#[cfg(feature = "saaq")]
+use crate::launch_hook::{LaunchFailure, LaunchType, report_launch_failure};
 use cust::launch;
 use cust::stream::{Stream, StreamFlags};
 use nvtx::{range_pop, range_push};
@@ -19,11 +25,47 @@ use tracing::warn;
 
 const SATSOLVER_BLOCK_SIZE: u32 = 256;
 const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
+#[cfg(feature = "saaq")]
+const TEMPORAL_BLOCK_SIZE: u32 = GIF_BLOCK_SIZE;
+#[cfg(feature = "saaq")]
+const TEMPORAL_SHARED_MEM_BYTES: u32 = 0;
+#[cfg(feature = "saaq")]
+const SNAPSHOT_CHANNELS: usize = 4;
+
+#[cfg(feature = "saaq")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SynapsePrecision {
+    None,
+    F32,
+    F16,
+}
+
+#[cfg(feature = "saaq")]
+struct TemporalState {
+    neuron_count: usize,
+    n_inputs: usize,
+    membrane: GpuBuffer<f32>,
+    refractory: GpuBuffer<u32>,
+    spikes_out: GpuBuffer<u32>,
+    input_current: GpuBuffer<f32>,
+    input_spikes: GpuBuffer<f32>,
+    adaptation: GpuBuffer<f32>,
+    weights_f32: GpuBuffer<f32>,
+    weights_f16: Option<GpuBuffer<u16>>,
+    synapse_precision: SynapsePrecision,
+    synapse_signature: Option<String>,
+    snapshot: GpuBuffer<f32>,
+    best_walker: GpuBuffer<u32>,
+    saaq_partial_scores: GpuBuffer<f32>,
+    saaq_partial_walkers: GpuBuffer<u32>,
+}
 
 pub struct GpuAccelerator {
     _ctx: Option<GpuContext>,
     modules: Option<KernelModule>,
     stream: Option<Stream>,
+    #[cfg(feature = "saaq")]
+    temporal_state: Option<TemporalState>,
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
     capabilities: CapabilityReport,
@@ -114,22 +156,34 @@ impl GpuAccelerator {
         }
 
         let modules = match KernelModule::load_with_availability() {
-            Ok(modules) => modules,
+            Ok(modules) => {
+                facts.kernels = KernelAvailability::all_available();
+                Some(modules)
+            }
             Err(failure) => {
                 facts.kernels = failure.availability;
-                let reason = failure
-                    .error
-                    .fallback_reason()
-                    .unwrap_or(FallbackReason::DriverRuntimeFailure);
-                return Err(InitFailure {
-                    facts,
-                    reason,
-                    detail: failure.error.to_string(),
-                });
+                #[cfg(feature = "saaq")]
+                {
+                    warn!(
+                        "[GPU] fatbin/PTX load failed (shim-only if stream is up): {}",
+                        failure.error
+                    );
+                    None
+                }
+                #[cfg(not(feature = "saaq"))]
+                {
+                    let reason = failure
+                        .error
+                        .fallback_reason()
+                        .unwrap_or(FallbackReason::DriverRuntimeFailure);
+                    return Err(InitFailure {
+                        facts,
+                        reason,
+                        detail: failure.error.to_string(),
+                    });
+                }
             }
         };
-
-        facts.kernels = KernelAvailability::all_available();
         let stream = match Stream::new(StreamFlags::DEFAULT, None) {
             Ok(stream) => stream,
             Err(e) => {
@@ -141,11 +195,13 @@ impl GpuAccelerator {
             }
         };
 
-        let capabilities = capability_report_for_success(facts);
+        let capabilities = capability_report_for_success(facts, modules.is_some());
         let accelerator = Self {
             _ctx: Some(ctx),
-            modules: Some(modules),
+            modules,
             stream: Some(stream),
+            #[cfg(feature = "saaq")]
+            temporal_state: None,
             aux_partial_scores: RefCell::new(None),
             aux_partial_walkers: RefCell::new(None),
             capabilities,
@@ -159,17 +215,81 @@ impl GpuAccelerator {
             _ctx: None,
             modules: None,
             stream: None,
+            #[cfg(feature = "saaq")]
+            temporal_state: None,
             aux_partial_scores: RefCell::new(None),
             aux_partial_walkers: RefCell::new(None),
             capabilities,
         }
     }
 
+    /// `true` when a CUDA context and stream exist and capabilities allow GPU use.
+    ///
+    /// Fatbin/PTX helpers still require [`Self::kernels`] / [`Self::kernels_ready`].
+    /// With `--features saaq`, the C-ABI shim path (F16 GIF + SAAQ) can run
+    /// with context+stream alone if module load failed.
     pub fn is_ready(&self) -> bool {
+        self._ctx.is_some() && self.stream.is_some() && self.capabilities.gpu_usable()
+    }
+
+    /// `true` when [`Self::is_ready`] and fatbin/PTX modules loaded successfully.
+    pub fn kernels_ready(&self) -> bool {
+        self.is_ready() && self.modules.is_some()
+    }
+
+    #[cfg(feature = "saaq")]
+    fn has_context(&self) -> bool {
         self._ctx.is_some()
-            && self.modules.is_some()
-            && self.stream.is_some()
-            && self.capabilities.gpu_usable()
+    }
+
+    #[cfg(feature = "saaq")]
+    fn ptx_launch_error(
+        kernel_name: &str,
+        grid: u32,
+        block: u32,
+        shared_mem: u32,
+        neuron_count: Option<usize>,
+        error: impl std::fmt::Debug,
+    ) -> GpuError {
+        Self::reported_launch_error(
+            kernel_name,
+            LaunchType::PtxFatbin,
+            grid,
+            block,
+            shared_mem,
+            neuron_count,
+            error,
+        )
+    }
+
+    #[cfg(feature = "saaq")]
+    fn reported_launch_error(
+        kernel_name: &str,
+        launch_type: LaunchType,
+        grid: u32,
+        block: u32,
+        shared_mem: u32,
+        neuron_count: Option<usize>,
+        error: impl std::fmt::Debug,
+    ) -> GpuError {
+        let gpu_error = GpuError::LaunchFailed(format!("{kernel_name} launch: {error:?}"));
+        report_launch_failure(LaunchFailure {
+            kernel_name: kernel_name.to_string(),
+            launch_type,
+            grid: (grid, 1, 1),
+            block: (block, 1, 1),
+            shared_mem,
+            neuron_count,
+            error: gpu_error.to_string(),
+            jit_error_log: None,
+            jit_info_log: None,
+        });
+        gpu_error
+    }
+
+    #[cfg(feature = "saaq")]
+    fn temporal_grid(neuron_count: usize) -> GpuResult<u32> {
+        gif_saaq_grid(neuron_count).map_err(GpuError::LaunchFailed)
     }
 
     /// Snapshot of the capability probe used to select this backend.
@@ -188,9 +308,16 @@ impl GpuAccelerator {
     }
 
     pub fn kernels(&self) -> GpuResult<&KernelModule> {
-        self.modules
-            .as_ref()
-            .ok_or_else(|| self.unavailable_error())
+        self.modules.as_ref().ok_or_else(|| {
+            #[cfg(feature = "saaq")]
+            if self.has_context() {
+                return GpuError::ModuleLoadFailed(
+                    "fatbin/PTX modules are not loaded; C-ABI shim launches may still work when is_ready()"
+                        .into(),
+                );
+            }
+            self.unavailable_error()
+        })
     }
 
     pub fn synchronize(&self) -> GpuResult<()> {
@@ -208,6 +335,470 @@ impl GpuAccelerator {
             Some(fb) => GpuError::unavailable(fb.reason, fb.detail.clone()),
             None => GpuError::NoGpu,
         }
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn ensure_temporal_state(&mut self, neuron_count: usize) -> GpuResult<()> {
+        if !self.has_context() {
+            return Err(GpuError::NoGpu);
+        }
+        if neuron_count == 0 {
+            return Err(GpuError::LaunchFailed(
+                "temporal state requires neuron_count > 0".into(),
+            ));
+        }
+        let _ = Self::temporal_grid(neuron_count)?;
+
+        let needs_realloc = self
+            .temporal_state
+            .as_ref()
+            .is_none_or(|state| state.neuron_count != neuron_count);
+
+        if needs_realloc {
+            self.temporal_state = Some(Self::build_temporal_state(neuron_count)?);
+        }
+
+        Ok(())
+    }
+
+    /// Project a 4-channel snapshot into per-neuron `input_current`.
+    ///
+    /// The next [`Self::gif_step_weighted_tick`] (f32 or f16) adds that current
+    /// to the synaptic drive so telemetry projection changes GIF dynamics.
+    #[cfg(feature = "saaq")]
+    pub fn project_snapshot_current(
+        &mut self,
+        snapshot: SnapshotChannels,
+        neuron_count: usize,
+    ) -> GpuResult<()> {
+        self.ensure_temporal_state(neuron_count)?;
+
+        {
+            let state = self
+                .temporal_state
+                .as_mut()
+                .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+            state.snapshot.upload(&snapshot.as_array())?;
+        }
+
+        let modules = self.kernels()?;
+        let project_snapshot_current = modules.get_function("project_snapshot_current")?;
+        let state = self
+            .temporal_state
+            .as_ref()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+
+        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        let grid = Self::temporal_grid(neuron_count)?;
+        unsafe {
+            launch!(project_snapshot_current<<<grid, TEMPORAL_BLOCK_SIZE, TEMPORAL_SHARED_MEM_BYTES, stream>>>(
+                state.snapshot.as_device_ptr(),
+                state.input_current.as_device_ptr(),
+                neuron_count as i32
+            ))
+            .map_err(|e| Self::ptx_launch_error(
+                "project_snapshot_current",
+                grid,
+                TEMPORAL_BLOCK_SIZE,
+                TEMPORAL_SHARED_MEM_BYTES,
+                Some(neuron_count),
+                e,
+            ))?;
+        }
+
+        self.synchronize()
+    }
+
+    /// Download the current GIF spike vector.
+    ///
+    /// `neuron_count` must equal the resident temporal size.
+    #[cfg(feature = "saaq")]
+    pub fn temporal_spikes_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<u32>> {
+        if !self.has_context() {
+            return Err(GpuError::NoGpu);
+        }
+        let state = self
+            .temporal_state
+            .as_ref()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+        Self::require_state_neuron_count(state, neuron_count)?;
+        state.spikes_out.to_vec()
+    }
+
+    /// Download the current GIF membrane vector.
+    ///
+    /// `neuron_count` must equal the resident temporal size.
+    #[cfg(feature = "saaq")]
+    pub fn temporal_membrane_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<f32>> {
+        if !self.has_context() {
+            return Err(GpuError::NoGpu);
+        }
+        let state = self
+            .temporal_state
+            .as_ref()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+        Self::require_state_neuron_count(state, neuron_count)?;
+        state.membrane.to_vec()
+    }
+
+    /// Download the current GIF adaptation vector.
+    ///
+    /// `neuron_count` must equal the resident temporal size.
+    #[cfg(feature = "saaq")]
+    pub fn temporal_adaptation_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<f32>> {
+        if !self.has_context() {
+            return Err(GpuError::NoGpu);
+        }
+        let state = self
+            .temporal_state
+            .as_ref()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+        Self::require_state_neuron_count(state, neuron_count)?;
+        state.adaptation.to_vec()
+    }
+
+    /// Upload a per-neuron (or per-input) vector into the resident `input_spikes` buffer.
+    #[cfg(feature = "saaq")]
+    pub fn upload_temporal_input_spikes(&mut self, input_spikes: &[f32]) -> GpuResult<()> {
+        if !self.has_context() {
+            return Err(GpuError::NoGpu);
+        }
+        let state = self
+            .temporal_state
+            .as_mut()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+        if input_spikes.len() != state.n_inputs {
+            return Err(GpuError::MemoryError(format!(
+                "temporal input_spikes length mismatch: expected {}, got {}",
+                state.n_inputs,
+                input_spikes.len()
+            )));
+        }
+        state
+            .input_spikes
+            .upload(input_spikes)
+            .map_err(|e| GpuError::MemoryError(format!("input_spikes upload failed: {e}")))
+    }
+
+    /// Load an f32 synapse matrix. Signature defaults to `"host-f32"`.
+    #[cfg(feature = "saaq")]
+    pub fn load_synapse_weights(&mut self, weights: &[f32]) -> GpuResult<()> {
+        self.load_synapse_weights_named("host-f32", weights)
+    }
+
+    /// Load an f32 synapse matrix, skipping the upload when `signature` is already resident.
+    #[cfg(feature = "saaq")]
+    pub fn load_synapse_weights_named(
+        &mut self,
+        signature: &str,
+        weights: &[f32],
+    ) -> GpuResult<()> {
+        if !self.has_context() {
+            return Err(GpuError::NoGpu);
+        }
+        let state = self
+            .temporal_state
+            .as_mut()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+        let expected = state.neuron_count * state.n_inputs;
+        if weights.len() != expected {
+            return Err(GpuError::MemoryError(format!(
+                "weights length mismatch: expected {} ({}x{}), got {}",
+                expected,
+                state.neuron_count,
+                state.n_inputs,
+                weights.len()
+            )));
+        }
+        if state.synapse_precision == SynapsePrecision::F32
+            && state.synapse_signature.as_deref() == Some(signature)
+        {
+            return Ok(());
+        }
+        state
+            .weights_f32
+            .upload(weights)
+            .map_err(|e| GpuError::MemoryError(format!("synapse weights upload failed: {e}")))?;
+        state.synapse_precision = SynapsePrecision::F32;
+        state.synapse_signature = Some(signature.to_owned());
+        Ok(())
+    }
+
+    /// Load an IEEE f16 synapse matrix from host `u16` bits.
+    #[cfg(feature = "saaq")]
+    pub fn load_synapse_weights_f16_registered(
+        &mut self,
+        signature: &str,
+        weights: &[u16],
+    ) -> GpuResult<()> {
+        if !self.has_context() {
+            return Err(GpuError::NoGpu);
+        }
+        let state = self
+            .temporal_state
+            .as_mut()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+        let expected = state.neuron_count * state.n_inputs;
+        if weights.len() != expected {
+            return Err(GpuError::MemoryError(format!(
+                "f16 weights length mismatch: expected {} ({}x{}), got {}",
+                expected,
+                state.neuron_count,
+                state.n_inputs,
+                weights.len()
+            )));
+        }
+
+        if state.synapse_precision == SynapsePrecision::F16
+            && state.synapse_signature.as_deref() == Some(signature)
+        {
+            return Ok(());
+        }
+
+        let f16_weights = match state.weights_f16.as_mut() {
+            Some(weights_f16) => weights_f16,
+            _ => {
+                state.weights_f16 = Some(GpuBuffer::<u16>::alloc(expected)?);
+                state
+                    .weights_f16
+                    .as_mut()
+                    .expect("weights_f16 was just inserted")
+            }
+        };
+        f16_weights.upload(weights).map_err(|e| {
+            GpuError::MemoryError(format!("registered f16 synapse upload failed: {e}"))
+        })?;
+        state.synapse_precision = SynapsePrecision::F16;
+        state.synapse_signature = Some(signature.to_owned());
+        Ok(())
+    }
+
+    /// One GIF-weighted tick, then on-device SAAQ selection.
+    ///
+    /// Returns the best-walker index. Requires synapse weights to be loaded.
+    #[cfg(feature = "saaq")]
+    pub fn gif_step_weighted_tick(&mut self, neuron_count: usize) -> GpuResult<u32> {
+        self.ensure_temporal_state(neuron_count)?;
+
+        let precision = self
+            .temporal_state
+            .as_ref()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?
+            .synapse_precision;
+        if precision == SynapsePrecision::None {
+            return Err(GpuError::MemoryError(
+                "synapse weights must be loaded before gif_step_weighted_tick".into(),
+            ));
+        }
+
+        let n_inputs = self
+            .temporal_state
+            .as_ref()
+            .expect("temporal state checked above")
+            .n_inputs;
+        let grid = Self::temporal_grid(neuron_count)?;
+        let shared_bytes = (n_inputs * 4) as u32;
+
+        {
+            let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+            match precision {
+                SynapsePrecision::F32 => {
+                    let gif_step = self.kernels()?.get_function("gif_step_weighted")?;
+                    let state = self
+                        .temporal_state
+                        .as_ref()
+                        .expect("temporal state checked above");
+                    unsafe {
+                        launch!(gif_step<<<grid, TEMPORAL_BLOCK_SIZE, shared_bytes, stream>>>(
+                            state.membrane.as_device_ptr(),
+                            state.adaptation.as_device_ptr(),
+                            state.weights_f32.as_device_ptr(),
+                            state.input_spikes.as_device_ptr(),
+                            state.input_current.as_device_ptr(),
+                            state.refractory.as_device_ptr(),
+                            state.spikes_out.as_device_ptr(),
+                            neuron_count as i32,
+                            n_inputs as i32
+                        ))
+                        .map_err(|e| {
+                            Self::ptx_launch_error(
+                                "gif_step_weighted",
+                                grid,
+                                TEMPORAL_BLOCK_SIZE,
+                                shared_bytes,
+                                Some(neuron_count),
+                                e,
+                            )
+                        })?;
+                    }
+                }
+                SynapsePrecision::F16 => {
+                    let state = self
+                        .temporal_state
+                        .as_ref()
+                        .expect("temporal state checked above");
+                    let weights_f16 = state.weights_f16.as_ref().ok_or_else(|| {
+                        GpuError::MemoryError("f16 synapse buffer not initialised".into())
+                    })?;
+                    ffi::launch_gif_step_weighted_f16(
+                        stream,
+                        grid,
+                        TEMPORAL_BLOCK_SIZE,
+                        shared_bytes,
+                        state.membrane.as_device_ptr(),
+                        state.adaptation.as_device_ptr(),
+                        weights_f16.as_device_ptr(),
+                        state.input_spikes.as_device_ptr(),
+                        state.input_current.as_device_ptr(),
+                        state.refractory.as_device_ptr(),
+                        state.spikes_out.as_device_ptr(),
+                        neuron_count as i32,
+                        n_inputs as i32,
+                    )?;
+                }
+                SynapsePrecision::None => unreachable!("validated above"),
+            }
+        }
+
+        self.saaq_find_best_walker(neuron_count)
+    }
+
+    /// Zero resident GIF state (membrane, adaptation, spikes, inputs, SAAQ winner).
+    #[cfg(feature = "saaq")]
+    pub fn reset_temporal_state(&mut self) -> GpuResult<()> {
+        if !self.has_context() {
+            return Err(GpuError::NoGpu);
+        }
+        if self.temporal_state.is_none() {
+            return Ok(());
+        }
+
+        let neuron_count = self
+            .temporal_state
+            .as_ref()
+            .expect("checked above")
+            .neuron_count;
+        if self.modules.is_some() {
+            let reset_membrane = self.kernels()?.get_function("reset_membrane")?;
+            let grid = Self::temporal_grid(neuron_count)?;
+            {
+                let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+                let state = self.temporal_state.as_ref().expect("checked above");
+                unsafe {
+                    launch!(reset_membrane<<<grid, TEMPORAL_BLOCK_SIZE, TEMPORAL_SHARED_MEM_BYTES, stream>>>(
+                        state.membrane.as_device_ptr(),
+                        neuron_count as i32,
+                        0.0f32
+                    ))
+                    .map_err(|e| Self::ptx_launch_error(
+                        "reset_membrane",
+                        grid,
+                        TEMPORAL_BLOCK_SIZE,
+                        TEMPORAL_SHARED_MEM_BYTES,
+                        Some(neuron_count),
+                        e,
+                    ))?;
+                }
+            }
+            self.synchronize()?;
+        } else {
+            let state = self.temporal_state.as_mut().expect("checked above");
+            state.membrane.zero_prefix(neuron_count)?;
+        }
+
+        let state = self.temporal_state.as_mut().expect("checked above");
+        state.refractory.zero_prefix(state.neuron_count)?;
+        state.spikes_out.zero_prefix(state.neuron_count)?;
+        state.input_current.zero_prefix(state.neuron_count)?;
+        state.input_spikes.zero_prefix(state.n_inputs)?;
+        state.adaptation.zero_prefix(state.neuron_count)?;
+        state
+            .best_walker
+            .upload(&[0u32; 1])
+            .map_err(|e| GpuError::MemoryError(format!("reset best_walker upload failed: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Currently loaded synapse signature, if any.
+    #[cfg(feature = "saaq")]
+    pub fn synapse_signature(&self) -> Option<&str> {
+        self.temporal_state
+            .as_ref()
+            .and_then(|state| state.synapse_signature.as_deref())
+    }
+
+    /// On-device SAAQ two-pass reduction over resident membrane/adaptation.
+    ///
+    /// Public so LIM-955 can profile the unfused baseline independently of GIF.
+    #[cfg(feature = "saaq")]
+    pub fn saaq_find_best_walker(&mut self, neuron_count: usize) -> GpuResult<u32> {
+        self.ensure_temporal_state(neuron_count)?;
+
+        let state = self
+            .temporal_state
+            .as_mut()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+        let stream = self.stream.as_ref().ok_or(GpuError::NoGpu)?;
+        let grid = Self::temporal_grid(neuron_count)?;
+
+        ffi::launch_saaq_find_best_walker(
+            stream,
+            grid,
+            TEMPORAL_BLOCK_SIZE,
+            0,
+            state.membrane.as_device_ptr(),
+            state.adaptation.as_device_ptr(),
+            state.saaq_partial_scores.as_device_ptr(),
+            state.saaq_partial_walkers.as_device_ptr(),
+            state.best_walker.as_device_ptr(),
+            neuron_count as i32,
+            GIF_ADAPTATION_SCALE,
+        )?;
+
+        stream.synchronize().map_err(|e| {
+            Self::reported_launch_error(
+                "saaq_find_best_walker",
+                LaunchType::CAbiShim,
+                grid,
+                TEMPORAL_BLOCK_SIZE,
+                0,
+                Some(neuron_count),
+                e,
+            )
+        })?;
+
+        let best = state.best_walker.to_vec()?;
+        Ok(best[0])
+    }
+
+    #[cfg(feature = "saaq")]
+    fn build_temporal_state(neuron_count: usize) -> GpuResult<TemporalState> {
+        let n_inputs = neuron_count;
+        let weight_size = neuron_count * n_inputs;
+        let saaq_partials_len = Self::temporal_grid(neuron_count)? as usize;
+        Ok(TemporalState {
+            neuron_count,
+            n_inputs,
+            membrane: GpuBuffer::<f32>::from_slice(&vec![0.0f32; neuron_count])?,
+            refractory: GpuBuffer::<u32>::from_slice(&vec![0u32; neuron_count])?,
+            spikes_out: GpuBuffer::<u32>::from_slice(&vec![0u32; neuron_count])?,
+            input_current: GpuBuffer::<f32>::from_slice(&vec![0.0f32; neuron_count])?,
+            input_spikes: GpuBuffer::<f32>::from_slice(&vec![0.0f32; n_inputs])?,
+            adaptation: GpuBuffer::<f32>::from_slice(&vec![0.0f32; neuron_count])?,
+            weights_f32: {
+                let mut weights = GpuBuffer::<f32>::alloc(weight_size)?;
+                weights.zero_prefix(weight_size)?;
+                weights
+            },
+            weights_f16: None,
+            synapse_precision: SynapsePrecision::None,
+            synapse_signature: None,
+            snapshot: GpuBuffer::<f32>::from_slice(&[0.0f32; SNAPSHOT_CHANNELS])?,
+            best_walker: GpuBuffer::<u32>::from_slice(&[0u32; 1])?,
+            saaq_partial_scores: GpuBuffer::<f32>::from_slice(&vec![0.0f32; saaq_partials_len])?,
+            saaq_partial_walkers: GpuBuffer::<u32>::from_slice(&vec![0u32; saaq_partials_len])?,
+        })
     }
 
     pub fn satsolver_extract(
@@ -716,6 +1307,17 @@ impl GpuAccelerator {
     fn ceil_div_u32(value: u32, divisor: u32) -> u32 {
         value.div_ceil(divisor)
     }
+
+    #[cfg(feature = "saaq")]
+    fn require_state_neuron_count(state: &TemporalState, neuron_count: usize) -> GpuResult<()> {
+        if state.neuron_count != neuron_count {
+            return Err(GpuError::MemoryError(format!(
+                "temporal neuron_count mismatch: state has {}, requested {neuron_count}",
+                state.neuron_count
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl Drop for GpuAccelerator {
@@ -727,6 +1329,117 @@ impl Drop for GpuAccelerator {
 impl Default for GpuAccelerator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(all(test, feature = "saaq"))]
+mod saaq_tests {
+    use super::*;
+    use crate::gif::{GIF_ADAPTATION_SCALE, project_snapshot_current, saaq_find_best_walker};
+
+    #[test]
+    #[ignore] // requires GPU + driver ≥ 570
+    fn corinth_saaq_fixture_selects_global_best() {
+        let mut accelerator = GpuAccelerator::new();
+        assert!(accelerator.is_ready(), "GPU not ready");
+
+        let neuron_count = (8 * TEMPORAL_BLOCK_SIZE) as usize;
+        accelerator
+            .ensure_temporal_state(neuron_count)
+            .expect("temporal state should allocate");
+
+        let mut membrane = vec![0.0f32; neuron_count];
+        let adaptation = vec![0.0f32; neuron_count];
+        membrane[17] = 2.0;
+        membrane[5 * TEMPORAL_BLOCK_SIZE as usize + 9] = 4.5;
+        let expected = saaq_find_best_walker(&membrane, &adaptation, GIF_ADAPTATION_SCALE);
+
+        {
+            let state = accelerator
+                .temporal_state
+                .as_mut()
+                .expect("temporal state should exist");
+            state.membrane.upload(&membrane).expect("membrane upload");
+            state
+                .adaptation
+                .upload(&adaptation)
+                .expect("adaptation upload");
+        }
+
+        let best = accelerator
+            .saaq_find_best_walker(neuron_count)
+            .expect("SAAQ reduction should succeed");
+        assert_eq!(best, expected);
+        assert_eq!(best, 5 * TEMPORAL_BLOCK_SIZE + 9);
+    }
+
+    #[test]
+    #[ignore] // requires GPU + driver ≥ 570
+    fn corinth_saaq_fixture_tie_breaks_lower_index() {
+        let mut accelerator = GpuAccelerator::new();
+        assert!(accelerator.is_ready(), "GPU not ready");
+
+        let neuron_count = (8 * TEMPORAL_BLOCK_SIZE) as usize;
+        accelerator
+            .ensure_temporal_state(neuron_count)
+            .expect("temporal state should allocate");
+
+        let mut membrane = vec![0.0f32; neuron_count];
+        let adaptation = vec![0.0f32; neuron_count];
+        membrane[11] = 3.0;
+        membrane[3 * TEMPORAL_BLOCK_SIZE as usize + 4] = 3.0;
+        let expected = saaq_find_best_walker(&membrane, &adaptation, GIF_ADAPTATION_SCALE);
+
+        {
+            let state = accelerator
+                .temporal_state
+                .as_mut()
+                .expect("temporal state should exist");
+            state.membrane.upload(&membrane).expect("membrane upload");
+            state
+                .adaptation
+                .upload(&adaptation)
+                .expect("adaptation upload");
+        }
+
+        let best = accelerator
+            .saaq_find_best_walker(neuron_count)
+            .expect("SAAQ reduction should succeed");
+        assert_eq!(best, expected);
+        assert_eq!(best, 11);
+    }
+
+    #[test]
+    #[ignore] // requires GPU + driver ≥ 570
+    fn project_snapshot_matches_host_ref() {
+        let mut accelerator = GpuAccelerator::new();
+        assert!(accelerator.is_ready(), "GPU not ready");
+
+        let neuron_count = 64usize;
+        let snap = SnapshotChannels {
+            gpu_temp_c: 75.0,
+            gpu_power_w: 280.0,
+            cpu_tctl_c: 62.0,
+            cpu_package_power_w: 90.0,
+        };
+        let expected = project_snapshot_current(snap, neuron_count);
+        accelerator
+            .ensure_temporal_state(neuron_count)
+            .expect("temporal state");
+        accelerator
+            .project_snapshot_current(snap, neuron_count)
+            .expect("project");
+        let got = accelerator
+            .temporal_state
+            .as_ref()
+            .expect("state")
+            .input_current
+            .to_vec()
+            .expect("download input_current");
+        assert_eq!(got.len(), expected.len());
+        for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+            assert!((g - e).abs() < 1e-5, "input_current[{i}] gpu={g} host={e}");
+        }
     }
 }
 
@@ -751,11 +1464,33 @@ fn classify_context_failure(facts: &CapabilityFacts, error: &GpuError) -> Fallba
         .unwrap_or_else(|| classify_init_failure(facts))
 }
 
-fn capability_report_for_success(mut facts: CapabilityFacts) -> CapabilityReport {
+fn capability_report_for_success(
+    mut facts: CapabilityFacts,
+    kernels_loaded: bool,
+) -> CapabilityReport {
     facts.runtime_available = true;
     facts.device_available = true;
-    facts.kernels = KernelAvailability::all_available();
-    evaluate_capabilities(&facts)
+    if kernels_loaded {
+        facts.kernels = KernelAvailability::all_available();
+    }
+    #[cfg(feature = "saaq")]
+    {
+        let mut report = evaluate_capabilities(&facts);
+        if !kernels_loaded
+            && matches!(
+                report.fallback.as_ref().map(|f| f.reason),
+                Some(FallbackReason::KernelSpecializationUnavailable)
+            )
+        {
+            report.selected_backend = Backend::Cuda;
+            report.fallback = None;
+        }
+        report
+    }
+    #[cfg(not(feature = "saaq"))]
+    {
+        evaluate_capabilities(&facts)
+    }
 }
 
 fn capability_report_for_failure(
@@ -826,11 +1561,30 @@ mod tests {
             kernels: KernelAvailability::compiled_unverified(),
         };
 
-        let report = capability_report_for_success(facts);
+        let report = capability_report_for_success(facts, true);
 
         assert!(report.runtime_available);
         assert!(report.device_available);
         assert!(report.gpu_usable());
         assert_eq!(report.selected_backend, Backend::Cuda);
+    }
+
+    #[test]
+    #[cfg(feature = "saaq")]
+    fn capability_without_modules_keeps_gpu_usable_for_shim() {
+        let facts = CapabilityFacts {
+            cuda_built: true,
+            runtime_available: false,
+            device_available: false,
+            compute_capability: Some(ComputeCapability::REQUIRED),
+            kernels: KernelAvailability::compiled_unverified(),
+        };
+
+        let report = capability_report_for_success(facts, false);
+
+        assert_eq!(report.selected_backend, Backend::Cuda);
+        assert!(report.fallback.is_none());
+        assert!(report.gpu_usable());
+        assert!(!report.kernels.all_runtime_available());
     }
 }

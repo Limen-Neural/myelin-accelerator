@@ -27,9 +27,11 @@ runner can drive everything:
 | CTest name                       | What it runs                                                   |
 |-----------------------------------|-----------------------------------------------------------------|
 | `cargo_tests`                     | `cargo test --locked`                                            |
+| `cargo_tests_saaq`                | `cargo test --locked --features saaq`                            |
 | `cargo_build_no_default_features` | `cargo build --locked --no-default-features`                     |
 | `cargo_fmt_check`                 | `cargo fmt --check`                                              |
-| `cargo_clippy_no_default`         | `cargo clippy --locked --no-default-features -- -D warnings`     |
+| `cargo_clippy_no_default`         | `cargo clippy --locked --no-default-features --tests -- -D warnings` |
+| `cargo_clippy_saaq`               | `cargo clippy --locked --features saaq --tests -- -D warnings`   |
 | `cargo_build_bench_example`       | `cargo build --locked --features bench --example benchmark`      |
 | `cuda_kernel_build`               | Builds the `cuda_kernels` target (PTX compile)                   |
 
@@ -157,10 +159,11 @@ kernels validated end-to-end.”
 
 | Path | When CUDA is used | Typical commands |
 |------|-------------------|------------------|
-| **A. CPU-safe** | **Never** — stub / no `nvcc` | `cargo test --locked`, `cargo build --no-default-features`, `cargo clippy --no-default-features`, `cargo build --features bench --example benchmark` |
+| **A. CPU-safe** | **Never** — stub / no `nvcc` | `cargo test --locked`, `cargo test --locked --features saaq`, `cargo build --locked --no-default-features`, `cargo clippy --locked --no-default-features --tests`, `cargo clippy --locked --features saaq --tests`, `cargo build --locked --features bench --example benchmark` |
 | **B. GPU / CUDA** | Only with **`--features cuda`** (or `bench,cuda`) | See minimal/extended GPU sections below |
 
 - Default Cargo features are **empty**. Omitting `cuda` is intentional for CI and sandboxes.
+- Experimental GIF/SAAQ is **`--features saaq`**, not on `default`, and does not compile `myelin_shim` unless `cuda` is also on.
 - Seeing `cuda feature not enabled; wrote stub PTX files` after path A is **success**, not a bug.
 - `--features bench` alone still uses the stub GPU API; GPU kernel rows need **`bench,cuda`**.
 
@@ -262,8 +265,8 @@ ctest --test-dir cmake-build-debug --output-on-failure
 
 | Layer | Command | Proves |
 |-------|---------|--------|
-| CPU-safe | `cargo test` / `build --no-default-features` / `clippy --no-default-features` | Stub path; **no** `nvcc` |
-| Bench example (CPU) | `cargo build --features bench --example benchmark` | Example compiles; still **no** GPU kernels |
+| CPU-safe | `cargo test --locked` / `build --locked --no-default-features` / `clippy --locked --no-default-features` | Stub path; **no** `nvcc` |
+| Bench example (CPU) | `cargo build --locked --features bench --example benchmark` | Example compiles; still **no** GPU kernels |
 | Feature compile | `cargo build --lib --features cuda` | `nvcc` + `cust` + nvtx + PTX embed |
 | Offline ISA | `ptxas -arch=sm_120 -o /tmp/x.cubin <file.ptx>` | PTX is valid for sm_120 |
 | Runtime JIT | `cargo test --features cuda -- --ignored` | context + `KernelModule::load` on GPU |

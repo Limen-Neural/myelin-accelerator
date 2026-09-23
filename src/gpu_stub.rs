@@ -7,6 +7,8 @@ pub use crate::capability::{
 };
 use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
 pub use crate::error::{GpuError, GpuResult};
+#[cfg(feature = "saaq")]
+use crate::gif::SnapshotChannels;
 
 pub(crate) fn host_facts() -> CapabilityFacts {
     CapabilityFacts::not_built()
@@ -83,24 +85,28 @@ impl<T: Default + Clone> GpuBuffer<T> {
     }
 }
 
-impl GpuBuffer<f32> {
-    /// Zero the first `count` elements; leaves any tail untouched (host stub).
-    ///
-    /// Matches the CUDA `GpuBuffer<f32>::zero_prefix` surface so callers do not
-    /// depend on feature-specific method resolution.
-    pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
-        if count > self.data.len() {
-            return Err(GpuError::MemoryError(format!(
-                "zero_prefix: count {count} > buffer len {}",
-                self.data.len()
-            )));
+macro_rules! impl_stub_zero_prefix {
+    ($ty:ty, $zero:expr) => {
+        impl GpuBuffer<$ty> {
+            /// Zero the first `count` elements; leaves any tail untouched (host stub).
+            pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
+                if count > self.data.len() {
+                    return Err(GpuError::MemoryError(format!(
+                        "zero_prefix: count {count} > buffer len {}",
+                        self.data.len()
+                    )));
+                }
+                for slot in &mut self.data[..count] {
+                    *slot = $zero;
+                }
+                Ok(())
+            }
         }
-        for slot in &mut self.data[..count] {
-            *slot = 0.0;
-        }
-        Ok(())
-    }
+    };
 }
+
+impl_stub_zero_prefix!(f32, 0.0);
+impl_stub_zero_prefix!(u32, 0);
 
 pub struct GpuAccelerator {
     capabilities: CapabilityReport,
@@ -140,6 +146,11 @@ impl GpuAccelerator {
     }
 
     pub fn is_ready(&self) -> bool {
+        false
+    }
+
+    /// Always `false` on the CPU stub (no context, stream, or modules).
+    pub fn kernels_ready(&self) -> bool {
         false
     }
 
@@ -237,6 +248,71 @@ impl GpuAccelerator {
         Err(self.unavailable_error())
     }
 
+    #[cfg(feature = "saaq")]
+    pub fn ensure_temporal_state(&mut self, _: usize) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn project_snapshot_current(&mut self, _: SnapshotChannels, _: usize) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn gif_step_weighted_tick(&mut self, _: usize) -> GpuResult<u32> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn reset_temporal_state(&mut self) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn load_synapse_weights(&mut self, _: &[f32]) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn load_synapse_weights_named(&mut self, _: &str, _: &[f32]) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn load_synapse_weights_f16_registered(&mut self, _: &str, _: &[u16]) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn synapse_signature(&self) -> Option<&str> {
+        None
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn temporal_spikes_to_vec(&self, _: usize) -> GpuResult<Vec<u32>> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn temporal_membrane_to_vec(&self, _: usize) -> GpuResult<Vec<f32>> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn temporal_adaptation_to_vec(&self, _: usize) -> GpuResult<Vec<f32>> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn upload_temporal_input_spikes(&mut self, _: &[f32]) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    #[cfg(feature = "saaq")]
+    pub fn saaq_find_best_walker(&mut self, _: usize) -> GpuResult<u32> {
+        Err(GpuError::NoGpu)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn ternary_gemv(
         &self,
@@ -312,6 +388,8 @@ impl Default for GpuAccelerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "saaq")]
+    use crate::gif::SnapshotChannels;
 
     #[test]
     fn context_api_reports_no_compute_capability() {
@@ -513,6 +591,7 @@ mod tests {
     fn accelerator_new() {
         let acc = GpuAccelerator::new();
         assert!(!acc.is_ready());
+        assert!(!acc.kernels_ready());
         assert_eq!(acc.selected_backend(), Backend::Cpu);
         let fb = acc.fallback().expect("CPU stub records a fallback");
         assert_eq!(fb.reason, FallbackReason::CudaFeatureNotBuilt);
@@ -525,6 +604,7 @@ mod tests {
     fn accelerator_default() {
         let acc = GpuAccelerator::default();
         assert!(!acc.is_ready());
+        assert!(!acc.kernels_ready());
     }
 
     #[test]
@@ -669,6 +749,59 @@ mod tests {
             acc.ternary_gemm_async(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .unwrap_err(),
         );
+    }
+
+    #[cfg(feature = "saaq")]
+    #[test]
+    fn accelerator_temporal_methods_return_no_gpu() {
+        let mut acc = GpuAccelerator::new();
+        assert!(matches!(
+            acc.ensure_temporal_state(16).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.project_snapshot_current(SnapshotChannels::default(), 16)
+                .unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.gif_step_weighted_tick(16).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.reset_temporal_state().unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.load_synapse_weights_named("x", &[0.0]).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.load_synapse_weights_f16_registered("x", &[0u16])
+                .unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(acc.synapse_signature().is_none());
+        assert!(matches!(
+            acc.temporal_spikes_to_vec(16).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.temporal_membrane_to_vec(16).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.temporal_adaptation_to_vec(16).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.upload_temporal_input_spikes(&[0.0]).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.saaq_find_best_walker(16).unwrap_err(),
+            GpuError::NoGpu
+        ));
     }
 
     // ── Property-based tests ────────────────────────────────────────────────

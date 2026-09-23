@@ -108,7 +108,16 @@ fn bitpacking_ternary_gemm_ref_matches_gemv_columns() {
     }
 }
 
-// ── Stub-specific tests (CPU-only, no real GPU) ─────────────────────────────
+#[cfg(feature = "saaq")]
+#[test]
+fn saaq_feature_exports_gif_surface() {
+    use myelin_accelerator::gif::{GIF_LEAK, SnapshotChannels, saaq_find_best_walker};
+    let _ = SnapshotChannels::default();
+    let _ = GIF_LEAK;
+    let membrane = [1.0f32, 0.5];
+    let adaptation = [0.0f32, 0.0];
+    assert_eq!(saaq_find_best_walker(&membrane, &adaptation, 0.22), 0);
+}
 
 #[cfg(not(feature = "cuda"))]
 mod stub_contract {
@@ -168,6 +177,7 @@ mod stub_contract {
     fn accelerator_construction() {
         let acc = GpuAccelerator::new();
         assert!(!acc.is_ready());
+        assert!(!acc.kernels_ready());
         assert_eq!(acc.selected_backend(), Backend::Cpu);
         let fb = acc.fallback().expect("stub fallback record");
         assert_eq!(fb.reason, FallbackReason::CudaFeatureNotBuilt);
@@ -226,6 +236,14 @@ mod stub_contract {
             acc.ternary_gemm(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .is_err()
         );
+
+        #[cfg(feature = "saaq")]
+        {
+            let mut acc = GpuAccelerator::new();
+            assert!(acc.ensure_temporal_state(8).is_err());
+            assert!(acc.gif_step_weighted_tick(8).is_err());
+            assert!(acc.synapse_signature().is_none());
+        }
     }
 
     #[test]
