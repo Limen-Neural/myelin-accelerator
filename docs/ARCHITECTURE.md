@@ -223,7 +223,7 @@ consumers share.
 
 | Path | Purpose |
 |------|---------|
-| CPU CI | `cargo test --locked`, `cargo test --features saaq`, `cargo build --no-default-features` |
+| CPU CI | `cargo test --locked`, `cargo test --locked --features saaq`, `cargo build --locked --no-default-features` |
 | GPU local / self-hosted | `cargo test --features cuda -- --ignored`, benchmark example |
 | CLion | CMake CXX-only + `nvcc -ptx` custom target — **not** CMake native `CUDA` language |
 

@@ -85,24 +85,28 @@ impl<T: Default + Clone> GpuBuffer<T> {
     }
 }
 
-impl GpuBuffer<f32> {
-    /// Zero the first `count` elements; leaves any tail untouched (host stub).
-    ///
-    /// Matches the CUDA `GpuBuffer<f32>::zero_prefix` surface so callers do not
-    /// depend on feature-specific method resolution.
-    pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
-        if count > self.data.len() {
-            return Err(GpuError::MemoryError(format!(
-                "zero_prefix: count {count} > buffer len {}",
-                self.data.len()
-            )));
+macro_rules! impl_stub_zero_prefix {
+    ($ty:ty, $zero:expr) => {
+        impl GpuBuffer<$ty> {
+            /// Zero the first `count` elements; leaves any tail untouched (host stub).
+            pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
+                if count > self.data.len() {
+                    return Err(GpuError::MemoryError(format!(
+                        "zero_prefix: count {count} > buffer len {}",
+                        self.data.len()
+                    )));
+                }
+                for slot in &mut self.data[..count] {
+                    *slot = $zero;
+                }
+                Ok(())
+            }
         }
-        for slot in &mut self.data[..count] {
-            *slot = 0.0;
-        }
-        Ok(())
-    }
+    };
 }
+
+impl_stub_zero_prefix!(f32, 0.0);
+impl_stub_zero_prefix!(u32, 0);
 
 pub struct GpuAccelerator {
     capabilities: CapabilityReport,

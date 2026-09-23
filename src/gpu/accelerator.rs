@@ -707,14 +707,8 @@ impl GpuAccelerator {
         }
 
         let state = self.temporal_state.as_mut().expect("checked above");
-        state
-            .refractory
-            .upload(&vec![0u32; state.neuron_count])
-            .map_err(|e| GpuError::MemoryError(format!("reset refractory upload failed: {e}")))?;
-        state
-            .spikes_out
-            .upload(&vec![0u32; state.neuron_count])
-            .map_err(|e| GpuError::MemoryError(format!("reset spikes upload failed: {e}")))?;
+        state.refractory.zero_prefix(state.neuron_count)?;
+        state.spikes_out.zero_prefix(state.neuron_count)?;
         state.input_current.zero_prefix(state.neuron_count)?;
         state.input_spikes.zero_prefix(state.n_inputs)?;
         state.adaptation.zero_prefix(state.neuron_count)?;
@@ -1479,7 +1473,18 @@ fn capability_report_for_success(
     if kernels_loaded {
         facts.kernels = KernelAvailability::all_available();
     }
-    evaluate_capabilities(&facts)
+    let mut report = evaluate_capabilities(&facts);
+    #[cfg(feature = "saaq")]
+    if !kernels_loaded
+        && matches!(
+            report.fallback.as_ref().map(|f| f.reason),
+            Some(FallbackReason::KernelSpecializationUnavailable)
+        )
+    {
+        report.selected_backend = Backend::Cuda;
+        report.fallback = None;
+    }
+    report
 }
 
 fn capability_report_for_failure(
@@ -1556,5 +1561,24 @@ mod tests {
         assert!(report.device_available);
         assert!(report.gpu_usable());
         assert_eq!(report.selected_backend, Backend::Cuda);
+    }
+
+    #[test]
+    #[cfg(feature = "saaq")]
+    fn capability_without_modules_keeps_gpu_usable_for_shim() {
+        let facts = CapabilityFacts {
+            cuda_built: true,
+            runtime_available: false,
+            device_available: false,
+            compute_capability: Some(ComputeCapability::REQUIRED),
+            kernels: KernelAvailability::compiled_unverified(),
+        };
+
+        let report = capability_report_for_success(facts, false);
+
+        assert_eq!(report.selected_backend, Backend::Cuda);
+        assert!(report.fallback.is_none());
+        assert!(report.gpu_usable());
+        assert!(!report.kernels.all_runtime_available());
     }
 }

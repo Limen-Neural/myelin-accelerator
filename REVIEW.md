@@ -159,7 +159,7 @@ kernels validated end-to-end.”
 
 | Path | When CUDA is used | Typical commands |
 |------|-------------------|------------------|
-| **A. CPU-safe** | **Never** — stub / no `nvcc` | `cargo test --locked`, `cargo test --features saaq`, `cargo build --no-default-features`, `cargo clippy --no-default-features --tests`, `cargo clippy --features saaq --tests`, `cargo build --features bench --example benchmark` |
+| **A. CPU-safe** | **Never** — stub / no `nvcc` | `cargo test --locked`, `cargo test --locked --features saaq`, `cargo build --locked --no-default-features`, `cargo clippy --locked --no-default-features --tests`, `cargo clippy --locked --features saaq --tests`, `cargo build --locked --features bench --example benchmark` |
 | **B. GPU / CUDA** | Only with **`--features cuda`** (or `bench,cuda`) | See minimal/extended GPU sections below |
 
 - Default Cargo features are **empty**. Omitting `cuda` is intentional for CI and sandboxes.
@@ -265,8 +265,8 @@ ctest --test-dir cmake-build-debug --output-on-failure
 
 | Layer | Command | Proves |
 |-------|---------|--------|
-| CPU-safe | `cargo test` / `build --no-default-features` / `clippy --no-default-features` | Stub path; **no** `nvcc` |
-| Bench example (CPU) | `cargo build --features bench --example benchmark` | Example compiles; still **no** GPU kernels |
+| CPU-safe | `cargo test --locked` / `build --locked --no-default-features` / `clippy --locked --no-default-features` | Stub path; **no** `nvcc` |
+| Bench example (CPU) | `cargo build --locked --features bench --example benchmark` | Example compiles; still **no** GPU kernels |
 | Feature compile | `cargo build --lib --features cuda` | `nvcc` + `cust` + nvtx + PTX embed |
 | Offline ISA | `ptxas -arch=sm_120 -o /tmp/x.cubin <file.ptx>` | PTX is valid for sm_120 |
 | Runtime JIT | `cargo test --features cuda -- --ignored` | context + `KernelModule::load` on GPU |

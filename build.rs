@@ -444,7 +444,9 @@ fn arch_gencode_parts(arch: &str) -> (String, String) {
     let digits = arch
         .strip_prefix("sm_")
         .or_else(|| arch.strip_prefix("compute_"))
-        .unwrap_or("120");
+        .unwrap_or_else(|| {
+            panic!("MYELIN_CUDA_ARCH must look like sm_120 or compute_120, got \"{arch}\"")
+        });
     (format!("compute_{digits}"), format!("sm_{digits}"))
 }
 

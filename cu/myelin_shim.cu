@@ -65,6 +65,10 @@ extern "C" int myelin_launch_saaq_find_best_walker(
     unsigned int* partial_walkers_ptr = reinterpret_cast<unsigned int*>(partial_walkers);
     unsigned int* best_walker_ptr = reinterpret_cast<unsigned int*>(best_walker_out);
 
+    if (grid_x > 32u) {
+        return static_cast<int>(cudaErrorInvalidConfiguration);
+    }
+
     saaq_find_best_walker<<<grid_x, block_x, shared_bytes, cuda_stream>>>(
         membrane_ptr,
         adaptation_ptr,

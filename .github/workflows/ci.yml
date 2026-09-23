@@ -128,7 +128,7 @@ jobs:
           rustup component add clippy
           cargo clippy --locked --features cuda -- -D warnings
 
-      - name: Verify PTX non-stub + ternary present
+      - name: Verify PTX/fatbin non-stub + kernel entries
         shell: bash
         run: |
           set -euo pipefail
@@ -227,7 +227,7 @@ jobs:
               exit 1
             fi
           done
-          if ! ls "$ptx_dir"/libmyelin_shim.a "$ptx_dir"/myelin_shim.o 2>/dev/null | grep -q .; then
+          if [[ ! -f "$ptx_dir/libmyelin_shim.a" && ! -f "$ptx_dir/myelin_shim.o" ]]; then
             echo "::warning::Did not find myelin_shim.o / libmyelin_shim.a in $ptx_dir (cc may place the archive under OUT_DIR parent)"
           fi
 
