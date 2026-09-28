@@ -14,8 +14,20 @@ cd "${CODEX_WORKTREE_PATH:-$PWD}"
 echo "== myelin-accelerator local setup =="
 
 export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
-export PATH="$CARGO_HOME/bin:/usr/local/cuda/bin:$PATH"
+export PATH="$CARGO_HOME/bin:$PATH"
 
+if [ -z "${CUDA_NVCC:-}" ]; then
+    if [ -n "${CUDA_HOME:-}" ]; then
+        CUDA_NVCC="$CUDA_HOME/bin/nvcc"
+    else
+        CUDA_NVCC="$(command -v nvcc || true)"
+    fi
+fi
+if [ -z "${CUDA_HOME:-}" ] && [ -n "$CUDA_NVCC" ]; then
+    case "$CUDA_NVCC" in
+        */bin/nvcc) CUDA_HOME="${CUDA_NVCC%/bin/nvcc}" ;;
+    esac
+fi
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export CUDA_NVCC="${CUDA_NVCC:-$CUDA_HOME/bin/nvcc}"
 export MYELIN_CUDA_ARCH="${MYELIN_CUDA_ARCH:-sm_120}"
@@ -99,7 +111,14 @@ platform = "linux"
 name = "CUDA / Blackwell Gate"
 icon = "tool"
 command = '''
-if [ -z "${CUDA_HOME:-}" ] && [ -n "${CUDA_NVCC:-}" ]; then
+if [ -z "${CUDA_NVCC:-}" ]; then
+  if [ -n "${CUDA_HOME:-}" ]; then
+    CUDA_NVCC="$CUDA_HOME/bin/nvcc"
+  else
+    CUDA_NVCC="$(command -v nvcc || true)"
+  fi
+fi
+if [ -z "${CUDA_HOME:-}" ] && [ -n "$CUDA_NVCC" ]; then
   case "$CUDA_NVCC" in
     */bin/nvcc) CUDA_HOME="${CUDA_NVCC%/bin/nvcc}" ;;
   esac
@@ -121,7 +140,14 @@ platform = "linux"
 name = "GPU Benchmark"
 icon = "tool"
 command = '''
-if [ -z "${CUDA_HOME:-}" ] && [ -n "${CUDA_NVCC:-}" ]; then
+if [ -z "${CUDA_NVCC:-}" ]; then
+  if [ -n "${CUDA_HOME:-}" ]; then
+    CUDA_NVCC="$CUDA_HOME/bin/nvcc"
+  else
+    CUDA_NVCC="$(command -v nvcc || true)"
+  fi
+fi
+if [ -z "${CUDA_HOME:-}" ] && [ -n "$CUDA_NVCC" ]; then
   case "$CUDA_NVCC" in
     */bin/nvcc) CUDA_HOME="${CUDA_NVCC%/bin/nvcc}" ;;
   esac
