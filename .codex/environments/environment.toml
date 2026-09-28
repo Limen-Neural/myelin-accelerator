@@ -99,6 +99,11 @@ platform = "linux"
 name = "CUDA / Blackwell Gate"
 icon = "tool"
 command = '''
+if [ -z "${CUDA_HOME:-}" ] && [ -n "${CUDA_NVCC:-}" ]; then
+  case "$CUDA_NVCC" in
+    */bin/nvcc) CUDA_HOME="${CUDA_NVCC%/bin/nvcc}" ;;
+  esac
+fi
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export CUDA_NVCC="${CUDA_NVCC:-$CUDA_HOME/bin/nvcc}"
 export MYELIN_CUDA_ARCH="${MYELIN_CUDA_ARCH:-sm_120}"
@@ -116,6 +121,11 @@ platform = "linux"
 name = "GPU Benchmark"
 icon = "tool"
 command = '''
+if [ -z "${CUDA_HOME:-}" ] && [ -n "${CUDA_NVCC:-}" ]; then
+  case "$CUDA_NVCC" in
+    */bin/nvcc) CUDA_HOME="${CUDA_NVCC%/bin/nvcc}" ;;
+  esac
+fi
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export CUDA_NVCC="${CUDA_NVCC:-$CUDA_HOME/bin/nvcc}"
 export MYELIN_CUDA_ARCH="${MYELIN_CUDA_ARCH:-sm_120}"
