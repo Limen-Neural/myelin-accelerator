@@ -15,7 +15,9 @@ older commit, so verify or correct its target as part of that qualification.
 Do not publish the GitHub release before the crate is available on crates.io.
 
 The workflow checks the tag against `Cargo.toml`, records the checked-out tag
-commit SHA, and waits for the matching, unyanked crates.io version. It scans
+commit SHA, and waits for the matching, unyanked crates.io version. It verifies
+the downloaded crate archive against crates.io's checksum and requires its
+Cargo VCS revision to match the clean tag commit before reporting to Linear. It scans
 commits since the previous production version tag (including commits before
 prerelease tags). For the first release, it scans the full history, including
 the repository's first commit. Put LIM identifiers in shipped commit subjects

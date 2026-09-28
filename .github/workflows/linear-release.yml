@@ -64,17 +64,53 @@ jobs:
           echo "base_ref=$previous" >> "$GITHUB_OUTPUT"
           echo "Reporting $RELEASE_TAG at commit $sha (after $previous)"
 
-      - name: Confirm this version is live on crates.io
+      - name: Verify the published crate and its source commit
         env:
           CRATE_VERSION: ${{ steps.crate.outputs.version }}
+          SHIPPED_SHA: ${{ steps.crate.outputs.sha }}
         shell: bash
         run: |
           set -euo pipefail
           # crates.io may index a newly published crate a short time after publish.
+          artifact_dir="$(mktemp -d)"
+          trap 'rm -rf "$artifact_dir"' EXIT
           curl --fail --silent --show-error --retry 8 --retry-delay 15 \
             --retry-all-errors --user-agent 'myelin-accelerator-release-ci' \
-            "https://crates.io/api/v1/crates/myelin-accelerator/$CRATE_VERSION" \
-            | python3 -c 'import json, os, sys; v=json.load(sys.stdin)["version"]; assert v["num"] == os.environ["CRATE_VERSION"] and not v["yanked"], "Crate version unavailable or yanked"'
+            -o "$artifact_dir/version.json" \
+            "https://crates.io/api/v1/crates/myelin-accelerator/$CRATE_VERSION"
+          curl --fail --silent --show-error --location --retry 8 --retry-delay 15 \
+            --retry-all-errors --user-agent 'myelin-accelerator-release-ci' \
+            -o "$artifact_dir/package.crate" \
+            "https://crates.io/api/v1/crates/myelin-accelerator/$CRATE_VERSION/download"
+          python3 - "$artifact_dir/version.json" "$artifact_dir/package.crate" <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
+          import tarfile
+          from pathlib import Path
+
+          version = os.environ["CRATE_VERSION"]
+          shipped_sha = os.environ["SHIPPED_SHA"]
+          metadata = json.loads(Path(sys.argv[1]).read_text())["version"]
+          if metadata["num"] != version or metadata["yanked"]:
+              sys.exit("Crate version is unavailable or yanked")
+          artifact = Path(sys.argv[2])
+          if hashlib.sha256(artifact.read_bytes()).hexdigest() != metadata["checksum"]:
+              sys.exit("Crate archive checksum differs from crates.io metadata")
+          with tarfile.open(artifact, "r:gz") as archive:
+              vcs_path = f"myelin-accelerator-{version}/.cargo_vcs_info.json"
+              try:
+                  vcs_file = archive.extractfile(vcs_path)
+              except KeyError:
+                  sys.exit("Published crate has no Cargo VCS information")
+              if vcs_file is None:
+                  sys.exit("Published crate has no Cargo VCS information")
+              vcs = json.load(vcs_file)["git"]
+          if vcs["sha1"] != shipped_sha or vcs.get("dirty", False):
+              sys.exit("Published crate does not match the clean release tag commit")
+          print(f"Verified published crate {version} from commit {shipped_sha}")
+          PY
 
       - name: Sync shipped issues and commit to scheduled release
         id: sync
