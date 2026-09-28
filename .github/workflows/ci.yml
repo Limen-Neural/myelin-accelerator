@@ -149,15 +149,13 @@ jobs:
             fi
             echo "✓ $f targets sm_120 (${size} bytes)"
           done
-          for kernel in ternary_gemv ternary_gemm; do
-            if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                "$ptx_dir/ternary_gemm_sm_120.ptx"; then
-              echo "✓ ternary_gemm PTX: $kernel"
-            else
-              echo "::error::Missing kernel entry: $kernel"
-              exit 1
-            fi
-          done
+
+      - name: Validate PTX kernel symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          ./scripts/check_ptx_entries.sh "$ptx_dir" cloud
 
       - name: Offline ptxas assemble (sm_120)
         shell: bash
@@ -271,55 +269,9 @@ jobs:
           set -euo pipefail
           for profile in debug release; do
             ptx_dir="$(ls -td target/$profile/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
-            echo ""
             echo "Checking kernel entry points in $profile PTX files..."
-
-            for kernel in poisson_encode lif_step lif_step_weighted spike_rate \
-                          reset_membrane stdp_update_weights stdp_update_traces neuro_bias_logits \
-                          membrane_dv_dt_reduce_pass1 routing_entropy_reduce_pass1 \
-                          latent_reduce_pass2; do
-              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                  "$ptx_dir/spiking_network_sm_120.ptx"; then
-                echo "✓ $profile spiking_network: $kernel"
-              else
-                echo "::error::Missing kernel entry: $kernel in $profile spiking_network PTX"
-                exit 1
-              fi
-            done
-
-            for kernel in cosine_similarity_batched cosine_similarity_top_k; do
-              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                  "$ptx_dir/vector_similarity_sm_120.ptx"; then
-                echo "✓ $profile vector_similarity: $kernel"
-              else
-                echo "::error::Missing kernel entry: $kernel in $profile vector_similarity PTX"
-                exit 1
-              fi
-            done
-
-            for kernel in satsolver_init satsolver_step satsolver_aux_update \
-                          satsolver_check_solution satsolver_extract \
-                          satsolver_best_reduce_pass1 satsolver_best_reduce_pass2; do
-              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                  "$ptx_dir/satsolver_sm_120.ptx"; then
-                echo "✓ $profile satsolver: $kernel"
-              else
-                echo "::error::Missing kernel entry: $kernel in $profile satsolver PTX"
-                exit 1
-              fi
-            done
-
-            for kernel in ternary_gemv ternary_gemm; do
-              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                  "$ptx_dir/ternary_gemm_sm_120.ptx"; then
-                echo "✓ $profile ternary_gemm: $kernel"
-              else
-                echo "::error::Missing kernel entry: $kernel in $profile ternary_gemm PTX"
-                exit 1
-              fi
-            done
+            ./scripts/check_ptx_entries.sh "$ptx_dir" "$profile"
           done
-          echo ""
           echo "All kernel entry points verified for both debug and release."
 
       - name: Offline ptxas assemble (sm_120)

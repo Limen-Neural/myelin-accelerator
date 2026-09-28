@@ -46,6 +46,21 @@ const SPIKING_KERNELS: &[&str] = &[
     "latent_reduce_pass2",
 ];
 
+const VECTOR_SIMILARITY_KERNELS: &[&str] =
+    &["cosine_similarity_batched", "cosine_similarity_top_k"];
+
+const SATSOLVER_KERNELS: &[&str] = &[
+    "satsolver_init",
+    "satsolver_step",
+    "satsolver_aux_update",
+    "satsolver_check_solution",
+    "satsolver_extract",
+    "satsolver_best_reduce_pass1",
+    "satsolver_best_reduce_pass2",
+];
+
+const TERNARY_GEMM_KERNELS: &[&str] = &["ternary_gemv", "ternary_gemm"];
+
 // ── KernelModule ─────────────────────────────────────────────────────────────
 
 /// Manages compiled PTX modules and kernel function handles.
@@ -99,7 +114,7 @@ impl KernelModule {
             &mut func_map,
             VECTOR_SIMILARITY_PTX,
             "vector_similarity",
-            &["cosine_similarity_batched", "cosine_similarity_top_k"],
+            VECTOR_SIMILARITY_KERNELS,
         ) {
             availability.vector_similarity = Some(false);
             return Err(KernelLoadFailure {
@@ -113,15 +128,7 @@ impl KernelModule {
             &mut func_map,
             SATSOLVER_PTX,
             "satsolver",
-            &[
-                "satsolver_init",
-                "satsolver_step",
-                "satsolver_aux_update",
-                "satsolver_check_solution",
-                "satsolver_extract",
-                "satsolver_best_reduce_pass1",
-                "satsolver_best_reduce_pass2",
-            ],
+            SATSOLVER_KERNELS,
         ) {
             availability.satsolver = Some(false);
             return Err(KernelLoadFailure {
@@ -135,7 +142,7 @@ impl KernelModule {
             &mut func_map,
             TERNARY_GEMM_PTX,
             "ternary_gemm",
-            &["ternary_gemv", "ternary_gemm"],
+            TERNARY_GEMM_KERNELS,
         ) {
             availability.ternary_gemm = Some(false);
             return Err(KernelLoadFailure {
