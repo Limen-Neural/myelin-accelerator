@@ -1,34 +1,7 @@
-tests/gpu_buffer.rs
-  s_518f08f6fdbafe::t_9e79e128fa378c 15,35-48
-src/gpu/accelerator.rs
-  s_518f08f6fdbafe::t_5bce79b70b767c 605-607,729-731
-  s_518f08f6fdbafe::t_39e5ed115617da 641-647,767-773,867
-  s_518f08f6fdbafe::t_5696336fcf6739 863-866
-Cargo.toml
-  s_518f08f6fdbafe::t_71265474bb8c8c 9
-.codex/environments/environment.toml
-  ai_agent 1-117
-tests/ternary_gpu.rs
-  s_518f08f6fdbafe::t_36f14f836cc874 340-343,349-352,434-442,448-451
-  s_518f08f6fdbafe::t_f49013a9d1a5fa 334,413-433,443-447,452
-  s_518f08f6fdbafe::t_f65f030023e0b0 328-333,335-339,344-348,353-355
-src/gpu/memory.rs
-  s_518f08f6fdbafe::t_39e5ed115617da 10,131-133,149-153,158-172
-  s_518f08f6fdbafe::t_5bce79b70b767c 154-157
 ---
 {
   "schema_version": "authorship/3.0.0",
   "git_ai_version": "1.5.2",
   "base_commit_sha": "2ae49ef35e375a58828013f6ae82c6d08a15c081",
-  "prompts": {},
-  "sessions": {
-    "s_518f08f6fdbafe": {
-      "agent_id": {
-        "tool": "codex",
-        "id": "01a0e678-793a-7491-a2dc-0ff902750aad",
-        "model": "gpt-6-sol"
-      },
-      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
-    }
-  }
+  "prompts": {}
 }
