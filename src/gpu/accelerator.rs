@@ -602,7 +602,11 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
-    /// Async variant of [`Self::ternary_gemv`].
+    /// Async variant of [`Self::ternary_gemv`]. All output writes are enqueued
+    /// on the accelerator stream. When `m > 0`, the empty-K path waits for
+    /// stream completion before returning. Calls with `m == 0` return
+    /// immediately; other paths require [`Self::synchronize`] before reading
+    /// or dropping any argument buffer.
     #[allow(clippy::too_many_arguments)]
     pub fn ternary_gemv_async(
         &self,
@@ -636,7 +640,7 @@ impl GpuAccelerator {
         }
         if k == 0 {
             // Device memset — no host-sized staging buffer; preserve pooled tail.
-            y.zero_prefix(m_u)?;
+            self.zero_output_prefix(y, m_u)?;
             return Ok(());
         }
 
@@ -718,7 +722,11 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
-    /// Async variant of [`Self::ternary_gemm`].
+    /// Async variant of [`Self::ternary_gemm`]. All output writes are enqueued
+    /// on the accelerator stream. When `m > 0 && n > 0`, the empty-K path
+    /// waits for stream completion before returning. Calls with `m == 0 ||
+    /// n == 0` return immediately; other paths require [`Self::synchronize`]
+    /// before reading or dropping any argument buffer.
     #[allow(clippy::too_many_arguments)]
     pub fn ternary_gemm_async(
         &self,
@@ -754,7 +762,7 @@ impl GpuAccelerator {
         }
         if k == 0 {
             // Device memset — no host-sized staging buffer; preserve pooled tail.
-            c.zero_prefix(m_u.saturating_mul(n_u))?;
+            self.zero_output_prefix(c, m_u.saturating_mul(n_u))?;
             return Ok(());
         }
 
@@ -828,6 +836,17 @@ impl GpuAccelerator {
         Ok(())
     }
 
+    fn zero_output_prefix(&self, output: &mut GpuBuffer<f32>, count: usize) -> GpuResult<()> {
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
+        // SAFETY: output and stream remain alive until the synchronization
+        // below completes; all accelerator work uses this same stream.
+        unsafe { output.zero_prefix_on(count, stream) }?;
+        self.synchronize()
+    }
+
     fn expect_len(name: &str, actual: usize, minimum: usize) -> GpuResult<()> {
         if actual < minimum {
             return Err(GpuError::invalid_input(format!(
@@ -844,7 +863,11 @@ impl GpuAccelerator {
 
 impl Drop for GpuAccelerator {
     fn drop(&mut self) {
-        let _ = self.synchronize();
+        if self.stream.is_some()
+            && let Err(error) = self.synchronize()
+        {
+            warn!(%error, "accelerator stream synchronization failed during drop");
+        }
     }
 }
 
