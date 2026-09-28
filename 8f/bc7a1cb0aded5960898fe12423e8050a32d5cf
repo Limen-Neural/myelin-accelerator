@@ -1,19 +1,7 @@
-.codex/environments/environment.toml
-  s_518f08f6fdbafe::t_67cf15c8405358 27-29,123-125,153-155
 ---
 {
   "schema_version": "authorship/3.0.0",
   "git_ai_version": "1.5.2",
   "base_commit_sha": "8fbc7a1cb0aded5960898fe12423e8050a32d5cf",
-  "prompts": {},
-  "sessions": {
-    "s_518f08f6fdbafe": {
-      "agent_id": {
-        "tool": "codex",
-        "id": "01a0e678-793a-7491-a2dc-0ff902750aad",
-        "model": "gpt-6-sol"
-      },
-      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
-    }
-  }
+  "prompts": {}
 }
