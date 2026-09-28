@@ -48,11 +48,16 @@ jobs:
             echo "::error::Checkout is not the release tag commit"
             exit 1
           fi
-          # Scan the shipped range, including LIM identifiers in older commits.
-          # For the first release, scan from the repository's initial commit.
-          previous="$(git tag --merged HEAD -l 'v[0-9]*' | grep -vxF "$RELEASE_TAG" | sort -V | tail -1 || true)"
+          # Only production version tags can bound a production issue scan.
+          # In particular, an RC tag must not hide issues shipped before it.
+          previous="$(git tag --merged HEAD -l 'v*' \
+            | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+            | grep -vxF "$RELEASE_TAG" | sort -V | tail -1 || true)"
           if [[ -z "$previous" ]]; then
-            previous="$(git rev-list --max-parents=0 HEAD | tail -1)"
+            # The Linear base is exclusive. A local empty commit, unrelated to
+            # HEAD, makes empty..HEAD include even the repository's root commit.
+            empty_tree="$(git mktree </dev/null)"
+            previous="$(git -c user.name='Release CI' -c user.email='release-ci@users.noreply.github.com' commit-tree "$empty_tree" -m 'Empty release scan base')"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"

@@ -15,9 +15,10 @@ Do not publish the GitHub release before the crate is available on crates.io.
 
 The workflow checks the tag against `Cargo.toml`, records the checked-out tag
 commit SHA, and waits for the matching, unyanked crates.io version. It scans
-commits since the previous version tag (or the repository's first commit for
-the first release), so put LIM identifiers in shipped commit subjects or link
-the corresponding pull requests to Linear issues. The official Linear action
+commits since the previous production version tag (including commits before
+prerelease tags). For the first release, it scans the full history, including
+the repository's first commit. Put LIM identifiers in shipped commit subjects
+or link the corresponding pull requests to Linear issues. The official Linear action
 then syncs that version and its issues to the pipeline, links the crate,
 commit, and GitHub release, and completes the same version. Linear's pipeline
 settings generate release notes and move open issues on completion.
