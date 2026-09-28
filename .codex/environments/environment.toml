@@ -24,8 +24,9 @@ if [ -z "${CUDA_NVCC:-}" ]; then
     fi
 fi
 if [ -z "${CUDA_HOME:-}" ] && [ -n "$CUDA_NVCC" ]; then
-    case "$CUDA_NVCC" in
-        */bin/nvcc) CUDA_HOME="${CUDA_NVCC%/bin/nvcc}" ;;
+    cuda_nvcc_root_path="$(readlink -f "$CUDA_NVCC" 2>/dev/null || printf '%s' "$CUDA_NVCC")"
+    case "$cuda_nvcc_root_path" in
+        */bin/nvcc) CUDA_HOME="${cuda_nvcc_root_path%/bin/nvcc}" ;;
     esac
 fi
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
@@ -119,8 +120,9 @@ if [ -z "${CUDA_NVCC:-}" ]; then
   fi
 fi
 if [ -z "${CUDA_HOME:-}" ] && [ -n "$CUDA_NVCC" ]; then
-  case "$CUDA_NVCC" in
-    */bin/nvcc) CUDA_HOME="${CUDA_NVCC%/bin/nvcc}" ;;
+  cuda_nvcc_root_path="$(readlink -f "$CUDA_NVCC" 2>/dev/null || printf '%s' "$CUDA_NVCC")"
+  case "$cuda_nvcc_root_path" in
+    */bin/nvcc) CUDA_HOME="${cuda_nvcc_root_path%/bin/nvcc}" ;;
   esac
 fi
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
@@ -148,8 +150,9 @@ if [ -z "${CUDA_NVCC:-}" ]; then
   fi
 fi
 if [ -z "${CUDA_HOME:-}" ] && [ -n "$CUDA_NVCC" ]; then
-  case "$CUDA_NVCC" in
-    */bin/nvcc) CUDA_HOME="${CUDA_NVCC%/bin/nvcc}" ;;
+  cuda_nvcc_root_path="$(readlink -f "$CUDA_NVCC" 2>/dev/null || printf '%s' "$CUDA_NVCC")"
+  case "$cuda_nvcc_root_path" in
+    */bin/nvcc) CUDA_HOME="${cuda_nvcc_root_path%/bin/nvcc}" ;;
   esac
 fi
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
