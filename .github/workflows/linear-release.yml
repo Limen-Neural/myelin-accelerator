@@ -81,7 +81,6 @@ jobs:
           name: v${{ steps.crate.outputs.version }}
           base_ref: ${{ steps.crate.outputs.base_ref }}
           no_branch_ref_detection: true
-          description: 'Published crate myelin-accelerator@${{ steps.crate.outputs.version }} from commit ${{ steps.crate.outputs.sha }}.'
           links: |
             crates.io=https://crates.io/crates/myelin-accelerator/${{ steps.crate.outputs.version }}
             Shipped commit=https://github.com/${{ github.repository }}/commit/${{ steps.crate.outputs.sha }}
