@@ -222,6 +222,12 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
+    /// Async variant of [`Self::satsolver_extract`]: enqueues the launch on the
+    /// internal stream and returns without waiting.
+    ///
+    /// The caller must call [`Self::synchronize`] before reading `output` on the
+    /// host or dropping/reusing any argument buffer: `cust` frees device memory
+    /// synchronously on `Drop`, which is not ordered against a pending launch.
     pub fn satsolver_extract_async(
         &self,
         assignment: &GpuBuffer<u8>,
@@ -263,6 +269,25 @@ impl GpuAccelerator {
         let grid = Self::ceil_div_u32(n_vars as u32, SATSOLVER_BLOCK_SIZE);
         let block = SATSOLVER_BLOCK_SIZE;
 
+        // SAFETY: launching the `satsolver_extract` kernel.
+        // - ABI: the CUDA entry (cu/satsolver.cu) is
+        //   `(const u8* assignment, const i32* best_walker, u8* output, i32 n_vars, i32 n_walkers)`.
+        //   Arguments below match that order and type: `assignment`/`best_walker` are read-only
+        //   device pointers, `output` is the write target, and the two trailing scalars are `i32`
+        //   (`n_vars` is re-narrowed from the validated `usize`; `n_walkers` is the original `i32`).
+        // - Bounds: `n_vars >= 1` and `n_walkers > 0` are validated above; `assignment` has
+        //   `>= n_walkers*n_vars` elements, `best_walker >= 1`, and `output >= n_vars` (checked via
+        //   `expect_len`). The kernel guards `var >= n_vars` and clamps an out-of-range walker index
+        //   to 0, so every `assignment[bw*n_vars + var]` read and `output[var]` write is in bounds.
+        // - Launch dims: `grid = ceil_div(n_vars, block)` covers all `n_vars` output threads;
+        //   dynamic shared memory is 0 (the kernel declares none).
+        // - Lifetime/aliasing: `assignment`, `best_walker`, `output` are borrowed for this call and
+        //   `output` is uniquely `&mut`, so there is no host aliasing; the buffers are owned by the
+        //   caller and outlive the borrow. Completion is forced by the `synchronize()` in the
+        //   synchronous `satsolver_extract` wrapper before the buffers can be freed or reused; the
+        //   async form documents that the caller must synchronize before dropping them.
+        // - Context/module/stream: `self._ctx`, `self.modules`, and `self.stream` are all `Some`
+        //   here (readiness is required to reach a launch) and live as long as `self`.
         unsafe {
             launch!(satsolver_extract<<<grid, block, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
                 assignment.as_device_ptr(),
@@ -313,6 +338,11 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
+    /// Async variant of [`Self::satsolver_aux_reduce_best`]: enqueues both
+    /// reduction launches on the internal stream and returns without waiting.
+    ///
+    /// The caller must call [`Self::synchronize`] before reading `best_score` /
+    /// `best_walker` on the host or dropping/reusing any argument buffer.
     // 11 parameters mirror the satsolver_aux_update CUDA kernel ABI;
     // grouping them would require a context struct on every call site
     // without simplifying the launch. Allow the clippy lint.
@@ -407,6 +437,38 @@ impl GpuAccelerator {
         let partial_scores = partial_scores.as_ref().expect("partial_scores buffer");
         let partial_walkers = partial_walkers.as_ref().expect("partial_walkers buffer");
 
+        // SAFETY: two stream-ordered launches implementing the block-partial + final reduction.
+        //
+        // `satsolver_aux_update`:
+        // - ABI: the CUDA entry is `(const u8* assignment, u8* sat_flags, const i32* scores,
+        //   i32* best_score, i32* best_walker, const i32* clauses, i32 n_walkers, i32 n_vars,
+        //   i32 n_clauses, i32 clause_len)`. This kernel emits ONE (score, walker) pair per block,
+        //   so the wrapper deliberately passes the `partial_scores`/`partial_walkers` scratch
+        //   buffers into the kernel's `best_score`/`best_walker` parameter slots (both `i32*`,
+        //   matching order and type); the true `best_score`/`best_walker` are reduced by pass2.
+        // - Bounds: `n_walkers > 0` and `n_vars,n_clauses,clause_len >= 0` are validated; each input
+        //   buffer is length-checked via `expect_len` (`assignment >= n_walkers*n_vars`,
+        //   `sat_flags >= n_walkers*n_clauses`, `scores >= n_walkers`, `clauses >= n_clauses*clause_len`).
+        //   `partial_scores`/`partial_walkers` are (re)allocated above to hold `>= grid_x` elements,
+        //   and the kernel writes exactly one pair per block (`gridDim.x == grid_x`), so every write
+        //   `partial_*[blockIdx.x]` is in bounds. The kernel guards `walker >= n_walkers`.
+        // - Launch dims: `grid_x = ceil_div(n_walkers, block)`, `block = 256`; shared memory is 0
+        //   (the kernel uses a fixed `__shared__ int[32]`, not dynamic shared memory).
+        //
+        // `satsolver_best_reduce_pass2`:
+        // - ABI: `(const i32* partial_scores, const i32* partial_walkers, i32* best_score,
+        //   i32* best_walker, i32 n_partials)`; arguments match. `partial_len as i32` is the exact
+        //   number of partials produced by the previous launch (`grid_x`, which fits u32/i32 here).
+        // - Bounds: reads `partial_*[0..n_partials]` (in bounds by the alloc above) and writes the
+        //   single-element `best_score`/`best_walker` (each `expect_len(.., 1)`-checked). Launched
+        //   with one block as the kernel documents (`__launch_bounds__(256)`).
+        //
+        // Ordering/lifetime: both launches use `self.stream`, so pass2 observes pass1's writes
+        // without an intervening host sync. All buffers are borrowed for the call (`sat_flags`,
+        // `best_score`, `best_walker` uniquely `&mut`; no host aliasing) and the scratch buffers are
+        // owned by `self`. The synchronous `satsolver_aux_reduce_best` wrapper calls `synchronize()`
+        // before returning; the async form documents the caller must synchronize before freeing or
+        // reusing any argument. Context/module/stream are `Some` and live as long as `self`.
         unsafe {
             launch!(satsolver_aux_update<<<grid_x, block, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
                 assignment.as_device_ptr(),
@@ -453,6 +515,11 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
+    /// Async variant of [`Self::poisson_encode`]: enqueues the launch on the
+    /// internal stream and returns without waiting.
+    ///
+    /// The caller must call [`Self::synchronize`] before reading `spikes` on the
+    /// host or dropping/reusing either buffer.
     pub fn poisson_encode_async(
         &self,
         stimuli: &GpuBuffer<f32>,
@@ -461,6 +528,16 @@ impl GpuAccelerator {
     ) -> GpuResult<()> {
         let n = stimuli.len();
         Self::expect_len("spikes", spikes.len(), n)?;
+
+        // The CUDA kernel takes the element count as `int`. Reject `n > i32::MAX`
+        // before the cast: `n as i32` would otherwise wrap negative and the
+        // kernel's `tid >= n` guard would make every thread skip, silently
+        // producing no output. `n as u32` for the grid is safe once `n` fits i32.
+        let n_i32 = i32::try_from(n).map_err(|_| {
+            GpuError::invalid_input(format!(
+                "poisson_encode: element count {n} exceeds i32::MAX kernel limit"
+            ))
+        })?;
 
         let kernels = self.kernels()?;
         let func = kernels.get_function("poisson_encode")?;
@@ -472,11 +549,26 @@ impl GpuAccelerator {
         let block = 256;
         let grid = Self::ceil_div_u32(n as u32, block);
 
+        // SAFETY: launching the `poisson_encode` kernel.
+        // - ABI: the CUDA entry (cu/spiking_network.cu) is
+        //   `(const float* stimuli, unsigned int* spikes, int n, unsigned int seed)`. Arguments match:
+        //   `stimuli` is a read-only f32 device pointer, `spikes` is the u32 write target, `n_i32`
+        //   is the element count, and `seed` is the u32 RNG seed.
+        // - Bounds: `spikes.len() == stimuli.len() == n` is enforced above via `expect_len`, and
+        //   `n` is checked to fit `i32` via `i32::try_from` (so `n_i32 >= 0` and the grid cast
+        //   `n as u32` cannot wrap). The kernel guards `tid >= n`, so every `stimuli[tid]` read and
+        //   `spikes[tid]` write is in bounds.
+        // - Launch dims: `grid = ceil_div(n, 256)` covers all `n` threads; 0 dynamic shared memory
+        //   (the kernel declares none).
+        // - Lifetime/aliasing: `stimuli` is shared `&`, `spikes` is unique `&mut` (no host aliasing);
+        //   both are caller-owned and outlive the borrow. The synchronous `poisson_encode` wrapper
+        //   synchronizes before returning; the async form requires the caller to synchronize before
+        //   freeing/reusing the buffers. Context/module/stream are `Some` for as long as `self`.
         unsafe {
             launch!(func<<<grid, block, 0, stream>>>(
                 stimuli.as_device_ptr(),
                 spikes.as_device_ptr(),
-                n as i32,
+                n_i32,
                 seed,
             ))
             .map_err(|e| {
@@ -571,6 +663,21 @@ impl GpuAccelerator {
         let skip = if skip_zeros { 1i32 } else { 0i32 };
 
         range_push!("ternary_gemv");
+        // SAFETY: launching the `ternary_gemv` kernel.
+        // - ABI: the CUDA entry (cu/ternary_gemm.cu) is `(const u32* packed_w, const f32* scales,
+        //   const f32* x, f32* y, i32 M, i32 K, i32 group_size, i32 skip_zeros)`. Arguments match in
+        //   order and type: three read-only device pointers, the `y` write target, then the four
+        //   `i32` scalars (`skip` is `0`/`1`).
+        // - Bounds: `m,k >= 0` and `group_size > 0` are validated. The `m == 0` and `k == 0` cases
+        //   returned earlier, so here `m,k >= 1`. Buffer lengths are checked via `expect_len`:
+        //   `y >= m`, `packed_w >= m*ceil(k/TERNARY_VALUES_PER_WORD)`, `scales >= m*ceil(k/group)`,
+        //   `x >= k`. These are exactly the strides the kernel indexes (one output row per thread,
+        //   `words_per_row` words and `n_groups` scales per row), so all accesses are in bounds.
+        // - Launch dims: `grid = ceil_div(m, 256)` covers all `m` output rows; 0 dynamic shared memory.
+        // - Lifetime/aliasing: `packed_w`/`scales`/`x` are shared `&`, `y` is unique `&mut` (no host
+        //   aliasing); all are caller-owned and outlive the borrow. The synchronous `ternary_gemv`
+        //   wrapper synchronizes before returning; the async form requires the caller to synchronize
+        //   before freeing/reusing the buffers. Context/module/stream are `Some` for as long as `self`.
         let launch_result = unsafe {
             launch!(func<<<grid, block, 0, stream>>>(
                 packed_w.as_device_ptr(),
@@ -683,6 +790,23 @@ impl GpuAccelerator {
         let skip = if skip_zeros { 1i32 } else { 0i32 };
 
         range_push!("ternary_gemm");
+        // SAFETY: launching the `ternary_gemm` kernel.
+        // - ABI: the CUDA entry (cu/ternary_gemm.cu) is `(const u32* packed_w, const f32* scales,
+        //   const f32* b, f32* c, i32 M, i32 K, i32 N, i32 group_size, i32 skip_zeros)`. Arguments
+        //   match in order and type: three read-only device pointers, the `c` write target, then the
+        //   five `i32` scalars (`skip` is `0`/`1`).
+        // - Bounds: `m,k,n >= 0` and `group_size > 0` are validated. The `m == 0 || n == 0` and
+        //   `k == 0` cases returned earlier, so here `m,k,n >= 1`. Buffer lengths are checked via
+        //   `expect_len`: `c >= m*n`, `packed_w >= m*ceil(k/TERNARY_VALUES_PER_WORD)`,
+        //   `scales >= m*ceil(k/group)`, `b >= k*n`. The kernel maps one flattened `M*N` output
+        //   element per thread and indexes those same strides, so all accesses are in bounds.
+        // - Launch dims: `grid = ceil_div(M*N, 256)` computed in u64 and rejected above if it would
+        //   exceed `u32::MAX`, so the 1-D grid covers every output element without overflow;
+        //   0 dynamic shared memory.
+        // - Lifetime/aliasing: `packed_w`/`scales`/`b` are shared `&`, `c` is unique `&mut` (no host
+        //   aliasing); all are caller-owned and outlive the borrow. The synchronous `ternary_gemm`
+        //   wrapper synchronizes before returning; the async form requires the caller to synchronize
+        //   before freeing/reusing the buffers. Context/module/stream are `Some` for as long as `self`.
         let launch_result = unsafe {
             launch!(func<<<grid, block, 0, stream>>>(
                 packed_w.as_device_ptr(),

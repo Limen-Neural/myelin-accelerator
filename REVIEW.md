@@ -283,8 +283,15 @@ matching ShipOfTheseus `/usr/local/cuda` → `cuda-13.3`.
 | Lint / CPU checks | GitHub-hosted `ubuntu-latest` | No — stub / no-default-features |
 | `CUDA PTX compile [cloud, toolkit 13.3.1]` | `ubuntu-latest` + CUDA **13.3.1** container | **Compile only** — `cargo build/clippy --features cuda`, PTX non-stub + `ternary_gemm`, offline `ptxas -arch=sm_120` |
 | `CUDA build [self-hosted] (sm_120)` | Labels `self-hosted,linux,x64,gpu,cuda` | Full: build/clippy/test + **`--ignored` goldens** + PTX symbols (incl. ternary) + ptxas + short `bench,cuda` |
-| `Docker CUDA 13.3.1` | GitHub-hosted | Image build (`Dockerfile`) — compile path inside 13.3.1 devel image |
 | Local quality gate above | Developer workstation | Full runtime (same as self-hosted, optional Nsight) |
+
+The GitHub-hosted `Docker CUDA 13.3.1` image-build job was removed. It built
+`./Dockerfile` via `docker/build-push-action` inside the 13.3.1 devel image
+(compile-only, no GPU runtime). The `cargo build/clippy --features cuda` compile
+signal it produced is already covered by the `CUDA PTX compile [cloud]` job; the
+only thing dropped is automated verification that the `Dockerfile` itself still
+builds. The `Dockerfile` is retained for local/manual image builds — build it
+on demand with `docker build -t myelin-accelerator:cuda13.3.1 .`.
 
 **Branch protection (recommended):** require lint, CPU checks, and cloud PTX compile.
 Make self-hosted required only when the runner is reliably online; otherwise PRs queue.
@@ -318,7 +325,7 @@ Recorded while validating the local GPU quality gate (updated after toolkit
 | Layer | Observed |
 |-------|----------|
 | GPU | NVIDIA GeForce RTX 5080 (`sm_120`), ~16 GB |
-| Driver | 610.x KMD; **CUDA UMD 13.3** |
+| Driver | **610.43.03** KMD; **CUDA UMD 13.3** |
 | Toolkit (active) | **13.3.1** (`nvcc` release **13.3**, V13.3.73) via `/usr/local/cuda` |
 | Prior toolkit still on disk | `cuda-13.1`, `cuda-13.2` (not default) |
 | Nsight Systems | `nsys` **2026.1.3** (from active toolkit PATH) |
