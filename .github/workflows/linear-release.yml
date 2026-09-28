@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: linear-release-${{ github.event.release.tag_name }}
@@ -60,8 +61,17 @@ jobs:
               continue
             fi
             if git merge-base --is-ancestor "refs/tags/$candidate^{commit}" HEAD 2>/dev/null; then
-              previous="$candidate"
-              break
+              candidate_sha="$(git rev-parse "refs/tags/$candidate^{commit}")"
+              reported_tags="$(gh api --paginate \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/linear-release.yml/runs?event=release&head_sha=$candidate_sha&status=success&per_page=100" \
+                --jq '.workflow_runs[] | .head_branch')"
+              if ! grep -Fxq "$candidate" <<< "$reported_tags"; then
+                echo "::error::Stable release $candidate has no successful Linear report; rerun its workflow before $RELEASE_TAG"
+                exit 1
+              fi
+              if [[ -z "$previous" ]]; then
+                previous="$candidate"
+              fi
             fi
           done < <(printf '%s\n' "$published_tags" | sort -Vr)
           if [[ -z "$previous" ]]; then
