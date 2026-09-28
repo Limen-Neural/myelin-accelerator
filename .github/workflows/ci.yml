@@ -275,7 +275,7 @@ jobs:
             echo "Checking kernel entry points in $profile PTX files..."
 
             for kernel in poisson_encode lif_step lif_step_weighted spike_rate \
-                          reset_membrane stdp_update neuro_bias_logits \
+                          reset_membrane stdp_update_weights stdp_update_traces neuro_bias_logits \
                           membrane_dv_dt_reduce_pass1 routing_entropy_reduce_pass1 \
                           latent_reduce_pass2; do
               if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \

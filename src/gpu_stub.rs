@@ -181,6 +181,34 @@ impl GpuAccelerator {
     pub fn kernels(&self) -> GpuResult<&KernelModule> {
         Err(self.unavailable_error())
     }
+    #[allow(clippy::too_many_arguments)]
+    pub fn stdp_update(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+        _: f32,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn stdp_update_async(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+        _: f32,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
     pub fn satsolver_extract(
         &self,
         _: &GpuBuffer<u8>,
