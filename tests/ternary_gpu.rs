@@ -353,6 +353,28 @@ fn ternary_gemv_async_empty_k_follows_overlapping_launch() {
     );
     assert_eq!(&got[m..], &[7.0, 7.0]);
     acc.synchronize().expect("stream remains healthy");
+
+    // Reverse the order on disjoint outputs: synchronize() must also observe
+    // an empty-K memset queued before a later accelerator-stream launch.
+    y.upload(&vec![7.0f32; m + 2]).unwrap();
+    let mut other = GpuBuffer::<f32>::alloc(m).unwrap();
+    acc.ternary_gemv_async(&empty_words, &empty, &empty, &mut y, m as i32, 0, 1, false)
+        .expect("empty-K GEMV before overlap");
+    acc.ternary_gemv_async(
+        &packed, &scales, &x, &mut other, m as i32, k as i32, k as i32, false,
+    )
+    .expect("overlapping nonempty GEMV after zeroing");
+    acc.synchronize().expect("zeroing and overlap completed");
+    let got = y.to_vec().unwrap();
+    assert!(got[..m].iter().all(|&value| value == 0.0));
+    assert_eq!(&got[m..], &[7.0, 7.0]);
+    assert!(
+        other
+            .to_vec()
+            .unwrap()
+            .iter()
+            .all(|&value| value == k as f32)
+    );
 }
 
 #[test]
