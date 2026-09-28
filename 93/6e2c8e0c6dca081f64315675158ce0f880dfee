@@ -1,0 +1,20 @@
+tests/ternary_gpu.rs
+  s_518f08f6fdbafe::t_972102691fec26 371-377
+  s_518f08f6fdbafe::t_6b51a75cdffdad 356-370
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "936e2c8e0c6dca081f64315675158ce0f880dfee",
+  "prompts": {},
+  "sessions": {
+    "s_518f08f6fdbafe": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0e678-793a-7491-a2dc-0ff902750aad",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
