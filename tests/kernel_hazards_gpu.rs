@@ -130,7 +130,13 @@ fn satsolver_init_scores_mixed_and_all_invalid_clauses() {
 #[ignore] // requires GPU + driver >= 570
 fn satsolver_step_skips_invalid_literal_in_both_flip_branches() {
     for seed in [0u32, 1u32] {
-        run_single_clause_step(&[198, 0], 1, seed, 1, 0);
+        run_single_clause_step(SingleClauseCase {
+            literals: &[198, 0],
+            initial_score: 1,
+            seed,
+            expected_assignment: 1,
+            expected_score: 0,
+        });
     }
 }
 
@@ -169,24 +175,32 @@ fn satsolver_step_can_select_unsat_clause_past_64() {
 #[ignore] // requires GPU + driver >= 570
 fn satsolver_step_all_invalid_literals_stay_unsatisfied() {
     for seed in [0u32, 1u32] {
-        run_single_clause_step(&[-1], 0, seed, 0, 1);
+        run_single_clause_step(SingleClauseCase {
+            literals: &[-1],
+            initial_score: 0,
+            seed,
+            expected_assignment: 0,
+            expected_score: 1,
+        });
     }
 }
 
-fn run_single_clause_step(
-    literals: &[i32],
+struct SingleClauseCase<'a> {
+    literals: &'a [i32],
     initial_score: i32,
     seed: u32,
     expected_assignment: u8,
     expected_score: i32,
-) {
+}
+
+fn run_single_clause_step(case: SingleClauseCase<'_>) {
     let _ctx = GpuContext::init().unwrap();
     let kernels = KernelModule::load().unwrap();
     let step = kernels.get_function("satsolver_step").unwrap();
     let stream = Stream::new(StreamFlags::DEFAULT, None).unwrap();
     let assignment = GpuBuffer::from_slice(&[0u8]).unwrap();
-    let scores = GpuBuffer::from_slice(&[initial_score]).unwrap();
-    let clauses = GpuBuffer::from_slice(literals).unwrap();
+    let scores = GpuBuffer::from_slice(&[case.initial_score]).unwrap();
+    let clauses = GpuBuffer::from_slice(case.literals).unwrap();
 
     // Seed 0 takes greedy selection; seed 1 takes random selection. All
     // buffers match the declared one-walker, one-variable shape and live
@@ -196,17 +210,23 @@ fn run_single_clause_step(
             assignment.as_device_ptr(),
             scores.as_device_ptr(),
             clauses.as_device_ptr(),
-            1i32, 1i32, 1i32, literals.len() as i32, seed
+            1i32, 1i32, 1i32, case.literals.len() as i32, case.seed
         ))
         .unwrap();
     }
     stream.synchronize().unwrap();
     assert_eq!(
         assignment.to_vec().unwrap(),
-        [expected_assignment],
-        "seed={seed}"
+        [case.expected_assignment],
+        "seed={}",
+        case.seed
     );
-    assert_eq!(scores.to_vec().unwrap(), [expected_score], "seed={seed}");
+    assert_eq!(
+        scores.to_vec().unwrap(),
+        [case.expected_score],
+        "seed={}",
+        case.seed
+    );
 }
 
 #[test]

@@ -35,6 +35,16 @@ struct InitFailure {
     detail: String,
 }
 
+struct StdpTraceLaunch<'a> {
+    pre_spikes: &'a GpuBuffer<f32>,
+    post_spikes: &'a GpuBuffer<f32>,
+    pre_traces: &'a mut GpuBuffer<f32>,
+    post_traces: &'a mut GpuBuffer<f32>,
+    n_post: i32,
+    n_pre: i32,
+    dt_ms: f32,
+}
+
 impl GpuAccelerator {
     /// Construct with [`ExecutionPolicy::PreferGpu`] (caller-approved CPU fallback).
     pub fn new() -> Self {
@@ -308,19 +318,35 @@ impl GpuAccelerator {
             }
         }
 
-        let update_traces = kernels.get_function("stdp_update_traces")?;
-        let grid = Self::ceil_div_u32(n_post.max(n_pre) as u32, 256);
+        self.launch_stdp_traces(StdpTraceLaunch {
+            pre_spikes,
+            post_spikes,
+            pre_traces,
+            post_traces,
+            n_post,
+            n_pre,
+            dt_ms,
+        })
+    }
+
+    fn launch_stdp_traces(&self, args: StdpTraceLaunch<'_>) -> GpuResult<()> {
+        let update_traces = self.kernels()?.get_function("stdp_update_traces")?;
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
+        let grid = Self::ceil_div_u32(args.n_post.max(args.n_pre) as u32, 256);
         // SAFETY: each global thread owns at most one index of each trace
-        // buffer. The same stream orders this launch after the weight update.
+        // buffer. The accelerator stream orders this after the weight update.
         unsafe {
             launch!(update_traces<<<grid, 256u32, 0u32, stream>>>(
-                pre_spikes.as_device_ptr(),
-                post_spikes.as_device_ptr(),
-                pre_traces.as_device_ptr(),
-                post_traces.as_device_ptr(),
-                n_post,
-                n_pre,
-                dt_ms
+                args.pre_spikes.as_device_ptr(),
+                args.post_spikes.as_device_ptr(),
+                args.pre_traces.as_device_ptr(),
+                args.post_traces.as_device_ptr(),
+                args.n_post,
+                args.n_pre,
+                args.dt_ms
             ))
             .map_err(|e| {
                 GpuError::LaunchFailed(sanitize_diagnostic(&format!(
