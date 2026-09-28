@@ -10,7 +10,8 @@
 //    lif_step_weighted    — LIF step with synaptic weight matrix
 //    spike_rate           — windowed firing-rate estimator
 //    reset_membrane       — reset membrane to resting potential
-//    stdp_update          — spike-timing-dependent plasticity
+//    stdp_update_weights  — spike-timing-dependent weight update
+//    stdp_update_traces   — single-writer eligibility-trace update
 //    neuro_bias_logits    — add neuromodulator bias to logit array
 //    membrane_dv_dt_reduce_pass1 — per-block reduction of |dv/dt|
 //    routing_entropy_reduce_pass1 — per-block reduction of routing entropy
@@ -230,51 +231,51 @@ void reset_membrane(
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  stdp_update
+//  stdp_update_weights
 //
 //  Pairwise STDP weight update:
 //    If post spiked:  dw += A+ * exp(-|dt| / tau)  (LTP)
 //    If pre  spiked:  dw -= A- * exp(-|dt| / tau)  (LTD)
 //
 //  Weights are clamped to [W_MIN, W_MAX] after each update.
+//  Launch stdp_update_traces after this kernel on the same stream. Weight
+//  updates read the old traces and include the current spikes locally; this
+//  kernel never writes traces, so no block can race with a trace read.
+//  The former stdp_update raw symbol was retired: callers should use the
+//  GpuAccelerator::stdp_update method or explicitly launch this pair.
+//  Launch as a 1-D grid over n_post*n_pre weights.
 //
 //  Params
 //    weights       [n_post × n_pre]  — synaptic weight matrix (row-major)
 //    pre_spikes    [n_pre]           — binary pre-synaptic spike flags
 //    post_spikes   [n_post]          — binary post-synaptic spike flags
-//    pre_traces    [n_pre]           — pre-synaptic eligibility traces
-//    post_traces   [n_post]          — post-synaptic eligibility traces
+//    pre_traces    [n_pre]           — old pre-synaptic traces (read only)
+//    post_traces   [n_post]          — old post-synaptic traces (read only)
 //    n_post, n_pre
 //    dt_ms         — time elapsed since last pair event (ms)
 // ════════════════════════════════════════════════════════════════════
 extern "C" __global__
-void stdp_update(
+void stdp_update_weights(
     float* __restrict__       weights,
     const float* __restrict__ pre_spikes,
     const float* __restrict__ post_spikes,
-    float* __restrict__       pre_traces,
-    float* __restrict__       post_traces,
+    const float* __restrict__ pre_traces,
+    const float* __restrict__ post_traces,
     int n_post,
     int n_pre,
     float dt_ms)
 {
-    int post = blockIdx.y * blockDim.y + threadIdx.y;
-    int pre  = blockIdx.x * blockDim.x + threadIdx.x;
-    if (post >= n_post || pre >= n_pre) return;
+    if (n_post <= 0 || n_pre <= 0) return;
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (long)n_post * n_pre) return;
+    int post = (int)(idx / n_pre);
+    int pre  = (int)(idx % n_pre);
 
     float decay = __expf(-dt_ms / STDP_TAU);
 
     float pre_tr  = fmaf(decay, pre_traces[pre],  pre_spikes[pre]);
     float post_tr = fmaf(decay, post_traces[post], post_spikes[post]);
 
-    if (threadIdx.y == 0) {
-        pre_traces[pre] = pre_tr;
-    }
-    if (threadIdx.x == 0) {
-        post_traces[post] = post_tr;
-    }
-
-    long idx = (long)post * n_pre + pre;
     float w = weights[idx];
 
     float ps = post_spikes[post];
@@ -285,6 +286,32 @@ void stdp_update(
 
     w = fmaxf(STDP_W_MIN, fminf(STDP_W_MAX, w));
     weights[idx] = w;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  stdp_update_traces
+//
+//  Advance each trace once after stdp_update_weights, on the same CUDA stream.
+//  Global 1-D index tid owns pre_traces[tid] and post_traces[tid] when in
+//  range, including grids spanning multiple blocks. No weight kernel may
+//  overlap this launch on the same trace buffers.
+// ════════════════════════════════════════════════════════════════════
+extern "C" __global__
+void stdp_update_traces(
+    const float* __restrict__ pre_spikes,
+    const float* __restrict__ post_spikes,
+    float* __restrict__       pre_traces,
+    float* __restrict__       post_traces,
+    int n_post,
+    int n_pre,
+    float dt_ms)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    float decay = __expf(-dt_ms / STDP_TAU);
+    if (tid < n_pre)
+        pre_traces[tid] = fmaf(decay, pre_traces[tid], pre_spikes[tid]);
+    if (tid < n_post)
+        post_traces[tid] = fmaf(decay, post_traces[tid], post_spikes[tid]);
 }
 
 // ════════════════════════════════════════════════════════════════════

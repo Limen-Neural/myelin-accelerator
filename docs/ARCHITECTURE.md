@@ -173,9 +173,11 @@ These are the **ergonomic** wrappers currently implemented:
 - Lifecycle: `new` (PreferGpu), `require_gpu` / `with_policy`, `is_ready`, `capabilities`, `selected_backend`, `fallback`, `kernels`, `synchronize`
 - SAT: `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
 - Spiking: `poisson_encode` / `_async`
+- Plasticity: `stdp_update` / `_async` (weight and trace kernels in stream order)
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
 
-Scalar CPU oracles for the wrappers above, plus `cosine_similarity_batched` (loaded, not yet wrapped), live in `src/oracle.rs`.
+Scalar CPU oracles for the Poisson and ternary wrappers, plus
+`cosine_similarity_batched` (loaded, not yet wrapped), live in `src/oracle.rs`.
 
 Additional kernels may be **loaded** in `KernelModule` and still lack a
 dedicated `GpuAccelerator` method. Advanced callers can use
@@ -187,10 +189,21 @@ consumers share.
 
 | PTX module | Symbols |
 |------------|---------|
-| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `spike_rate`, `reset_membrane`, `stdp_update`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` |
+| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `spike_rate`, `reset_membrane`, `stdp_update_weights`, `stdp_update_traces`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` |
 | `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` |
 | `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass1`, `satsolver_best_reduce_pass2` |
 | `ternary_gemm` | `ternary_gemv`, `ternary_gemm` |
+
+The old raw `stdp_update` symbol is retired. Direct CUDA callers must launch
+`stdp_update_weights` followed by `stdp_update_traces` on the same stream; the
+`GpuAccelerator::stdp_update` method performs both launches and synchronization.
+The weights kernel reads the previous traces and incorporates the current spikes
+locally. The trace kernel then advances each pre/post trace with one global
+writer per index. Different streams must not overlap these operations on the
+same buffers.
+
+The weight kernel uses a flattened 1-D grid; raw callers should cover
+`n_post * n_pre` threads. The trace kernel should cover `max(n_post, n_pre)`.
 
 ### Internal (not a stability promise)
 
