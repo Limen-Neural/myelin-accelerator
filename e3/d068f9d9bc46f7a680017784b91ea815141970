@@ -1,11 +1,13 @@
 src/gpu/kernel.rs
-  s_f9042a5b11aff1::t_5aae55b1ba5ab3 35-48,88
-tests/kernel_hazards_gpu.rs
-  s_f9042a5b11aff1::t_c91d5918fc58a4 133,171-182,188-189,191-201,203,209
-  s_f9042a5b11aff1::t_d0b9460d4621cc 204-208
+  s_f9042a5b11aff1::t_e184169d26efb2 43-44
+  s_f9042a5b11aff1::t_2951967a1e9da0 45
 src/gpu/accelerator.rs
-  s_f9042a5b11aff1::t_d0b9460d4621cc 261-268
-  s_f9042a5b11aff1::t_5aae55b1ba5ab3 260,269,334-358
+  s_f9042a5b11aff1::t_9e4de60d243941 260-269,334-361
+tests/kernel_hazards_gpu.rs
+  s_f9042a5b11aff1::t_26c331f9832503 191-201
+  s_f9042a5b11aff1::t_1a99cd1bec4c79 189
+  s_f9042a5b11aff1::t_900b9f10036107 188
+  s_f9042a5b11aff1::t_50d2b8cb62835c 133
 ---
 {
   "schema_version": "authorship/3.0.0",
