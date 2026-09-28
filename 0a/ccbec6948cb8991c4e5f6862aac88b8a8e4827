@@ -1,25 +1,7 @@
-CMakeLists.txt
-  s_518f08f6fdbafe::t_64337cf6fd0a4b 13
-tests/ternary_gpu.rs
-  s_518f08f6fdbafe::t_b224eb0cc9fdae 347-348,355,448,455
-.codex/environments/environment.toml
-  s_518f08f6fdbafe::t_64337cf6fd0a4b 25,49-56,73-83,94,105,120
-src/gpu/accelerator.rs
-  s_518f08f6fdbafe::t_64337cf6fd0a4b 605-608,724-727,842-845
 ---
 {
   "schema_version": "authorship/3.0.0",
   "git_ai_version": "1.5.2",
   "base_commit_sha": "0accbec6948cb8991c4e5f6862aac88b8a8e4827",
-  "prompts": {},
-  "sessions": {
-    "s_518f08f6fdbafe": {
-      "agent_id": {
-        "tool": "codex",
-        "id": "01a0e678-793a-7491-a2dc-0ff902750aad",
-        "model": "gpt-6-sol"
-      },
-      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
-    }
-  }
+  "prompts": {}
 }
