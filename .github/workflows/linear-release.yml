@@ -16,9 +16,9 @@ concurrency:
 
 jobs:
   report:
-    # A prerelease is not a production crate release. The edited event also
-    # catches a published prerelease promoted to a stable release.
-    if: ${{ !github.event.release.prerelease }}
+    # Only published, stable releases are production crate releases. The edited
+    # event also catches a published prerelease promoted to a stable release.
+    if: ${{ !github.event.release.draft && !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out the published tag and complete history
