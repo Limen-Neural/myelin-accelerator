@@ -325,6 +325,36 @@ fn ternary_gemv_empty_k_zeros_output() {
 
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
+fn ternary_gemv_async_empty_k_follows_overlapping_launch() {
+    let acc = ready_accelerator();
+    let m = 4096usize;
+    let k = 256usize;
+    let packed_data = pack_ternary_matrix(&vec![1i8; m * k], m, k);
+    let packed = GpuBuffer::from_slice(&packed_data).unwrap();
+    let scales = GpuBuffer::from_slice(&vec![1.0f32; m]).unwrap();
+    let x = GpuBuffer::from_slice(&vec![1.0f32; k]).unwrap();
+    let empty = GpuBuffer::<f32>::alloc(0).unwrap();
+    let empty_words = GpuBuffer::<u32>::alloc(0).unwrap();
+    let mut y = GpuBuffer::from_slice(&vec![7.0f32; m + 2]).unwrap();
+
+    acc.ternary_gemv_async(
+        &packed, &scales, &x, &mut y, m as i32, k as i32, k as i32, false,
+    )
+    .expect("overlapping nonempty GEMV");
+    acc.ternary_gemv_async(&empty_words, &empty, &empty, &mut y, m as i32, 0, 1, false)
+        .expect("empty-K GEMV");
+    acc.synchronize().expect("both operations completed");
+
+    let got = y.to_vec().unwrap();
+    assert!(
+        got[..m].iter().all(|&value| value == 0.0),
+        "stale prefix after sync"
+    );
+    assert_eq!(&got[m..], &[7.0, 7.0]);
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemv_empty_k_preserves_pooled_tail() {
     let acc = ready_accelerator();
 
@@ -379,4 +409,45 @@ fn ternary_gemm_empty_k_preserves_pooled_tail() {
         &got[..logical]
     );
     assert_eq!(&got[logical..], &[42.0, 43.0]);
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn ternary_gemm_async_empty_k_follows_overlapping_launch() {
+    let acc = ready_accelerator();
+    let m = 128usize;
+    let k = 256usize;
+    let n = 32usize;
+    let packed_data = pack_ternary_matrix(&vec![1i8; m * k], m, k);
+    let packed = GpuBuffer::from_slice(&packed_data).unwrap();
+    let scales = GpuBuffer::from_slice(&vec![1.0f32; m]).unwrap();
+    let b = GpuBuffer::from_slice(&vec![1.0f32; k * n]).unwrap();
+    let empty = GpuBuffer::<f32>::alloc(0).unwrap();
+    let empty_words = GpuBuffer::<u32>::alloc(0).unwrap();
+    let mut c = GpuBuffer::from_slice(&vec![9.0f32; m * n + 2]).unwrap();
+
+    acc.ternary_gemm_async(
+        &packed, &scales, &b, &mut c, m as i32, k as i32, n as i32, k as i32, false,
+    )
+    .expect("overlapping nonempty GEMM");
+    acc.ternary_gemm_async(
+        &empty_words,
+        &empty,
+        &empty,
+        &mut c,
+        m as i32,
+        0,
+        n as i32,
+        1,
+        false,
+    )
+    .expect("empty-K GEMM");
+    acc.synchronize().expect("both operations completed");
+
+    let got = c.to_vec().unwrap();
+    assert!(
+        got[..m * n].iter().all(|&value| value == 0.0),
+        "stale prefix after sync"
+    );
+    assert_eq!(&got[m * n..], &[9.0, 9.0]);
 }

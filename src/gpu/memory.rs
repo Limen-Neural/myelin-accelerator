@@ -7,6 +7,7 @@
 
 use crate::gpu::error::{GpuError, GpuResult};
 use cust::memory::{CopyDestination, DeviceBuffer};
+use cust::stream::Stream;
 
 /// Owned device buffer of type `T`.
 pub struct GpuBuffer<T: cust::memory::DeviceCopy> {
@@ -127,6 +128,9 @@ impl GpuBuffer<f32> {
     ///
     /// Uses a device memset (no host-sized staging buffer), so empty-K GEMM/GEMV
     /// zero-fills stay bounded in host memory for large `M*N`.
+    /// This is a synchronous default-stream operation. Do not mix it with
+    /// pending `GpuAccelerator::*_async` launches on the same buffer; synchronize
+    /// the accelerator first. For stream-ordered work, use [`Self::zero_prefix_on`].
     pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
         if count > self.len {
             return Err(GpuError::MemoryError(format!(
@@ -141,5 +145,30 @@ impl GpuBuffer<f32> {
         prefix
             .set_zero()
             .map_err(|e| GpuError::MemoryError(format!("zero_prefix: {e:?}")))
+    }
+
+    /// Enqueue a prefix zero-fill on `stream`, leaving any tail untouched.
+    ///
+    /// # Safety
+    ///
+    /// The caller must keep this buffer and `stream` alive until the memset
+    /// completes. Later work on the same stream is ordered after the memset;
+    /// host access and work on other streams require synchronization or an
+    /// explicit cross-stream dependency first.
+    pub unsafe fn zero_prefix_on(&mut self, count: usize, stream: &Stream) -> GpuResult<()> {
+        if count > self.len {
+            return Err(GpuError::MemoryError(format!(
+                "zero_prefix: count {count} > device len {}",
+                self.len
+            )));
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        let mut prefix = self.inner.index(0..count);
+        // SAFETY: the caller guarantees that the buffer and stream remain live
+        // and that no unordered access to the prefix occurs before completion.
+        unsafe { prefix.set_zero_async(stream) }
+            .map_err(|e| GpuError::MemoryError(format!("zero_prefix_on: {e:?}")))
     }
 }

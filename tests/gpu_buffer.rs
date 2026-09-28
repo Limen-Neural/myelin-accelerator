@@ -12,6 +12,7 @@
 
 #![cfg(feature = "cuda")]
 
+use cust::stream::{Stream, StreamFlags};
 use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
 
 /// Require a real, ready GPU. A device test that cannot init the GPU must fail,
@@ -30,6 +31,21 @@ fn require_gpu() -> GpuAccelerator {
 /// Representative allocation sizes: empty, singleton, and values around the
 /// 16-element ternary word and 256-thread block boundaries.
 const BOUNDARY_LENS: &[usize] = &[0, 1, 2, 15, 16, 17, 255, 256, 257, 4096];
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn zero_prefix_on_uses_caller_stream_and_preserves_tail() {
+    let _gpu = require_gpu();
+    let stream = Stream::new(StreamFlags::DEFAULT, None).unwrap();
+    let mut buffer = GpuBuffer::from_slice(&[7.0f32, 8.0, 9.0, 10.0]).unwrap();
+
+    // SAFETY: buffer and stream stay alive until synchronization, and no
+    // other operation touches this buffer while the memset is in flight.
+    unsafe { buffer.zero_prefix_on(2, &stream) }.unwrap();
+    stream.synchronize().unwrap();
+
+    assert_eq!(buffer.to_vec().unwrap(), [0.0, 0.0, 9.0, 10.0]);
+}
 
 /// Assert that `err` is the length-mismatch `MemoryError` naming both lengths.
 fn assert_length_mismatch(err: GpuError, buffer_len: usize, input_len: usize) {
