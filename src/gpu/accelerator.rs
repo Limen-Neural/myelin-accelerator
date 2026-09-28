@@ -225,6 +225,8 @@ impl GpuAccelerator {
     /// The weight kernel reads old traces and computes the current-step trace
     /// values locally. The trace kernel then writes each trace once. Both
     /// launches use this accelerator's stream, so they cannot race each other.
+    /// If either launch fails, queued work is synchronized before returning;
+    /// an error can still leave weights or traces partially updated.
     #[allow(clippy::too_many_arguments)]
     pub fn stdp_update(
         &self,
@@ -237,7 +239,7 @@ impl GpuAccelerator {
         n_pre: i32,
         dt_ms: f32,
     ) -> GpuResult<()> {
-        self.stdp_update_async(
+        let update_result = self.stdp_update_async(
             weights,
             pre_spikes,
             post_spikes,
@@ -246,8 +248,10 @@ impl GpuAccelerator {
             n_post,
             n_pre,
             dt_ms,
-        )?;
-        self.synchronize()
+        );
+        let sync_result = self.synchronize();
+        update_result?;
+        sync_result
     }
 
     /// Enqueue both STDP kernels on the accelerator stream without waiting.
@@ -255,6 +259,8 @@ impl GpuAccelerator {
     /// Call [`Self::synchronize`] before reading, reusing, or dropping any
     /// argument buffer. Concurrent launches on another stream must not touch
     /// these weights, spikes, or traces until this operation completes.
+    /// A launch error can leave the preceding weight launch queued; synchronize
+    /// before reusing the buffers, and do not assume an atomic update.
     #[allow(clippy::too_many_arguments)]
     pub fn stdp_update_async(
         &self,
