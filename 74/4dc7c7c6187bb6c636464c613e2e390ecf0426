@@ -1,0 +1,22 @@
+README.md
+  s_f9042a5b11aff1::t_403be39fe53c80 4-5,7-11,17
+tests/kernel_hazards_gpu.rs
+  s_f9042a5b11aff1::t_908b8f90a90b1c 131-133,137-145
+  s_f9042a5b11aff1::t_5382b4f23aa4c7 134-136
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "744dc7c7c6187bb6c636464c613e2e390ecf0426",
+  "prompts": {},
+  "sessions": {
+    "s_f9042a5b11aff1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0e6e3-ecc6-7f42-9703-460084feb958",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
