@@ -8,6 +8,7 @@ Run CPU-safe checks first:
 
 ```bash
 cargo test --locked
+cargo test --locked --features saaq
 cargo build --locked --no-default-features
 ```
 
