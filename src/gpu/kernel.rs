@@ -32,6 +32,20 @@ static SATSOLVER_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/satsolver_s
 
 static TERNARY_GEMM_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/ternary_gemm_sm_120.ptx"));
 
+const SPIKING_KERNELS: &[&str] = &[
+    "poisson_encode",
+    "lif_step",
+    "lif_step_weighted",
+    "spike_rate",
+    "reset_membrane",
+    "stdp_update_weights",
+    "stdp_update_traces",
+    "neuro_bias_logits",
+    "membrane_dv_dt_reduce_pass1",
+    "routing_entropy_reduce_pass1",
+    "latent_reduce_pass2",
+];
+
 // ── KernelModule ─────────────────────────────────────────────────────────────
 
 /// Manages compiled PTX modules and kernel function handles.
@@ -71,19 +85,7 @@ impl KernelModule {
             &mut func_map,
             SPIKING_NETWORK_PTX,
             "spiking_network",
-            &[
-                "poisson_encode",
-                "lif_step",
-                "lif_step_weighted",
-                "spike_rate",
-                "reset_membrane",
-                "stdp_update_weights",
-                "stdp_update_traces",
-                "neuro_bias_logits",
-                "membrane_dv_dt_reduce_pass1",
-                "routing_entropy_reduce_pass1",
-                "latent_reduce_pass2",
-            ],
+            SPIKING_KERNELS,
         ) {
             availability.spiking_network = Some(false);
             return Err(KernelLoadFailure {

@@ -257,18 +257,16 @@ impl GpuAccelerator {
         n_pre: i32,
         dt_ms: f32,
     ) -> GpuResult<()> {
-        if n_post < 0 || n_pre < 0 || !dt_ms.is_finite() || dt_ms < 0.0 {
-            return Err(GpuError::invalid_input(
-                "stdp_update: n_post/n_pre and finite dt_ms must be nonnegative".to_string(),
-            ));
-        }
-        let post = n_post as usize;
-        let pre = n_pre as usize;
-        Self::expect_len("weights", weights.len(), post.saturating_mul(pre))?;
-        Self::expect_len("pre_spikes", pre_spikes.len(), pre)?;
-        Self::expect_len("post_spikes", post_spikes.len(), post)?;
-        Self::expect_len("pre_traces", pre_traces.len(), pre)?;
-        Self::expect_len("post_traces", post_traces.len(), post)?;
+        Self::validate_stdp_buffers(
+            weights,
+            pre_spikes,
+            post_spikes,
+            pre_traces,
+            post_traces,
+            n_post,
+            n_pre,
+            dt_ms,
+        )?;
         if n_post == 0 && n_pre == 0 {
             return Ok(());
         }
@@ -330,6 +328,34 @@ impl GpuAccelerator {
                 )))
             })?;
         }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_stdp_buffers(
+        weights: &GpuBuffer<f32>,
+        pre_spikes: &GpuBuffer<f32>,
+        post_spikes: &GpuBuffer<f32>,
+        pre_traces: &GpuBuffer<f32>,
+        post_traces: &GpuBuffer<f32>,
+        n_post: i32,
+        n_pre: i32,
+        dt_ms: f32,
+    ) -> GpuResult<()> {
+        let invalid_shape = n_post < 0 || n_pre < 0;
+        let invalid_time = !dt_ms.is_finite() || dt_ms < 0.0;
+        if invalid_shape || invalid_time {
+            return Err(GpuError::invalid_input(
+                "stdp_update: n_post/n_pre and finite dt_ms must be nonnegative".to_string(),
+            ));
+        }
+        let post = n_post as usize;
+        let pre = n_pre as usize;
+        Self::expect_len("weights", weights.len(), post.saturating_mul(pre))?;
+        Self::expect_len("pre_spikes", pre_spikes.len(), pre)?;
+        Self::expect_len("post_spikes", post_spikes.len(), post)?;
+        Self::expect_len("pre_traces", pre_traces.len(), pre)?;
+        Self::expect_len("post_traces", post_traces.len(), post)?;
         Ok(())
     }
 

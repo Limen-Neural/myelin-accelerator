@@ -129,31 +129,8 @@ fn satsolver_init_scores_mixed_and_all_invalid_clauses() {
 #[test]
 #[ignore] // requires GPU + driver >= 570
 fn satsolver_step_skips_invalid_literal_in_both_flip_branches() {
-    let _ctx = GpuContext::init().unwrap();
-    let kernels = KernelModule::load().unwrap();
-    let step = kernels.get_function("satsolver_step").unwrap();
-    let stream = Stream::new(StreamFlags::DEFAULT, None).unwrap();
-    let mut assignment = GpuBuffer::from_slice(&[0u8]).unwrap();
-    let scores = GpuBuffer::from_slice(&[1i32]).unwrap();
-    let clauses = GpuBuffer::from_slice(&[198i32, 0]).unwrap();
-
     for seed in [0u32, 1u32] {
-        assignment.upload(&[0]).unwrap();
-        // Seed 0 takes greedy selection; seed 1 takes random selection.
-        // SAFETY: all buffers cover one walker/variable and one length-two
-        // clause; the previous launch is synchronized before each reset.
-        unsafe {
-            launch!(step<<<1u32, 32u32, 0u32, stream>>>(
-                assignment.as_device_ptr(),
-                scores.as_device_ptr(),
-                clauses.as_device_ptr(),
-                1i32, 1i32, 1i32, 2i32, seed
-            ))
-            .unwrap();
-        }
-        stream.synchronize().unwrap();
-        assert_eq!(assignment.to_vec().unwrap(), [1], "seed={seed}");
-        assert_eq!(scores.to_vec().unwrap(), [0], "seed={seed}");
+        run_single_clause_step(&[198, 0], 1, seed, 1, 0);
     }
 }
 
@@ -191,30 +168,45 @@ fn satsolver_step_can_select_unsat_clause_past_64() {
 #[test]
 #[ignore] // requires GPU + driver >= 570
 fn satsolver_step_all_invalid_literals_stay_unsatisfied() {
+    for seed in [0u32, 1u32] {
+        run_single_clause_step(&[-1], 0, seed, 0, 1);
+    }
+}
+
+fn run_single_clause_step(
+    literals: &[i32],
+    initial_score: i32,
+    seed: u32,
+    expected_assignment: u8,
+    expected_score: i32,
+) {
     let _ctx = GpuContext::init().unwrap();
     let kernels = KernelModule::load().unwrap();
     let step = kernels.get_function("satsolver_step").unwrap();
     let stream = Stream::new(StreamFlags::DEFAULT, None).unwrap();
     let assignment = GpuBuffer::from_slice(&[0u8]).unwrap();
-    let scores = GpuBuffer::from_slice(&[0i32]).unwrap();
-    let clauses = GpuBuffer::from_slice(&[-1i32]).unwrap();
+    let scores = GpuBuffer::from_slice(&[initial_score]).unwrap();
+    let clauses = GpuBuffer::from_slice(literals).unwrap();
 
-    // Seed 0 takes the greedy branch; seed 1 takes the random branch.
-    for seed in [0u32, 1u32] {
-        // SAFETY: all buffers match the declared shape and live until sync.
-        unsafe {
-            launch!(step<<<1u32, 32u32, 0u32, stream>>>(
-                assignment.as_device_ptr(),
-                scores.as_device_ptr(),
-                clauses.as_device_ptr(),
-                1i32, 1i32, 1i32, 1i32, seed
-            ))
-            .unwrap();
-        }
-        stream.synchronize().unwrap();
-        assert_eq!(assignment.to_vec().unwrap(), [0]);
-        assert_eq!(scores.to_vec().unwrap(), [1]);
+    // Seed 0 takes greedy selection; seed 1 takes random selection. All
+    // buffers match the declared one-walker, one-variable shape and live
+    // through synchronization.
+    unsafe {
+        launch!(step<<<1u32, 32u32, 0u32, stream>>>(
+            assignment.as_device_ptr(),
+            scores.as_device_ptr(),
+            clauses.as_device_ptr(),
+            1i32, 1i32, 1i32, literals.len() as i32, seed
+        ))
+        .unwrap();
     }
+    stream.synchronize().unwrap();
+    assert_eq!(
+        assignment.to_vec().unwrap(),
+        [expected_assignment],
+        "seed={seed}"
+    );
+    assert_eq!(scores.to_vec().unwrap(), [expected_score], "seed={seed}");
 }
 
 #[test]
