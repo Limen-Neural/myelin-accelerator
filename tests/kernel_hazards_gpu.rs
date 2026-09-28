@@ -128,15 +128,21 @@ fn satsolver_init_scores_mixed_and_all_invalid_clauses() {
 
 #[test]
 #[ignore] // requires GPU + driver >= 570
-fn satsolver_step_skips_invalid_literal_in_both_flip_branches() {
-    for seed in [0u32, 1u32] {
-        run_single_clause_step(SingleClauseCase {
-            literals: &[198, 0],
-            initial_score: 1,
-            seed,
-            expected_assignment: 1,
-            expected_score: 0,
-        });
+fn satsolver_step_handles_mixed_and_all_invalid_literals() {
+    // Both the greedy and random flip branches must skip bad variables.
+    // An all-invalid clause stays unsatisfied after either branch.
+    for (literals, initial_score, expected_assignment, expected_score) in
+        [(&[198, 0][..], 1, 1, 0), (&[-1][..], 0, 0, 1)]
+    {
+        for seed in [0u32, 1u32] {
+            run_single_clause_step(SingleClauseCase {
+                literals,
+                initial_score,
+                seed,
+                expected_assignment,
+                expected_score,
+            });
+        }
     }
 }
 
@@ -169,20 +175,6 @@ fn satsolver_step_can_select_unsat_clause_past_64() {
     stream.synchronize().unwrap();
     assert_eq!(assignment.to_vec().unwrap(), [1]);
     assert_eq!(scores.to_vec().unwrap(), [64]);
-}
-
-#[test]
-#[ignore] // requires GPU + driver >= 570
-fn satsolver_step_all_invalid_literals_stay_unsatisfied() {
-    for seed in [0u32, 1u32] {
-        run_single_clause_step(SingleClauseCase {
-            literals: &[-1],
-            initial_score: 0,
-            seed,
-            expected_assignment: 0,
-            expected_score: 1,
-        });
-    }
 }
 
 struct SingleClauseCase<'a> {

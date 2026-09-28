@@ -1,14 +1,20 @@
 # Myelin-Accelerator
 
 [![CI](https://github.com/Limen-Neural/myelin-accelerator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Limen-Neural/myelin-accelerator/actions/workflows/ci.yml)
-[![CodeRabbit reviews](https://img.shields.io/coderabbit/prs/github/Limen-Neural/myelin-accelerator?label=CodeRabbit)](https://coderabbit.ai/)
+[![GPU CI](https://img.shields.io/github/check-runs/Limen-Neural/myelin-accelerator/main?nameFilter=CUDA%20build%20%5Bself-hosted%5D%20%28sm_120%29&label=GPU%20CI)](https://github.com/Limen-Neural/myelin-accelerator/actions/workflows/ci.yml)
+[![CodeRabbit Reviews](https://img.shields.io/coderabbit/prs/github/Limen-Neural/myelin-accelerator?utm_source=oss&utm_medium=github&utm_campaign=Limen-Neural%2Fmyelin-accelerator&labelColor=171717&color=FF570A&label=CodeRabbit+Reviews)](https://coderabbit.ai/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Limen-Neural/myelin-accelerator)
+[![Maintainability](https://qlty.sh/gh/Limen-Neural/projects/myelin-accelerator/maintainability.svg)](https://qlty.sh/gh/Limen-Neural/projects/myelin-accelerator)
+[![CodeScene Average Code Health](https://codescene.io/projects/85266/status-badges/average-code-health)](https://codescene.io/projects/85266)
+[![CodeScene Hotspot Code Health](https://codescene.io/projects/85266/status-badges/hotspot-code-health)](https://codescene.io/projects/85266)
+[![CodeScene System Mastery](https://codescene.io/projects/85266/status-badges/system-mastery)](https://codescene.io/projects/85266)
+[![Analyzed by CodeScene](https://codescene.io/images/analyzed-by-codescene-badge.svg)](https://codescene.io/projects/85266)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![Release: v0.2.0 candidate](https://img.shields.io/badge/release-v0.2.0%20candidate-orange)](https://github.com/Limen-Neural/myelin-accelerator/issues/37)
 
 Reusable Rust utilities and CUDA kernels for spiking networks, routing, SAT search, and packed ternary matrix operations. The CUDA path targets `sm_120` (Blackwell); the default build works without a CUDA toolkit or device.
 
-**Release status:** `Cargo.toml` is at `0.2.0`, but publication is still tracked in [release issue #37](https://github.com/Limen-Neural/myelin-accelerator/issues/37). Use a source checkout while that work is in progress. The CI badge reflects `main`, not this checkout or an open pull request.
+**Release status:** `Cargo.toml` is at `0.2.0`, but publication is still tracked in [release issue #37](https://github.com/Limen-Neural/myelin-accelerator/issues/37). Use a source checkout while that work is in progress. The CI and GPU CI badges reflect `main`, not this checkout or an open pull request.
 
 ## Get started
 
