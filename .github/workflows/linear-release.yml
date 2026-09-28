@@ -5,7 +5,7 @@ name: Report published crate to Linear
 
 on:
   release:
-    types: [published, edited]
+    types: [released]
 
 permissions:
   contents: read
@@ -16,8 +16,7 @@ concurrency:
 
 jobs:
   report:
-    # Only published, stable releases are production crate releases. The edited
-    # event also catches a published prerelease promoted to a stable release.
+    # The released activity covers stable publication and prerelease promotion.
     if: ${{ !github.event.release.draft && !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     steps:

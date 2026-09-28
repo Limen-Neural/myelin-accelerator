@@ -3,8 +3,8 @@
 The `myelin-accelerator` Linear pipeline is a **scheduled production** pipeline.
 Normal pushes and merges to `main` do not report a release. The
 [`Report published crate to Linear`](../.github/workflows/linear-release.yml)
-workflow runs when a non-prerelease GitHub release is published or edited,
-including when a published prerelease is promoted to stable.
+workflow runs when GitHub marks a release as stable, including when a published
+prerelease is promoted to stable. Metadata edits do not report a release.
 
 After the v0.2.0 qualification and publication steps tracked in
 [LIM-1443](https://linear.app/rpd-34/issue/LIM-1443/release-qualify-myelin-accelerator-v020-for-cratesio),
