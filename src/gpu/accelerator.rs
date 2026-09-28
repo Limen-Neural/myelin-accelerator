@@ -603,9 +603,10 @@ impl GpuAccelerator {
     }
 
     /// Async variant of [`Self::ternary_gemv`]. All output writes are enqueued
-    /// on the accelerator stream. The empty-K path waits for stream completion
-    /// before returning; other paths require [`Self::synchronize`] before
-    /// reading or dropping any argument buffer.
+    /// on the accelerator stream. When `m > 0`, the empty-K path waits for
+    /// stream completion before returning. Calls with `m == 0` return
+    /// immediately; other paths require [`Self::synchronize`] before reading
+    /// or dropping any argument buffer.
     #[allow(clippy::too_many_arguments)]
     pub fn ternary_gemv_async(
         &self,
@@ -722,9 +723,10 @@ impl GpuAccelerator {
     }
 
     /// Async variant of [`Self::ternary_gemm`]. All output writes are enqueued
-    /// on the accelerator stream. The empty-K path waits for stream completion
-    /// before returning; other paths require [`Self::synchronize`] before
-    /// reading or dropping any argument buffer.
+    /// on the accelerator stream. When `m > 0 && n > 0`, the empty-K path
+    /// waits for stream completion before returning. Calls with `m == 0 ||
+    /// n == 0` return immediately; other paths require [`Self::synchronize`]
+    /// before reading or dropping any argument buffer.
     #[allow(clippy::too_many_arguments)]
     pub fn ternary_gemm_async(
         &self,

@@ -103,6 +103,8 @@ export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export CUDA_NVCC="${CUDA_NVCC:-$CUDA_HOME/bin/nvcc}"
 export MYELIN_CUDA_ARCH="${MYELIN_CUDA_ARCH:-sm_120}"
 test -x "$CUDA_NVCC" || { echo "ERROR: nvcc not found at $CUDA_NVCC" >&2; exit 1; }
+# find_cuda_helper treats CUDA_LIBRARY_PATH entries as toolkit roots.
+export CUDA_LIBRARY_PATH="$CUDA_HOME${CUDA_LIBRARY_PATH:+:$CUDA_LIBRARY_PATH}"
 
 cargo +1.98.1 build --locked --features cuda &&
 cargo +1.98.1 clippy --locked --features cuda -- -D warnings &&
@@ -118,6 +120,8 @@ export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export CUDA_NVCC="${CUDA_NVCC:-$CUDA_HOME/bin/nvcc}"
 export MYELIN_CUDA_ARCH="${MYELIN_CUDA_ARCH:-sm_120}"
 test -x "$CUDA_NVCC" || { echo "ERROR: nvcc not found at $CUDA_NVCC" >&2; exit 1; }
+# find_cuda_helper treats CUDA_LIBRARY_PATH entries as toolkit roots.
+export CUDA_LIBRARY_PATH="$CUDA_HOME${CUDA_LIBRARY_PATH:+:$CUDA_LIBRARY_PATH}"
 
 cargo +1.98.1 run --locked \
   --example benchmark \
