@@ -500,6 +500,24 @@ mod tests {
 
     // ── LIM-1302 buffer-contract regression (CPU stub) ──────────────────────
 
+    /// Assert `err` is the length-mismatch `MemoryError` naming both lengths.
+    fn assert_length_mismatch(err: GpuError, buffer_len: usize, input_len: usize) {
+        match err {
+            GpuError::MemoryError(msg) => {
+                assert!(msg.contains("length mismatch"), "msg: {msg}");
+                assert!(
+                    msg.contains(&format!("buffer has {buffer_len} elements")),
+                    "msg: {msg}"
+                );
+                assert!(
+                    msg.contains(&format!("input has {input_len}")),
+                    "msg: {msg}"
+                );
+            }
+            other => panic!("expected MemoryError, got {other}"),
+        }
+    }
+
     /// Allocation lengths 0, 1, and representative boundary sizes all read back
     /// as `T::default()` immediately after `alloc`, with no prior upload.
     #[test]
@@ -541,15 +559,7 @@ mod tests {
     #[test]
     fn buffer_upload_too_short_rejected_and_non_mutating() {
         let mut buf = GpuBuffer::from_slice(&[1i32, 2, 3, 4]).unwrap();
-        let err = buf.upload(&[7, 8]).unwrap_err();
-        match err {
-            GpuError::MemoryError(msg) => {
-                assert!(msg.contains("length mismatch"), "msg: {msg}");
-                assert!(msg.contains("buffer has 4 elements"), "msg: {msg}");
-                assert!(msg.contains("input has 2"), "msg: {msg}");
-            }
-            other => panic!("expected MemoryError, got {other}"),
-        }
+        assert_length_mismatch(buf.upload(&[7, 8]).unwrap_err(), 4, 2);
         assert_eq!(buf.to_vec().unwrap(), vec![1, 2, 3, 4], "contents mutated");
     }
 
@@ -557,14 +567,7 @@ mod tests {
     #[test]
     fn buffer_upload_too_long_rejected_and_non_mutating() {
         let mut buf = GpuBuffer::from_slice(&[1i32, 2, 3, 4]).unwrap();
-        let err = buf.upload(&[7, 8, 9, 10, 11]).unwrap_err();
-        match err {
-            GpuError::MemoryError(msg) => {
-                assert!(msg.contains("buffer has 4 elements"), "msg: {msg}");
-                assert!(msg.contains("input has 5"), "msg: {msg}");
-            }
-            other => panic!("expected MemoryError, got {other}"),
-        }
+        assert_length_mismatch(buf.upload(&[7, 8, 9, 10, 11]).unwrap_err(), 4, 5);
         assert_eq!(buf.to_vec().unwrap(), vec![1, 2, 3, 4], "contents mutated");
     }
 
@@ -580,24 +583,10 @@ mod tests {
     #[test]
     fn buffer_upload_empty_nonempty_mismatches_fail() {
         let mut empty = GpuBuffer::<i32>::alloc(0).unwrap();
-        let err = empty.upload(&[1]).unwrap_err();
-        match err {
-            GpuError::MemoryError(msg) => {
-                assert!(msg.contains("buffer has 0 elements"), "msg: {msg}");
-                assert!(msg.contains("input has 1"), "msg: {msg}");
-            }
-            other => panic!("expected MemoryError, got {other}"),
-        }
+        assert_length_mismatch(empty.upload(&[1]).unwrap_err(), 0, 1);
 
         let mut nonempty = GpuBuffer::<i32>::alloc(3).unwrap();
-        let err = nonempty.upload(&[]).unwrap_err();
-        match err {
-            GpuError::MemoryError(msg) => {
-                assert!(msg.contains("buffer has 3 elements"), "msg: {msg}");
-                assert!(msg.contains("input has 0"), "msg: {msg}");
-            }
-            other => panic!("expected MemoryError, got {other}"),
-        }
+        assert_length_mismatch(nonempty.upload(&[]).unwrap_err(), 3, 0);
     }
 
     #[test]
