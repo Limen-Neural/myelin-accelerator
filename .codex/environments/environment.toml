@@ -22,17 +22,12 @@ export MYELIN_CUDA_ARCH="${MYELIN_CUDA_ARCH:-sm_120}"
 
 # ---- Host prerequisites -----------------------------------------------------
 
-for tool in git cmake ninja nvidia-smi; do
+for tool in git; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "ERROR: required host tool not found: $tool" >&2
         exit 1
     fi
 done
-
-if [ ! -x "$CUDA_NVCC" ]; then
-    echo "ERROR: nvcc not found at $CUDA_NVCC" >&2
-    exit 1
-fi
 
 # ---- Rust ------------------------------------------------------------------
 
@@ -51,8 +46,14 @@ cargo +1.98.1 --version
 
 # ---- CUDA / Blackwell sanity ------------------------------------------------
 
-"$CUDA_NVCC" --version
-nvidia-smi -L
+if [ -x "$CUDA_NVCC" ]; then
+    "$CUDA_NVCC" --version
+else
+    echo "CUDA toolkit unavailable; continuing with CPU setup"
+fi
+if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi -L || echo "NVIDIA driver unavailable; continuing with CPU setup"
+fi
 
 # ---- Dependency warm-up + cheap CPU validation -----------------------------
 
@@ -69,11 +70,17 @@ cargo +1.98.1 build \
 
 # ---- CMake/CLion worktree configuration ------------------------------------
 
-cmake \
-    -S . \
-    -B cmake-build-debug \
-    -G Ninja \
-    -DCMAKE_BUILD_TYPE=Debug
+if command -v cmake >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1; then
+    cmake \
+        -S . \
+        -B cmake-build-debug \
+        -G Ninja \
+        -DCMAKE_BUILD_TYPE=Debug \
+        -DCUDA_NVCC="$CUDA_NVCC" \
+        -DCUDA_ARCH="$MYELIN_CUDA_ARCH"
+else
+    echo "CMake or Ninja unavailable; skipping optional IDE configuration"
+fi
 
 echo "== myelin-accelerator local environment ready =="'''
 
@@ -84,6 +91,7 @@ command = '''
 cargo +1.98.1 fmt --all -- --check &&
 cargo +1.98.1 clippy --locked --no-default-features -- -D warnings &&
 cargo +1.98.1 test --locked &&
+cargo +1.98.1 build --locked --no-default-features &&
 cargo +1.98.1 build --locked --example benchmark --features bench'''
 platform = "linux"
 
@@ -94,6 +102,7 @@ command = '''
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export CUDA_NVCC="${CUDA_NVCC:-$CUDA_HOME/bin/nvcc}"
 export MYELIN_CUDA_ARCH="${MYELIN_CUDA_ARCH:-sm_120}"
+test -x "$CUDA_NVCC" || { echo "ERROR: nvcc not found at $CUDA_NVCC" >&2; exit 1; }
 
 cargo +1.98.1 build --locked --features cuda &&
 cargo +1.98.1 clippy --locked --features cuda -- -D warnings &&
@@ -108,6 +117,7 @@ command = '''
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export CUDA_NVCC="${CUDA_NVCC:-$CUDA_HOME/bin/nvcc}"
 export MYELIN_CUDA_ARCH="${MYELIN_CUDA_ARCH:-sm_120}"
+test -x "$CUDA_NVCC" || { echo "ERROR: nvcc not found at $CUDA_NVCC" >&2; exit 1; }
 
 cargo +1.98.1 run --locked \
   --example benchmark \

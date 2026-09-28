@@ -602,9 +602,10 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
-    /// Async variant of [`Self::ternary_gemv`]. All output writes, including
-    /// empty-K zeroing, are enqueued on the accelerator stream. Call
-    /// [`Self::synchronize`] before reading or dropping any argument buffer.
+    /// Async variant of [`Self::ternary_gemv`]. All output writes are enqueued
+    /// on the accelerator stream. The empty-K path waits for stream completion
+    /// before returning; other paths require [`Self::synchronize`] before
+    /// reading or dropping any argument buffer.
     #[allow(clippy::too_many_arguments)]
     pub fn ternary_gemv_async(
         &self,
@@ -720,9 +721,10 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
-    /// Async variant of [`Self::ternary_gemm`]. All output writes, including
-    /// empty-K zeroing, are enqueued on the accelerator stream. Call
-    /// [`Self::synchronize`] before reading or dropping any argument buffer.
+    /// Async variant of [`Self::ternary_gemm`]. All output writes are enqueued
+    /// on the accelerator stream. The empty-K path waits for stream completion
+    /// before returning; other paths require [`Self::synchronize`] before
+    /// reading or dropping any argument buffer.
     #[allow(clippy::too_many_arguments)]
     pub fn ternary_gemm_async(
         &self,
@@ -837,9 +839,10 @@ impl GpuAccelerator {
             .stream
             .as_ref()
             .ok_or_else(|| self.unavailable_error())?;
-        // SAFETY: the caller must keep output alive until synchronize(); all
-        // accelerator launches and this memset use the same stream.
-        unsafe { output.zero_prefix_on(count, stream) }
+        // SAFETY: output and stream remain alive until the synchronization
+        // below completes; all accelerator work uses this same stream.
+        unsafe { output.zero_prefix_on(count, stream) }?;
+        self.synchronize()
     }
 
     fn expect_len(name: &str, actual: usize, minimum: usize) -> GpuResult<()> {

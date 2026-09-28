@@ -343,14 +343,16 @@ fn ternary_gemv_async_empty_k_follows_overlapping_launch() {
     .expect("overlapping nonempty GEMV");
     acc.ternary_gemv_async(&empty_words, &empty, &empty, &mut y, m as i32, 0, 1, false)
         .expect("empty-K GEMV");
-    acc.synchronize().expect("both operations completed");
 
+    // Empty-K returns only after its stream work completes, so host readback
+    // is safe without a separate synchronize call.
     let got = y.to_vec().unwrap();
     assert!(
         got[..m].iter().all(|&value| value == 0.0),
         "stale prefix after sync"
     );
     assert_eq!(&got[m..], &[7.0, 7.0]);
+    acc.synchronize().expect("stream remains healthy");
 }
 
 #[test]
@@ -442,12 +444,13 @@ fn ternary_gemm_async_empty_k_follows_overlapping_launch() {
         false,
     )
     .expect("empty-K GEMM");
-    acc.synchronize().expect("both operations completed");
 
+    // Empty-K returns only after its stream work completes.
     let got = c.to_vec().unwrap();
     assert!(
         got[..m * n].iter().all(|&value| value == 0.0),
         "stale prefix after sync"
     );
     assert_eq!(&got[m * n..], &[9.0, 9.0]);
+    acc.synchronize().expect("stream remains healthy");
 }
