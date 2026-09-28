@@ -638,13 +638,7 @@ impl GpuAccelerator {
         }
         if k == 0 {
             // Device memset — no host-sized staging buffer; preserve pooled tail.
-            let stream = self
-                .stream
-                .as_ref()
-                .ok_or_else(|| self.unavailable_error())?;
-            // SAFETY: the caller must keep y alive until synchronize(); all
-            // accelerator launches and this memset use the same stream.
-            unsafe { y.zero_prefix_on(m_u, stream) }?;
+            self.zero_output_prefix(y, m_u)?;
             return Ok(());
         }
 
@@ -764,13 +758,7 @@ impl GpuAccelerator {
         }
         if k == 0 {
             // Device memset — no host-sized staging buffer; preserve pooled tail.
-            let stream = self
-                .stream
-                .as_ref()
-                .ok_or_else(|| self.unavailable_error())?;
-            // SAFETY: the caller must keep c alive until synchronize(); all
-            // accelerator launches and this memset use the same stream.
-            unsafe { c.zero_prefix_on(m_u.saturating_mul(n_u), stream) }?;
+            self.zero_output_prefix(c, m_u.saturating_mul(n_u))?;
             return Ok(());
         }
 
@@ -842,6 +830,16 @@ impl GpuAccelerator {
         })?;
 
         Ok(())
+    }
+
+    fn zero_output_prefix(&self, output: &mut GpuBuffer<f32>, count: usize) -> GpuResult<()> {
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
+        // SAFETY: the caller must keep output alive until synchronize(); all
+        // accelerator launches and this memset use the same stream.
+        unsafe { output.zero_prefix_on(count, stream) }
     }
 
     fn expect_len(name: &str, actual: usize, minimum: usize) -> GpuResult<()> {

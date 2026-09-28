@@ -81,33 +81,35 @@ echo "== myelin-accelerator local environment ready =="'''
 name = "CPU Gate"
 icon = "tool"
 command = '''
-cargo fmt --all -- --check &&
-cargo clippy --locked --no-default-features -- -D warnings &&
-cargo test --locked &&
-cargo build --locked --example benchmark --features bench'''
+cargo +1.98.1 fmt --all -- --check &&
+cargo +1.98.1 clippy --locked --no-default-features -- -D warnings &&
+cargo +1.98.1 test --locked &&
+cargo +1.98.1 build --locked --example benchmark --features bench'''
 platform = "linux"
 
 [[actions]]
 name = "CUDA / Blackwell Gate"
 icon = "tool"
 command = '''
-export CUDA_NVCC=/usr/local/cuda/bin/nvcc
-export MYELIN_CUDA_ARCH=sm_120
+export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
+export CUDA_NVCC="${CUDA_NVCC:-$CUDA_HOME/bin/nvcc}"
+export MYELIN_CUDA_ARCH="${MYELIN_CUDA_ARCH:-sm_120}"
 
-cargo build --locked --features cuda &&
-cargo clippy --locked --features cuda -- -D warnings &&
-cargo test --locked --features cuda &&
-cargo test --locked --features cuda -- --ignored --nocapture'''
+cargo +1.98.1 build --locked --features cuda &&
+cargo +1.98.1 clippy --locked --features cuda -- -D warnings &&
+cargo +1.98.1 test --locked --features cuda &&
+cargo +1.98.1 test --locked --features cuda -- --ignored --nocapture'''
 platform = "linux"
 
 [[actions]]
 name = "GPU Benchmark"
 icon = "tool"
 command = '''
-export CUDA_NVCC=/usr/local/cuda/bin/nvcc
-export MYELIN_CUDA_ARCH=sm_120
+export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
+export CUDA_NVCC="${CUDA_NVCC:-$CUDA_HOME/bin/nvcc}"
+export MYELIN_CUDA_ARCH="${MYELIN_CUDA_ARCH:-sm_120}"
 
-cargo run --locked \
+cargo +1.98.1 run --locked \
   --example benchmark \
   --profile bench \
   --features bench,cuda \
