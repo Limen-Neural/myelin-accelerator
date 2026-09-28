@@ -1,0 +1,106 @@
+# Copyright 2026 Raul Montoya Cardenas
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Report published crate to Linear
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linear-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    # A prerelease is not a production crate release.
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the published tag and complete history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify version and shipped commit
+        id: crate
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag must be v<major>.<minor>.<patch>"
+            exit 1
+          fi
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          if [[ "$RELEASE_TAG" != "v$version" ]]; then
+            echo "::error::Release tag and Cargo.toml version differ"
+            exit 1
+          fi
+          sha="$(git rev-parse HEAD)"
+          if [[ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$sha" ]]; then
+            echo "::error::Checkout is not the release tag commit"
+            exit 1
+          fi
+          # Scan the shipped range, including LIM identifiers in older commits.
+          # For the first release, scan from the repository's initial commit.
+          previous="$(git tag --merged HEAD -l 'v[0-9]*' | grep -vxF "$RELEASE_TAG" | sort -V | tail -1 || true)"
+          if [[ -z "$previous" ]]; then
+            previous="$(git rev-list --max-parents=0 HEAD | tail -1)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$previous" >> "$GITHUB_OUTPUT"
+          echo "Reporting $RELEASE_TAG at commit $sha (after $previous)"
+
+      - name: Confirm this version is live on crates.io
+        env:
+          CRATE_VERSION: ${{ steps.crate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # crates.io may index a newly published crate a short time after publish.
+          curl --fail --silent --show-error --retry 8 --retry-delay 15 \
+            --retry-all-errors --user-agent 'myelin-accelerator-release-ci' \
+            "https://crates.io/api/v1/crates/myelin-accelerator/$CRATE_VERSION" \
+            | python3 -c 'import json, os, sys; v=json.load(sys.stdin)["version"]; assert v["num"] == os.environ["CRATE_VERSION"] and not v["yanked"], "Crate version unavailable or yanked"'
+
+      - name: Sync shipped issues and commit to scheduled release
+        id: sync
+        uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
+        with:
+          access_key: ${{ secrets.LINEAR_ACCESS_KEY }}
+          command: sync
+          version: ${{ steps.crate.outputs.version }}
+          name: v${{ steps.crate.outputs.version }}
+          base_ref: ${{ steps.crate.outputs.base_ref }}
+          no_branch_ref_detection: true
+          description: 'Published crate myelin-accelerator@${{ steps.crate.outputs.version }} from commit ${{ steps.crate.outputs.sha }}.'
+          links: |
+            crates.io=https://crates.io/crates/myelin-accelerator/${{ steps.crate.outputs.version }}
+            Shipped commit=https://github.com/${{ github.repository }}/commit/${{ steps.crate.outputs.sha }}
+            GitHub release=${{ github.event.release.html_url }}
+
+      - name: Require the intended Linear release
+        env:
+          REPORTED_VERSION: ${{ steps.sync.outputs.release-version }}
+          EXPECTED_VERSION: ${{ steps.crate.outputs.version }}
+          RELEASE_ID: ${{ steps.sync.outputs.release-id }}
+        run: |
+          if [[ -z "$RELEASE_ID" || "$REPORTED_VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo "::error::Linear sync did not report the intended version"
+            exit 1
+          fi
+
+      - name: Complete the scheduled production release
+        uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
+        with:
+          access_key: ${{ secrets.LINEAR_ACCESS_KEY }}
+          command: complete
+          version: ${{ steps.crate.outputs.version }}
