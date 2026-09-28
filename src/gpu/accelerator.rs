@@ -529,6 +529,16 @@ impl GpuAccelerator {
         let n = stimuli.len();
         Self::expect_len("spikes", spikes.len(), n)?;
 
+        // The CUDA kernel takes the element count as `int`. Reject `n > i32::MAX`
+        // before the cast: `n as i32` would otherwise wrap negative and the
+        // kernel's `tid >= n` guard would make every thread skip, silently
+        // producing no output. `n as u32` for the grid is safe once `n` fits i32.
+        let n_i32 = i32::try_from(n).map_err(|_| {
+            GpuError::invalid_input(format!(
+                "poisson_encode: element count {n} exceeds i32::MAX kernel limit"
+            ))
+        })?;
+
         let kernels = self.kernels()?;
         let func = kernels.get_function("poisson_encode")?;
         let stream = self
@@ -542,12 +552,12 @@ impl GpuAccelerator {
         // SAFETY: launching the `poisson_encode` kernel.
         // - ABI: the CUDA entry (cu/spiking_network.cu) is
         //   `(const float* stimuli, unsigned int* spikes, int n, unsigned int seed)`. Arguments match:
-        //   `stimuli` is a read-only f32 device pointer, `spikes` is the u32 write target, `n as i32`
+        //   `stimuli` is a read-only f32 device pointer, `spikes` is the u32 write target, `n_i32`
         //   is the element count, and `seed` is the u32 RNG seed.
-        // - Bounds: `spikes.len() == stimuli.len() == n` is enforced above via `expect_len`, and the
-        //   kernel guards `tid >= n`, so every `stimuli[tid]` read and `spikes[tid]` write is in bounds.
-        //   `n` originates from `stimuli.len()` (a `usize`); on this crate's supported buffers it fits
-        //   in `i32`/`u32` for the grid computation.
+        // - Bounds: `spikes.len() == stimuli.len() == n` is enforced above via `expect_len`, and
+        //   `n` is checked to fit `i32` via `i32::try_from` (so `n_i32 >= 0` and the grid cast
+        //   `n as u32` cannot wrap). The kernel guards `tid >= n`, so every `stimuli[tid]` read and
+        //   `spikes[tid]` write is in bounds.
         // - Launch dims: `grid = ceil_div(n, 256)` covers all `n` threads; 0 dynamic shared memory
         //   (the kernel declares none).
         // - Lifetime/aliasing: `stimuli` is shared `&`, `spikes` is unique `&mut` (no host aliasing);
@@ -558,7 +568,7 @@ impl GpuAccelerator {
             launch!(func<<<grid, block, 0, stream>>>(
                 stimuli.as_device_ptr(),
                 spikes.as_device_ptr(),
-                n as i32,
+                n_i32,
                 seed,
             ))
             .map_err(|e| {

@@ -285,10 +285,13 @@ matching ShipOfTheseus `/usr/local/cuda` → `cuda-13.3`.
 | `CUDA build [self-hosted] (sm_120)` | Labels `self-hosted,linux,x64,gpu,cuda` | Full: build/clippy/test + **`--ignored` goldens** + PTX symbols (incl. ternary) + ptxas + short `bench,cuda` |
 | Local quality gate above | Developer workstation | Full runtime (same as self-hosted, optional Nsight) |
 
-The GitHub-hosted `Docker CUDA 13.3.1` image-build job was removed: it duplicated
-the cloud PTX-compile job's coverage (compile-only inside the 13.3.1 devel image)
-without exercising GPU runtime, so it added CI time without additional signal.
-The `Dockerfile` is retained for local/manual image builds.
+The GitHub-hosted `Docker CUDA 13.3.1` image-build job was removed. It built
+`./Dockerfile` via `docker/build-push-action` inside the 13.3.1 devel image
+(compile-only, no GPU runtime). The `cargo build/clippy --features cuda` compile
+signal it produced is already covered by the `CUDA PTX compile [cloud]` job; the
+only thing dropped is automated verification that the `Dockerfile` itself still
+builds. The `Dockerfile` is retained for local/manual image builds — build it
+on demand with `docker build -t myelin-accelerator:cuda13.3.1 .`.
 
 **Branch protection (recommended):** require lint, CPU checks, and cloud PTX compile.
 Make self-hosted required only when the runner is reliably online; otherwise PRs queue.
