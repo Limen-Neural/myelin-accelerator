@@ -166,6 +166,9 @@ def _verify_synfire_upstream(card: dict) -> bytes:
 
     stim = card["stimuli"][0]
     m = re.search(r"commit ([0-9a-f]{40}), sha256 ([0-9a-f]{64})", stim["source"])
+    check(m is not None, "synfire: d0 source records notebook commit + sha256")
+    if m is None:
+        return upstream
     nb_raw = fetch(f"https://raw.githubusercontent.com/neuromorphs/NIR/{m.group(1)}/paper/01_lif/lif_norse.ipynb")
     check(sha256(nb_raw) == m.group(2), "synfire: lif_norse.ipynb sha256")
     cells = ["".join(c["source"]) for c in json.loads(nb_raw)["cells"] if c["cell_type"] == "code"]

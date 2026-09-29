@@ -15,9 +15,23 @@ mod snn_support;
 use myelin_accelerator::oracle::{LIF_DECAY, LIF_REFRACT_TICKS, LIF_THRESHOLD};
 use snn_support::{
     Coverage, SPIKENAUT_MEM_SHA256, StepState, TraceContext, UnweightedOracle, WORKLOAD_ONLY,
-    WeightedOracle, assert_no_subnormals, check_step, decode_q88_word, membrane_bits_match,
-    spikenaut, spikenaut_mem_sha256, synfire,
+    WeightedOracle, assert_no_subnormals, check_step, decode_q88_word, f32_seq_sha256,
+    membrane_bits_match, spikenaut, spikenaut_mem_sha256, synfire,
 };
+
+// Workload pins, hard-coded here (not read from fixture.json) so a changed
+// seed, rate table, or stimulus cannot silently alter the GPU workload.
+// Digests are SHA-256 over little-endian f32 bytes; each was cross-checked
+// with an independent Python re-implementation of the generator / fixture.
+const SPIKENAUT_SEED: u64 = 68;
+const SPIKENAUT_RATES: [f32; 16] = [
+    0.35, 0.5, 0.3, 0.6, 0.45, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+];
+const SPIKENAUT_INPUTS_SHA256: &str =
+    "04f5274a371f588f8f1eea6181f7b2ca6507ad418e2870b16bc02aa842d94e3e";
+const SYNFIRE_D0_SHA256: &str = "f63bfc7100b7992000b8ac342916819988e061a9c7b708c8606e276c304c31e3";
+const SYNFIRE_RAMP_SHA256: &str =
+    "0e8da794e6401edb8096b10c1bc25c43d4de61e73b67ef3d1da278897dc712ea";
 
 #[test]
 fn q88_decoding_is_signed_twos_complement() {
@@ -116,8 +130,13 @@ fn spikenaut_weights_are_exact_and_neuron_major() {
 #[test]
 fn spikenaut_stimulus_is_deterministic_binary_on_axons_0_to_4() {
     let f = spikenaut();
+    assert_eq!(
+        (f.seed, f.rates.as_slice()),
+        (SPIKENAUT_SEED, &SPIKENAUT_RATES[..])
+    );
     let a = f.inputs();
     assert_eq!(a, f.inputs(), "same seed must replay the same inputs");
+    assert_eq!(f32_seq_sha256(a.iter().flatten()), SPIKENAUT_INPUTS_SHA256);
     assert!(
         a.len() == f.steps && (64..=128).contains(&f.steps),
         "bounded release-qualification run"
@@ -133,6 +152,17 @@ fn spikenaut_stimulus_is_deterministic_binary_on_axons_0_to_4() {
     let fires = |j: usize| active[j] > 0;
     assert!((0..5).all(fires), "axons 0-4 all fire: {active:?}");
     assert!(!(5..16).any(fires), "axons 5-15 held at zero: {active:?}");
+}
+
+/// (spikes, refractory, ignored-input, sub-threshold, negative) neuron-ticks.
+fn counters(c: &Coverage) -> [usize; 5] {
+    [
+        c.spikes,
+        c.refractory_ticks,
+        c.ignored_input_ticks,
+        c.subthreshold_nonzero,
+        c.negative_membrane,
+    ]
 }
 
 fn assert_tick_invariants(t: usize, s: &StepState) {
@@ -174,21 +204,9 @@ fn spikenaut_oracle_run_has_spike_refractory_and_membrane_coverage() {
         ctx.describe(),
         f.steps
     );
-    let Coverage {
-        spikes,
-        refractory_ticks,
-        ignored_input_ticks,
-        subthreshold_nonzero,
-        negative_membrane,
-    } = c;
-    let counters = [
-        spikes,
-        refractory_ticks,
-        ignored_input_ticks,
-        subthreshold_nonzero,
-        negative_membrane,
-    ];
-    assert!(counters.iter().all(|&x| x > 0), "coverage gap: {c:?}");
+    // Regression pin of the fixed-v0.2.0 trace over the pinned workload:
+    // (spikes, refractory, ignored-input, sub-threshold, negative) neuron-ticks.
+    assert_eq!(counters(&c), [396, 792, 683, 790, 518], "{c:?}");
 }
 
 #[test]
@@ -241,6 +259,13 @@ fn synfire_stimuli_are_pinned() {
     let ids: Vec<&str> = f.stimuli.iter().map(|s| s.identity.as_str()).collect();
     assert_eq!(ids, ["nir-paper-d0", "myelin-ramp-256"]);
     let (d0, ramp) = (&f.stimuli[0].x, &f.stimuli[1].x);
+    assert_eq!(
+        (f32_seq_sha256(d0), f32_seq_sha256(ramp)),
+        (
+            SYNFIRE_D0_SHA256.to_string(),
+            SYNFIRE_RAMP_SHA256.to_string()
+        )
+    );
     assert_eq!((d0.len(), d0.iter().sum::<f32>()), (100, 34.0));
     assert_eq!((ramp.len(), ramp[0], ramp[127]), (128, 1.0 / 256.0, 0.5));
 }
@@ -273,18 +298,14 @@ fn synfire_oracle_runs_cover_spikes_and_refractory() {
             ctx.describe(),
             currents.len()
         );
-        let specific = match stim.identity.as_str() {
-            // Consecutive d0 ones land inside the refractory window.
-            "nir-paper-d0" => c.ignored_input_ticks,
-            // The ramp integrates sub-threshold before crossing.
-            "myelin-ramp-256" => c.subthreshold_nonzero,
+        // Regression pins: d0's consecutive ones land inside the refractory
+        // window (ignored input); the ramp integrates sub-threshold first.
+        let pinned = match stim.identity.as_str() {
+            "nir-paper-d0" => [15, 30, 19, 0, 0],
+            "myelin-ramp-256" => [14, 28, 28, 86, 0],
             other => panic!("unexpected stimulus {other}"),
         };
-        assert!(
-            c.spikes > 0 && c.refractory_ticks > 0 && specific > 0,
-            "{}: {c:?}",
-            stim.identity
-        );
+        assert_eq!(counters(&c), pinned, "{}: {c:?}", stim.identity);
     }
 }
 

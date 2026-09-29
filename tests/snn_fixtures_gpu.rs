@@ -103,14 +103,20 @@ fn gpu_coverage(cov: &mut Coverage, prev_refract: &[u32], got: &StepState) {
 /// Drive one trace: per tick, poison spikes, `launch(t)` (upload + launch),
 /// synchronize, read membrane/refract/spikes back, advance the oracle with
 /// `oracle(t)`, and compare. Returns GPU-side coverage.
-fn drive(
-    dev: &Device,
-    ctx: &TraceContext<'_>,
-    state: &mut LifState,
+/// Device + replay identity for one trace.
+struct Run<'a> {
+    dev: &'a Device,
+    ctx: &'a TraceContext<'a>,
     steps: usize,
+}
+
+fn drive(
+    run: &Run<'_>,
+    state: &mut LifState,
     mut launch_tick: impl FnMut(usize, &LifState),
     mut oracle_tick: impl FnMut(usize) -> StepState,
 ) -> Coverage {
+    let Run { dev, ctx, steps } = *run;
     let mut cov = Coverage::default();
     let mut prev_refract = vec![0u32; state.n];
     for t in 0..steps {
@@ -179,11 +185,14 @@ fn run_spikenaut_weighted(dev: &Device, block: u32) {
     let inputs = f.inputs();
     let mut oracle = WeightedOracle::new(&f.weights, n, k);
 
-    let cov = drive(
+    let run = Run {
         dev,
-        &ctx,
+        ctx: &ctx,
+        steps: f.steps,
+    };
+    let cov = drive(
+        &run,
         &mut state,
-        f.steps,
         |t, s| {
             input.upload(&inputs[t]).expect("upload input");
             let stream = &dev.stream;
@@ -262,11 +271,14 @@ fn synfire_lifneuron_affine_lif_matches_v0_2_0_oracle_every_timestep() {
         let mut i_ext = GpuBuffer::<f32>::alloc(1).expect("i_ext");
         let mut state = LifState::new(1);
         let mut oracle = UnweightedOracle::new(1);
+        let run = Run {
+            dev: &dev,
+            ctx: &ctx,
+            steps: currents.len(),
+        };
         let cov = drive(
-            &dev,
-            &ctx,
+            &run,
             &mut state,
-            currents.len(),
             |t, s| {
                 i_ext.upload(&currents[t..=t]).expect("upload i_ext");
                 let stream = &dev.stream;

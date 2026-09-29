@@ -21,13 +21,24 @@ const SPIKENAUT_MEM: &str = include_str!("../fixtures/snn/spikenaut/parameters_w
 pub const SPIKENAUT_MEM_SHA256: &str =
     "825969873444d215d09920e69592700a2cc8594d92e7b14c4059eef8919fe4f3";
 
-/// Lower-case hex SHA-256 of the embedded `parameters_weights.mem` bytes.
-pub fn spikenaut_mem_sha256() -> String {
+fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(SPIKENAUT_MEM.as_bytes())
+    Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// Lower-case hex SHA-256 of the embedded `parameters_weights.mem` bytes.
+pub fn spikenaut_mem_sha256() -> String {
+    sha256_hex(SPIKENAUT_MEM.as_bytes())
+}
+
+/// SHA-256 over the little-endian f32 bytes of a stimulus sequence, used to
+/// pin generated / recorded inputs so they cannot drift silently.
+pub fn f32_seq_sha256<'a>(values: impl IntoIterator<Item = &'a f32>) -> String {
+    let bytes: Vec<u8> = values.into_iter().flat_map(|v| v.to_le_bytes()).collect();
+    sha256_hex(&bytes)
 }
 const SYNFIRE_JSON: &str = include_str!("../fixtures/snn/synfire_lifneuron/fixture.json");
 
@@ -457,39 +468,32 @@ pub fn membrane_bits_match(expected: f32, got: f32) -> bool {
     !expected.is_nan() && !got.is_nan() && expected.to_bits() == got.to_bits()
 }
 
-/// First differing field of neuron `i`, checked spike → refract → membrane.
-fn neuron_mismatch(
-    ctx: &TraceContext<'_>,
-    t: usize,
-    i: usize,
-    got: &StepState,
-    expected: &StepState,
-) -> Option<String> {
-    let at = format!("at timestep={t} neuron={i}");
-    if got.spikes[i] != expected.spikes[i] {
-        let (e, g) = (expected.spikes[i], got.spikes[i]);
-        return Some(format!(
-            "spike mismatch {at}: expected {e} got {g} ({})",
-            ctx.describe()
-        ));
+impl StepState {
+    /// First differing field of neuron `i` versus `expected`, checked
+    /// spike → refract → membrane. Context is appended by [`check_step`].
+    fn diff_at(&self, expected: &StepState, i: usize) -> Option<String> {
+        if self.spikes[i] != expected.spikes[i] {
+            let (e, g) = (expected.spikes[i], self.spikes[i]);
+            return Some(format!(
+                "spike mismatch at neuron={i}: expected {e} got {g}"
+            ));
+        }
+        if self.refract[i] != expected.refract[i] {
+            let (e, g) = (expected.refract[i], self.refract[i]);
+            return Some(format!(
+                "refract mismatch at neuron={i}: expected {e} got {g}"
+            ));
+        }
+        let (e, g) = (expected.membrane[i], self.membrane[i]);
+        (!membrane_bits_match(e, g)).then(|| {
+            format!(
+                "membrane mismatch at neuron={i}: expected {e:e} (0x{:08x}) got {g:e} (0x{:08x}) \
+                 (bit-exact policy)",
+                e.to_bits(),
+                g.to_bits()
+            )
+        })
     }
-    if got.refract[i] != expected.refract[i] {
-        let (e, g) = (expected.refract[i], got.refract[i]);
-        return Some(format!(
-            "refract mismatch {at}: expected {e} got {g} ({})",
-            ctx.describe()
-        ));
-    }
-    let (e, g) = (expected.membrane[i], got.membrane[i]);
-    (!membrane_bits_match(e, g)).then(|| {
-        format!(
-            "membrane mismatch {at}: expected {e:e} (0x{:08x}) got {g:e} (0x{:08x}) \
-             (bit-exact policy; {})",
-            e.to_bits(),
-            g.to_bits(),
-            ctx.describe()
-        )
-    })
 }
 
 /// Compare one tick. Spikes and refractory counters are exact; membrane is
@@ -513,8 +517,8 @@ pub fn check_step(
             ctx.describe()
         ));
     }
-    match (0..n).find_map(|i| neuron_mismatch(ctx, t, i, got, expected)) {
-        Some(msg) => Err(msg),
+    match (0..n).find_map(|i| got.diff_at(expected, i)) {
+        Some(msg) => Err(format!("timestep={t}: {msg} ({})", ctx.describe())),
         None => Ok(()),
     }
 }
