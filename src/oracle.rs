@@ -372,6 +372,14 @@ pub fn ternary_gemm_oracle(
 //
 // Consequently a neuron that spikes at tick `t` is held at reset for ticks
 // `t+1` and `t+2` and integrates again from reset at `t+3`.
+//
+// Subnormals: these oracles use IEEE `f32::mul_add` and keep subnormal
+// values. The shipped PTX is built with `--use_fast_math` and the LIF FMAs
+// are `fma.rn.ftz.f32`, which flush subnormal inputs and results to zero.
+// Oracle and device therefore agree bit-for-bit only while no subnormal
+// membrane, current, weight, or input occurs. The fixture differential tests
+// assert that precondition. Mirroring the flush is deliberately left out: it
+// is a build-flag property, not part of the LIF contract.
 
 /// v0.2.0 membrane decay multiplier per tick (fixed; not configurable).
 pub const LIF_DECAY: f32 = 0.85;
@@ -405,6 +413,10 @@ fn lif_update(v: &mut f32, refract: &mut u32, current: f32) -> u32 {
 /// Updates `membrane` and `refract` in place and returns the per-neuron spike
 /// flags (`0` / `1`). All three slices must have the same length
 /// (`n_neurons`); mismatches panic with the offending dimensions.
+///
+/// IEEE semantics: subnormals are kept, whereas the `--use_fast_math` device
+/// build flushes them to zero, so bit-exact agreement assumes subnormal-free
+/// state and inputs.
 #[must_use]
 pub fn lif_step_oracle(membrane: &mut [f32], i_ext: &[f32], refract: &mut [u32]) -> Vec<u32> {
     let n = membrane.len();
@@ -438,6 +450,10 @@ pub fn lif_step_oracle(membrane: &mut [f32], i_ext: &[f32], refract: &mut [u32])
 ///
 /// Panics with the offending dimensions if `weights`, `input_spikes`, or
 /// `refract` do not match `n_neurons` / `n_inputs` exactly.
+///
+/// Like [`lif_step_oracle`], subnormals are kept (no device flush-to-zero),
+/// so bit-exact agreement requires subnormal-free weights, inputs,
+/// accumulators, and membrane.
 #[must_use]
 pub fn lif_step_weighted_oracle(
     membrane: &mut [f32],

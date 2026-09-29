@@ -13,7 +13,7 @@ provenance audit; ordinary `cargo test` never runs it.
 
 Stdlib only. `h5py` is optional and only used with --network to re-extract the
 NIR graph parameters from model.nir; without it that single check is skipped
-(and reported as skipped, never as passed).
+(the run then exits 2 as INCOMPLETE, never as passed).
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ SYNFIRE = SNN / "synfire_lifneuron"
 TIMEOUT = 30
 
 failures: list[str] = []
+skipped: list[str] = []
 
 
 def check(ok: bool, what: str) -> None:
@@ -182,7 +183,9 @@ def _verify_synfire_nir_params(g: dict, model_nir: bytes) -> None:
     try:
         import h5py  # type: ignore[import-not-found]
     except ImportError:
-        print("skip synfire: NIR parameter re-extraction (h5py not installed)")
+        what = "synfire: NIR parameter re-extraction (h5py not installed)"
+        print(f"skip {what}")
+        skipped.append(what)
         return
     datasets = {
         "affine_weight": "0/weight",
@@ -231,6 +234,10 @@ def main() -> int:
     if failures:
         print(f"\n{len(failures)} check(s) failed", file=sys.stderr)
         return 1
+    if skipped:
+        # Never report a partial audit as a pass.
+        print(f"\nINCOMPLETE: {len(skipped)} check(s) skipped: {skipped}", file=sys.stderr)
+        return 2
     print("\nall SNN fixture checks passed" + (" (offline only)" if not args.network else ""))
     return 0
 
