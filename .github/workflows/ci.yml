@@ -126,7 +126,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           if [ -z "$ptx_dir" ]; then
             echo "::error::Could not find PTX output directory"
             exit 1
@@ -154,14 +154,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           ./scripts/check_ptx_entries.sh "$ptx_dir" cloud
 
       - name: Offline ptxas assemble (sm_120)
         shell: bash
         run: |
           set -euo pipefail
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
                    satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
             ptxas -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
@@ -242,7 +242,11 @@ jobs:
         run: |
           set -euo pipefail
           for profile in debug release; do
-            ptx_dir="$(ls -td target/$profile/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
+            if [ "$profile" = "release" ]; then
+              ptx_dir="$(./scripts/ptx_out_dir.sh --release)"
+            else
+              ptx_dir="$(./scripts/ptx_out_dir.sh)"
+            fi
             if [ -z "$ptx_dir" ]; then
               echo "::error::Could not find PTX output directory for profile=$profile"
               exit 1
@@ -271,7 +275,11 @@ jobs:
         run: |
           set -euo pipefail
           for profile in debug release; do
-            ptx_dir="$(ls -td target/$profile/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
+            if [ "$profile" = "release" ]; then
+              ptx_dir="$(./scripts/ptx_out_dir.sh --release)"
+            else
+              ptx_dir="$(./scripts/ptx_out_dir.sh)"
+            fi
             echo "Checking kernel entry points in $profile PTX files..."
             ./scripts/check_ptx_entries.sh "$ptx_dir" "$profile"
           done
@@ -282,7 +290,7 @@ jobs:
         run: |
           set -euo pipefail
           PTXAS="$(dirname "$CUDA_NVCC")/ptxas"
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
                    satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
             "$PTXAS" -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"

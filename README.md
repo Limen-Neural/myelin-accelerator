@@ -12,13 +12,20 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![Release: v0.2.0 candidate](https://img.shields.io/badge/release-v0.2.0%20candidate-orange)](https://github.com/Limen-Neural/myelin-accelerator/issues/37)
 
-Reusable Rust utilities and CUDA kernels for spiking networks, routing, SAT search, and packed ternary matrix operations. The CUDA path targets `sm_120` (Blackwell); the default build works without a CUDA toolkit or device.
+Reusable Rust/CUDA acceleration primitives for SNN / neuromorphic workloads: spiking networks, routing, SAT search, and packed ternary matrix operations. The CUDA path targets `sm_120` (Blackwell); the default build works without a CUDA toolkit or device.
 
-**Release status:** `Cargo.toml` is at `0.2.0`, but publication is still tracked in [release issue #37](https://github.com/Limen-Neural/myelin-accelerator/issues/37). Use a source checkout while that work is in progress. The CI and GPU CI badges reflect `main`, not this checkout or an open pull request.
+**Release status:** `Cargo.toml` is at `0.2.0` as a crates.io candidate (not yet published). Qualification is tracked in [release issue #37](https://github.com/Limen-Neural/myelin-accelerator/issues/37); publication after qualification is owned by LIM-1460. Cargo/crates.io is the supported distribution path; Docker/container images are not a supported consumer surface. The CI and GPU CI badges reflect `main`, not this checkout or an open pull request.
 
 ## Get started
 
-Use this repository as a Git dependency at a reviewed commit, or clone it and use a Cargo `path` dependency. For a local checkout:
+After v0.2.0 publication, add the crate with:
+
+```bash
+cargo add myelin-accelerator
+# For GPU launches: cargo add myelin-accelerator --features cuda
+```
+
+Prior to publication, use a source checkout at a reviewed commit (Git dependency or Cargo `path` dependency). For a local checkout:
 
 ```toml
 [dependencies]
