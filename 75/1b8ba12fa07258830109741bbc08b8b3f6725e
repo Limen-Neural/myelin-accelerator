@@ -1,0 +1,9 @@
+docs/ARCHITECTURE.md
+  ai_agent 256-262
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "751b8ba12fa07258830109741bbc08b8b3f6725e",
+  "prompts": {}
+}
