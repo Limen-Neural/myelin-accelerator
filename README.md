@@ -10,15 +10,22 @@
 [![CodeScene System Mastery](https://codescene.io/projects/85266/status-badges/system-mastery)](https://codescene.io/projects/85266)
 [![Analyzed by CodeScene](https://codescene.io/images/analyzed-by-codescene-badge.svg)](https://codescene.io/projects/85266)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
-[![Release: v0.2.0 candidate](https://img.shields.io/badge/release-v0.2.0%20candidate-orange)](https://github.com/Limen-Neural/myelin-accelerator/issues/37)
+[![Release: v0.2.0 qualification](https://img.shields.io/badge/release-v0.2.0%20qualification-orange)](https://github.com/Limen-Neural/myelin-accelerator/issues/37)
 
 Reusable Rust utilities and CUDA kernels for spiking networks, routing, SAT search, and packed ternary matrix operations. The CUDA path targets `sm_120` (Blackwell); the default build works without a CUDA toolkit or device.
 
-**Release status:** `Cargo.toml` is at `0.2.0`, but publication is still tracked in [release issue #37](https://github.com/Limen-Neural/myelin-accelerator/issues/37). Use a source checkout while that work is in progress. The CI and GPU CI badges reflect `main`, not this checkout or an open pull request.
+**Release status:** v0.2.0 is being qualified for publication in [release issue #37](https://github.com/Limen-Neural/myelin-accelerator/issues/37). The CI and GPU CI badges reflect `main`, not this checkout or an open pull request.
 
 ## Get started
 
-Use this repository as a Git dependency at a reviewed commit, or clone it and use a Cargo `path` dependency. For a local checkout:
+After v0.2.0 is published, install it from crates.io with Cargo:
+
+```toml
+[dependencies]
+myelin-accelerator = "0.2.0"
+```
+
+For unreleased changes, use a reviewed source checkout and a Cargo `path` dependency:
 
 ```toml
 [dependencies]

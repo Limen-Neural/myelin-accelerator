@@ -219,7 +219,7 @@ cargo build --lib --features cuda
 #    After: cmake --build cmake-build-debug --target cuda_kernels
 ptxas -arch=sm_120 -o /tmp/sn.cubin cmake-build-debug/spiking_network.ptx
 #    Or cargo OUT_DIR PTX:
-# ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -1)"
+# ptx_dir="$(./scripts/find_ptx_output.sh target debug)"
 # ptxas -arch=sm_120 -o /tmp/sn.cubin "$ptx_dir/spiking_network_sm_120.ptx"
 # Success = no output, exit 0. Repeat for vector_similarity / satsolver if desired.
 
@@ -245,7 +245,7 @@ cargo clippy --locked --features cuda -- -D warnings
 cargo test --locked --features cuda
 
 # Cargo PTX shape (self-hosted CI does similar checks)
-ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out 2>/dev/null | head -n1)"
+ptx_dir="$(./scripts/find_ptx_output.sh target debug)"
 grep -q '^\.target sm_120' "$ptx_dir/spiking_network_sm_120.ptx"
 grep -Eq '\.entry[[:space:]]+lif_step[[:space:]]*\(' "$ptx_dir/spiking_network_sm_120.ptx"
 
@@ -275,7 +275,7 @@ ctest --test-dir cmake-build-debug --output-on-failure
 
 ### Cloud CI vs local
 
-Toolkit pin for containerized jobs: **CUDA 13.3.1** (`nvidia/cuda:13.3.1-devel-ubuntu24.04`),
+Toolkit pin for cloud CUDA PTX compilation: **CUDA 13.3.1**,
 matching ShipOfTheseus `/usr/local/cuda` → `cuda-13.3`.
 
 | Job | Runner | GPU runtime? |
@@ -285,13 +285,8 @@ matching ShipOfTheseus `/usr/local/cuda` → `cuda-13.3`.
 | `CUDA build [self-hosted] (sm_120)` | Labels `self-hosted,linux,x64,gpu,cuda` | Full: build/clippy/test + **`--ignored` goldens** + PTX symbols (incl. ternary) + ptxas + short `bench,cuda` |
 | Local quality gate above | Developer workstation | Full runtime (same as self-hosted, optional Nsight) |
 
-The GitHub-hosted `Docker CUDA 13.3.1` image-build job was removed. It built
-`./Dockerfile` via `docker/build-push-action` inside the 13.3.1 devel image
-(compile-only, no GPU runtime). The `cargo build/clippy --features cuda` compile
-signal it produced is already covered by the `CUDA PTX compile [cloud]` job; the
-only thing dropped is automated verification that the `Dockerfile` itself still
-builds. The `Dockerfile` is retained for local/manual image builds — build it
-on demand with `docker build -t myelin-accelerator:cuda13.3.1 .`.
+The cloud PTX compile job covers the compile-only CUDA signal. The local GPU
+quality gate remains the path for runtime validation.
 
 **Branch protection (recommended):** require lint, CPU checks, and cloud PTX compile.
 Make self-hosted required only when the runner is reliably online; otherwise PRs queue.
