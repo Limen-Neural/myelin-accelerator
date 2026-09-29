@@ -232,7 +232,10 @@ jobs:
         run: cargo test --locked --features cuda
 
       - name: Test GPU goldens (ignored)
-        run: cargo test --locked --features cuda -- --ignored --nocapture
+        run: cargo test --locked --features cuda -- --ignored --nocapture --test-threads=1
+
+      - name: Compute Sanitizer lifecycle memcheck
+        run: ./scripts/sanitize_lifecycle.sh
 
       - name: Verify PTX output is non-stub
         shell: bash

@@ -9,9 +9,11 @@ use crate::capability::{
     CapabilityFacts, ComputeCapability, FallbackReason, KernelAvailability, sanitize_diagnostic,
 };
 use crate::gpu::error::{GpuError, GpuResult};
-use cust::context::Context;
 use cust::context::legacy::{CurrentContext, UnownedContext};
+use cust::context::{Context, ContextHandle};
 use cust::device::{Device, DeviceAttribute};
+use cust::error::{CudaError, CudaResult};
+use tracing::warn;
 
 /// Owns a CUDA primary context for device 0.
 pub struct GpuContext {
@@ -21,19 +23,56 @@ pub struct GpuContext {
 
 /// Restores the caller's thread-local CUDA context unless explicitly disarmed.
 pub(crate) struct CurrentContextGuard {
-    previous: Option<UnownedContext>,
+    previous: CallerContext,
     armed: bool,
+}
+
+enum CallerContext {
+    Current(UnownedContext),
+    // cust 0.3.2 returns Ok(UnownedContext { inner: null }) for no context.
+    // Keep that handle so its checked set_current calls cuCtxSetCurrent(NULL).
+    None(UnownedContext),
+    CaptureFailed(CudaError),
+}
+
+impl CallerContext {
+    fn from_result(result: CudaResult<UnownedContext>) -> Self {
+        match result {
+            Ok(context) if context.get_inner().is_null() => Self::None(context),
+            Ok(context) => Self::Current(context),
+            Err(error) => Self::CaptureFailed(error),
+        }
+    }
 }
 
 impl CurrentContextGuard {
     pub(crate) fn capture() -> Self {
-        let previous = cust::init(cust::CudaFlags::empty())
-            .and_then(|()| CurrentContext::get_current())
-            .ok();
+        let previous = CallerContext::from_result(
+            cust::init(cust::CudaFlags::empty()).and_then(|()| CurrentContext::get_current()),
+        );
         Self {
             previous,
             armed: true,
         }
+    }
+
+    /// Required before destroying accelerator-owned cust resources. Capture
+    /// failure is an error, not an absent context. The caller must keep `ctx`
+    /// alive until this guard has restored the thread's previous binding.
+    pub(crate) fn enter(ctx: &GpuContext) -> CudaResult<Self> {
+        let previous = CallerContext::from_result(CurrentContext::get_current());
+        let changed = match &previous {
+            CallerContext::CaptureFailed(error) => return Err(*error),
+            CallerContext::Current(context) => context.get_inner() != ctx._ctx.as_raw(),
+            CallerContext::None(_) => true,
+        };
+        // Primary Context implements ContextHandle in cust 0.3.2. Use the
+        // checked API even if already current; do not clone/retain a context.
+        CurrentContext::set_current(&ctx._ctx)?;
+        Ok(Self {
+            previous,
+            armed: changed,
+        })
     }
 
     pub(crate) fn disarm(mut self) {
@@ -43,10 +82,17 @@ impl CurrentContextGuard {
 
 impl Drop for CurrentContextGuard {
     fn drop(&mut self) {
-        if self.armed
-            && let Some(context) = &self.previous
-        {
-            let _ = CurrentContext::set_current(context);
+        if !self.armed {
+            return;
+        }
+        let context = match &self.previous {
+            CallerContext::Current(context) | CallerContext::None(context) => context,
+            CallerContext::CaptureFailed(_) => return,
+        };
+        // NULL unbinds the temporary top entry (CUDA documents this as a
+        // pop). If the original stack was empty, it is empty again afterward.
+        if let Err(error) = CurrentContext::set_current(context) {
+            warn!(?error, "failed to restore caller CUDA context");
         }
     }
 }
@@ -65,6 +111,11 @@ impl GpuContext {
         let ctx = Context::new(device).map_err(|e| {
             GpuError::InitFailed(sanitize_diagnostic(&format!("Context::new: {e:?}")))
         })?;
+        // cust 0.3.2's Context::new ignores cuCtxSetCurrent's return value.
+        // Check activation before callers can allocate/load CUDA resources.
+        CurrentContext::set_current(&ctx).map_err(|e| {
+            GpuError::InitFailed(sanitize_diagnostic(&format!("set_current: {e:?}")))
+        })?;
 
         Ok(Self {
             _ctx: ctx,
@@ -80,6 +131,19 @@ impl GpuContext {
     /// Device 0 compute capability, if the driver reported it.
     pub fn compute_capability(&self) -> Option<ComputeCapability> {
         self.compute_capability
+    }
+
+    /// Scratch allocation/replacement must obey the same current-context
+    /// precondition as kernel launches, even when a caller changed contexts.
+    pub(crate) fn require_current(&self) -> GpuResult<()> {
+        let current = CurrentContext::get_current()
+            .map_err(|e| GpuError::CudaError(format!("get_current: {e:?}")))?;
+        if current.get_inner() != self._ctx.as_raw() {
+            return Err(GpuError::CudaError(
+                "accelerator context must be current for scratch-buffer work".into(),
+            ));
+        }
+        Ok(())
     }
 }
 

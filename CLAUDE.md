@@ -89,6 +89,7 @@ cargo build --locked --features cuda
 #   ptxas -arch=sm_120 -o /tmp/sn.cubin cmake-build-debug/spiking_network.ptx
 cargo test --locked --features cuda
 cargo test --locked --features cuda -- --ignored --nocapture
+./scripts/sanitize_lifecycle.sh # mandatory gpu_lifecycle memcheck: zero errors
 cargo run --locked --example benchmark --profile bench --features bench,cuda
 ```
 
