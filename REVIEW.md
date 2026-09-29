@@ -397,7 +397,7 @@ checks passed; `h5py` 3.15.1 used for NIR parameter extraction). Ordinary
 ## 9. CUDA accelerator lifecycle qualification (#46 / LIM-1464)
 
 Recorded 2026-09-29 on **ShipOfTheseus**, against repaired implementation
-commit **`675c4ab05be47efd4008eed4b0ade43e6e91e657`**, with a **clean** source
+commit **`de7db2a638a2d3287d76cb0552c7269a532bf277`**, with a **clean** source
 tree before and after the complete gate. This documentation-only follow-up
 records those completed runs; it does not change the tested implementation.
 
@@ -452,7 +452,7 @@ logged. Restoration is attempted only after owned CUDA resources are gone.
 | PTX manifest | `scripts/check_ptx_entries.sh <Cargo-JSON OUT_DIR> local-lifecycle` — **22/22** |
 | Offline assembly | `/usr/local/cuda/bin/ptxas -arch=sm_120 -o <output.cubin> <module.ptx>` — exit 0 for all four Cargo-generated modules |
 | Lifecycle memcheck | `CUDA_NVCC=/usr/local/cuda/bin/nvcc ./scripts/sanitize_lifecycle.sh` — **exit 0; 7 passed, 0 failed; ERROR SUMMARY: 0 errors** |
-| Benchmark smoke | `cargo run --locked --example benchmark --profile bench --features bench,cuda -- --warmup 2 --iterations 10` — exit 0; clean-SHA manifest; Poisson mean **5.06 µs**, SAT extract mean **5.16 µs** (smoke, not a controlled performance comparison) |
+| Benchmark smoke | `cargo run --locked --example benchmark --profile bench --features bench,cuda -- --warmup 2 --iterations 10` — exit 0; clean-SHA manifest; Poisson mean **5.12 µs**, SAT extract mean **5.95 µs** (smoke, not a controlled performance comparison) |
 
 Exact sanitizer invocation emitted by the script on this workstation:
 
@@ -481,4 +481,4 @@ The same mandatory script now runs after the serial ignored GPU suite in the
 self-hosted `sm_120` CI job. The registered local runner is online and its toolkit
 contains Compute Sanitizer; the cloud PTX job is unchanged. Logs and local probe
 sources are retained under `/tmp/myelin46-evidence/`, with clean repaired-commit
-results in `repaired-commit/`; this is local evidence, not an uploaded artifact.
+results in `final-commit/`; this is local evidence, not an uploaded artifact.
