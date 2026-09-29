@@ -1,20 +1,20 @@
 # Myelin-Accelerator
 
-[![CI](https://github.com/rmems/myelin-accelerator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rmems/myelin-accelerator/actions/workflows/ci.yml)
-[![GPU CI](https://img.shields.io/github/check-runs/rmems/myelin-accelerator/main?nameFilter=CUDA%20build%20%5Bself-hosted%5D%20%28sm_120%29&label=GPU%20CI)](https://github.com/rmems/myelin-accelerator/actions/workflows/ci.yml)
-[![CodeRabbit Reviews](https://img.shields.io/coderabbit/prs/github/rmems/myelin-accelerator?utm_source=oss&utm_medium=github&utm_campaign=rmems%2Fmyelin-accelerator&labelColor=171717&color=FF570A&label=CodeRabbit+Reviews)](https://coderabbit.ai/)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/rmems/myelin-accelerator)
-[![Maintainability](https://qlty.sh/gh/rmems/projects/myelin-accelerator/maintainability.svg)](https://qlty.sh/gh/rmems/projects/myelin-accelerator)
+[![CI](https://github.com/Limen-Neural/myelin-accelerator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Limen-Neural/myelin-accelerator/actions/workflows/ci.yml)
+[![GPU CI](https://img.shields.io/github/check-runs/Limen-Neural/myelin-accelerator/main?nameFilter=CUDA%20build%20%5Bself-hosted%5D%20%28sm_120%29&label=GPU%20CI)](https://github.com/Limen-Neural/myelin-accelerator/actions/workflows/ci.yml)
+[![CodeRabbit Reviews](https://img.shields.io/coderabbit/prs/github/Limen-Neural/myelin-accelerator?utm_source=oss&utm_medium=github&utm_campaign=Limen-Neural%2Fmyelin-accelerator&labelColor=171717&color=FF570A&label=CodeRabbit+Reviews)](https://coderabbit.ai/)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Limen-Neural/myelin-accelerator)
+[![Maintainability](https://qlty.sh/gh/Limen-Neural/projects/myelin-accelerator/maintainability.svg)](https://qlty.sh/gh/Limen-Neural/projects/myelin-accelerator)
 [![CodeScene Average Code Health](https://codescene.io/projects/85266/status-badges/average-code-health)](https://codescene.io/projects/85266)
 [![CodeScene Hotspot Code Health](https://codescene.io/projects/85266/status-badges/hotspot-code-health)](https://codescene.io/projects/85266)
 [![CodeScene System Mastery](https://codescene.io/projects/85266/status-badges/system-mastery)](https://codescene.io/projects/85266)
 [![Analyzed by CodeScene](https://codescene.io/images/analyzed-by-codescene-badge.svg)](https://codescene.io/projects/85266)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
-[![Release: v0.2.0 candidate](https://img.shields.io/badge/release-v0.2.0%20candidate-orange)](https://github.com/rmems/myelin-accelerator/issues/37)
+[![Release: v0.2.0 candidate](https://img.shields.io/badge/release-v0.2.0%20candidate-orange)](https://github.com/Limen-Neural/myelin-accelerator/issues/37)
 
 Rust/CUDA acceleration primitives for spiking neural networks (SNN) and neuromorphic workloads: a low-level compute layer of safe Rust wrappers around first-party CUDA kernels for spiking networks, routing, SAT search, and packed ternary GEMV/GEMM. The CUDA path targets and is validated on `sm_120` (NVIDIA Blackwell); the default build works without a CUDA toolkit or device. This is a compute layer, not a complete SNN framework or a general model-compatibility layer.
 
-**Release status:** `Cargo.toml` is at `0.2.0` as a crates.io candidate (not yet published). Qualification is tracked in [release issue #37](https://github.com/rmems/myelin-accelerator/issues/37); publication after qualification is owned by LIM-1460. Cargo/crates.io is the supported distribution path; Docker/container images are not a supported consumer surface. The CI and GPU CI badges reflect `main`, not this checkout or an open pull request.
+**Release status:** `Cargo.toml` is at `0.2.0` as a crates.io candidate (not yet published). Qualification is tracked in [release issue #37](https://github.com/Limen-Neural/myelin-accelerator/issues/37); publication after qualification is owned by LIM-1460. Cargo/crates.io is the supported distribution path; Docker/container images are not a supported consumer surface. The CI and GPU CI badges reflect `main`, not this checkout or an open pull request.
 
 ## Get started
 
@@ -81,7 +81,7 @@ The ignored tests require a working CUDA device. CI also compiles and assembles 
   title  = {Myelin-Accelerator},
   author = {Raul Montoya Cardenas},
   year   = {2026},
-  url    = {https://github.com/rmems/myelin-accelerator}
+  url    = {https://github.com/Limen-Neural/myelin-accelerator}
 }
 ```
 

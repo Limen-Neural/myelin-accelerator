@@ -4,8 +4,9 @@ This document is the ownership map for `myelin-accelerator`. Use it to decide
 whether a proposed CUDA / SNN / quantization feature belongs **here** or in a
 higher-level repo (`corinth-canal`, experiment harnesses, model code).
 
-Related issues: [GH #8](https://github.com/rmems/myelin-accelerator/issues/8)
-(closed). **Owner:** [rmems/myelin-accelerator](https://github.com/rmems/myelin-accelerator).
+Related issues: [GH #8](https://github.com/Limen-Neural/myelin-accelerator/issues/8)
+(closed). **Owner:** [Limen-Neural/myelin-accelerator](https://github.com/Limen-Neural/myelin-accelerator)
+only — do not track this crate under personal `rmems/*` remotes or deps.
 
 ---
 

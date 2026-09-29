@@ -2,7 +2,7 @@
 
 This page records which external SNN models the v0.2.0 kernels are exercised
 with, and exactly how far that validation goes. Tracking: GH
-[#44](https://github.com/rmems/myelin-accelerator/issues/44) /
+[#44](https://github.com/Limen-Neural/myelin-accelerator/issues/44) /
 [LIM-1462](https://linear.app/rpd-34/issue/LIM-1462).
 
 **Bottom line:** both fixtures are **workload-only**. They supply real model
@@ -12,7 +12,7 @@ shapes, weights, and affine parameters to the raw `lif_step` /
 those dynamics bit-exactly on model-shaped, multi-timestep workloads. They do
 **not** prove faithful Spikenaut or NIR/Synfire execution. Exact external-model
 interoperability is v0.3.0 work, tracked in GH
-[#43](https://github.com/rmems/myelin-accelerator/issues/43) /
+[#43](https://github.com/Limen-Neural/myelin-accelerator/issues/43) /
 [LIM-1461](https://linear.app/rpd-34/issue/LIM-1461).
 
 ## v0.2.0 LIF contract (what is executed)
