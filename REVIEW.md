@@ -357,9 +357,10 @@ compatibility matrix are in `docs/SNN_COMPATIBILITY.md`. Exact external-model
 semantics are out of scope and belong to #43 / LIM-1461 (v0.3.0).
 
 Recorded 2026-09-29 on ShipOfTheseus. Code under test is commit
-`183513b310f3c2bfc9906ce906fbf21c913754de`, a clean tree on branch
-`lim-1462-snn-fixture-validation`. The follow-up commit only adds this
-section.
+`d7aa5826294ddb24b77ad97a1a32a3a0ab66802b`, a clean tree on branch
+`lim-1462-snn-fixture-validation` that includes the review-repair commit.
+The same gate first passed on `183513b`. The follow-up commit only updates
+this section.
 
 | Layer | Observed |
 |-------|----------|
@@ -367,12 +368,12 @@ section.
 | Toolkit | `/usr/local/cuda` → `cuda-13.3`, `nvcc`/`ptxas` V13.3.73; PTX `.version 9.3`, `.target sm_120` |
 | Rust | rustc / cargo 1.98.1 |
 | CPU gates | `cargo fmt --all -- --check`, `cargo test --locked`, `cargo build --locked --no-default-features`, `cargo clippy --locked --no-default-features --all-targets -- -D warnings` — **pass** |
-| CUDA gates (`CUDA_NVCC=/usr/local/cuda/bin/nvcc`) | `cargo build --locked --features cuda`, `cargo clippy --locked --features cuda -- -D warnings`, `cargo test --locked --features cuda` — **pass** |
+| CUDA gates (`CUDA_NVCC=/usr/local/cuda/bin/nvcc`) | `cargo build --locked --features cuda`, `cargo clippy --locked --features cuda -- -D warnings` (also `--all-targets`), `cargo test --locked --features cuda` — **pass** |
 | Ignored GPU suite | `cargo test --locked --features cuda -- --ignored --nocapture --test-threads=1` — **45 passed, 0 failed**. Includes all existing ignored tests: lib, `capability_probe`, `gpu_buffer`, `kernel_hazards_gpu`, `oracle_gpu`, `ternary_gpu` |
 | PTX entries | `scripts/check_ptx_entries.sh <OUT_DIR> local-debug` — 22/22 entries, incl. `lif_step`, `lif_step_weighted` |
 | Offline ISA | `ptxas -arch=sm_120` on all four `*_sm_120.ptx` — exit 0 |
 | LIF PTX arithmetic | `lif_step`: 1× `fma.rn.ftz.f32` (decay `0f3F59999A`); `lif_step_weighted`: 30× `fma.rn.ftz.f32`; no separate `mul`/`add.f32` in either |
-| Bench harness | `cargo run --locked --example benchmark --profile bench --features bench,cuda` — pass; `poisson_encode_4096` 5.15 µs, `satsolver_extract_1024x256` 5.27 µs mean |
+| Bench harness | `cargo run --locked --example benchmark --profile bench --features bench,cuda` — pass; `poisson_encode_4096` 5.30 µs, `satsolver_extract_1024x256` 5.17 µs mean |
 
 New SNN fixture tests (`tests/snn_fixtures_gpu.rs`). Every tick: exact spikes
 and refractory state, bit-exact membrane.
