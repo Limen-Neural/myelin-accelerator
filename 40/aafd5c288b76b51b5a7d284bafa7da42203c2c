@@ -1,36 +1,7 @@
-src/oracle.rs
-  s_330b69b405649f::t_94d9df111ad52e 40,101-103
-cu/vector_similarity.cu
-  s_330b69b405649f::t_bebb8f812c249c 177
-  s_330b69b405649f::t_f354c999e0061d 22-32,37,168
-  s_330b69b405649f::t_3f4b0efc8b6a3a 19,174-175
-  s_330b69b405649f::t_ff5c4d5a4b40ae 33-35,43-57,128-129,154-157,171-173,230-233,235-236
-tests/cosine_gpu.rs
-  s_330b69b405649f::t_b247ee876e19d3 196-204,206-212,218-228,232-235
-  s_330b69b405649f::t_58ddfa8afe038b 1-39,42-44,47-56,58-64,70-82,86-100,109,111-123,142-149,151,153-156,158-167,170-174,176-179,192-195
-  s_330b69b405649f::t_3dbabb58f15e9e 40-41,45-46,65-69,83-85,101-108
-  s_330b69b405649f::t_bebb8f812c249c 124-141
-  s_330b69b405649f::t_abe58045545414 57,110,150,152,157,180-191,213-217
-  s_330b69b405649f::t_975a5361c82b46 168-169,175,205
-  s_330b69b405649f::t_a445d6f276ebf7 229-231
-docs/ARCHITECTURE.md
-  s_330b69b405649f::t_94d9df111ad52e 200-230,260
-  s_330b69b405649f::t_975a5361c82b46 231-234,237-241
-  s_330b69b405649f::t_abe58045545414 235-236,242-259
 ---
 {
   "schema_version": "authorship/3.0.0",
   "git_ai_version": "1.5.2",
   "base_commit_sha": "40aafd5c288b76b51b5a7d284bafa7da42203c2c",
-  "prompts": {},
-  "sessions": {
-    "s_330b69b405649f": {
-      "agent_id": {
-        "tool": "codex",
-        "id": "01a0eda4-d3a3-7051-affb-6e271a6ba19d",
-        "model": "gpt-6-astra"
-      },
-      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
-    }
-  }
+  "prompts": {}
 }
