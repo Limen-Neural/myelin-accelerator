@@ -305,27 +305,24 @@ mod tests {
 
     #[test]
     fn checked_alloc_bytes_rejects_overflow_and_over_ceiling() {
-        let overflow_u64 = [usize::MAX, isize::MAX as usize, isize::MAX as usize / 8 + 1];
-        for len in overflow_u64 {
-            match checked_alloc_bytes::<u64>(len).unwrap_err() {
-                GpuError::MemoryError(msg) => {
-                    assert!(msg.contains("size overflow"), "msg: {msg}")
-                }
-                other => panic!("expected MemoryError, got {other}"),
-            }
+        for len in [usize::MAX, isize::MAX as usize, isize::MAX as usize / 8 + 1] {
+            assert_checked_alloc_overflow::<u64>(len);
         }
         for len in [usize::MAX, isize::MAX as usize + 1] {
-            match checked_alloc_bytes::<u8>(len).unwrap_err() {
-                GpuError::MemoryError(msg) => {
-                    assert!(msg.contains("size overflow"), "msg: {msg}")
-                }
-                other => panic!("expected MemoryError, got {other}"),
-            }
+            assert_checked_alloc_overflow::<u8>(len);
         }
         // Exactly at the ceiling is still accepted; one byte past is not.
         assert_eq!(
             checked_alloc_bytes::<u8>(isize::MAX as usize).unwrap(),
             isize::MAX as usize
         );
+    }
+
+    /// Assert `checked_alloc_bytes::<T>(len)` fails with the overflow `MemoryError`.
+    fn assert_checked_alloc_overflow<T>(len: usize) {
+        match checked_alloc_bytes::<T>(len).unwrap_err() {
+            GpuError::MemoryError(msg) => assert!(msg.contains("size overflow"), "msg: {msg}"),
+            other => panic!("expected MemoryError, got {other}"),
+        }
     }
 }

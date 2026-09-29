@@ -174,30 +174,27 @@ fn from_slice_preserves_f32_bit_patterns() {
 fn alloc_overflow_returns_memory_error_without_allocating() {
     let _gpu = require_gpu();
     for len in [usize::MAX, isize::MAX as usize] {
-        match GpuBuffer::<u64>::alloc(len) {
-            Err(GpuError::MemoryError(msg)) => assert!(msg.contains("size overflow"), "msg: {msg}"),
-            Err(other) => panic!("expected MemoryError for u64 len {len}, got {other}"),
-            Ok(_) => panic!("oversized u64 alloc unexpectedly succeeded"),
-        }
+        assert_alloc_overflow::<u64>(len);
     }
     for len in [usize::MAX, isize::MAX as usize + 1] {
-        match GpuBuffer::<u8>::alloc(len) {
-            Err(GpuError::MemoryError(msg)) => assert!(msg.contains("size overflow"), "msg: {msg}"),
-            Err(other) => panic!("expected MemoryError for u8 len {len}, got {other}"),
-            Ok(_) => panic!("oversized u8 alloc unexpectedly succeeded"),
-        }
+        assert_alloc_overflow::<u8>(len);
     }
-    match GpuBuffer::<u32>::alloc(usize::MAX) {
-        Err(GpuError::MemoryError(_)) => {}
-        Err(other) => panic!("expected MemoryError for u32::MAX elems, got {other}"),
-        Ok(_) => panic!("oversized u32 alloc unexpectedly succeeded"),
-    }
+    assert_alloc_overflow::<u32>(usize::MAX);
     // Zero and ordinary allocations still succeed alongside the overflow probes.
     assert!(GpuBuffer::<u64>::alloc(0).unwrap().is_empty());
     assert_eq!(
         GpuBuffer::<u64>::alloc(4).unwrap().to_vec().unwrap(),
         vec![0u64; 4]
     );
+}
+
+/// Assert an oversized `alloc` fails with the overflow `MemoryError`.
+fn assert_alloc_overflow<T: cust::memory::DeviceCopy + Default + Clone>(len: usize) {
+    match GpuBuffer::<T>::alloc(len) {
+        Err(GpuError::MemoryError(msg)) => assert!(msg.contains("size overflow"), "msg: {msg}"),
+        Err(other) => panic!("expected MemoryError for len {len}, got {other}"),
+        Ok(_) => panic!("oversized alloc unexpectedly succeeded"),
+    }
 }
 
 // ── Upload ───────────────────────────────────────────────────────────────────

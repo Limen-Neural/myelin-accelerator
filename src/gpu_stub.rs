@@ -504,31 +504,24 @@ mod tests {
     fn buffer_alloc_overflow_returns_memory_error() {
         // u64: `8 * len` overflows `usize` / exceeds the `isize::MAX` ceiling.
         for len in [usize::MAX, isize::MAX as usize] {
-            match GpuBuffer::<u64>::alloc(len) {
-                Err(GpuError::MemoryError(msg)) => {
-                    assert!(msg.contains("size overflow"), "msg: {msg}")
-                }
-                Err(other) => panic!("expected MemoryError, got {other}"),
-                Ok(_) => panic!("oversized u64 alloc unexpectedly succeeded"),
-            }
+            assert_alloc_overflow::<u64>(len);
         }
         // u8: one byte per element, so `usize::MAX` / past-ceiling byte counts.
         for len in [usize::MAX, isize::MAX as usize + 1] {
-            match GpuBuffer::<u8>::alloc(len) {
-                Err(GpuError::MemoryError(msg)) => {
-                    assert!(msg.contains("size overflow"), "msg: {msg}")
-                }
-                Err(other) => panic!("expected MemoryError, got {other}"),
-                Ok(_) => panic!("oversized u8 alloc unexpectedly succeeded"),
-            }
+            assert_alloc_overflow::<u8>(len);
         }
         // Wide element type: overflow with a smaller element count.
-        match GpuBuffer::<Wide512>::alloc(usize::MAX) {
+        assert_alloc_overflow::<Wide512>(usize::MAX);
+    }
+
+    /// Assert an oversized `alloc` fails with the overflow `MemoryError`.
+    fn assert_alloc_overflow<T: Default + Clone>(len: usize) {
+        match GpuBuffer::<T>::alloc(len) {
             Err(GpuError::MemoryError(msg)) => {
                 assert!(msg.contains("size overflow"), "msg: {msg}")
             }
             Err(other) => panic!("expected MemoryError, got {other}"),
-            Ok(_) => panic!("oversized wide-element alloc unexpectedly succeeded"),
+            Ok(_) => panic!("oversized alloc unexpectedly succeeded"),
         }
     }
 

@@ -169,29 +169,23 @@ mod stub_contract {
     /// before any physical allocation.
     #[test]
     fn buffer_alloc_overflow_returns_memory_error_not_panic() {
-        let overflow_u64 = [usize::MAX, isize::MAX as usize];
-        for len in overflow_u64 {
-            match GpuBuffer::<u64>::alloc(len) {
-                Err(GpuError::MemoryError(msg)) => {
-                    assert!(msg.contains("size overflow"), "msg: {msg}")
-                }
-                Err(other) => panic!("expected MemoryError for u64 len {len}, got {other}"),
-                Ok(_) => panic!("oversized u64 alloc unexpectedly succeeded"),
-            }
+        for len in [usize::MAX, isize::MAX as usize] {
+            assert_alloc_overflow::<u64>(len);
         }
         for len in [usize::MAX, isize::MAX as usize + 1] {
-            match GpuBuffer::<u8>::alloc(len) {
-                Err(GpuError::MemoryError(msg)) => {
-                    assert!(msg.contains("size overflow"), "msg: {msg}")
-                }
-                Err(other) => panic!("expected MemoryError for u8 len {len}, got {other}"),
-                Ok(_) => panic!("oversized u8 alloc unexpectedly succeeded"),
-            }
+            assert_alloc_overflow::<u8>(len);
         }
-        match GpuBuffer::<u32>::alloc(usize::MAX) {
-            Err(GpuError::MemoryError(_)) => {}
-            Err(other) => panic!("expected MemoryError for u32::MAX elems, got {other}"),
-            Ok(_) => panic!("oversized u32 alloc unexpectedly succeeded"),
+        assert_alloc_overflow::<u32>(usize::MAX);
+    }
+
+    /// Assert an oversized `alloc` fails with the overflow `MemoryError`.
+    fn assert_alloc_overflow<T: Default + Clone>(len: usize) {
+        match GpuBuffer::<T>::alloc(len) {
+            Err(GpuError::MemoryError(msg)) => {
+                assert!(msg.contains("size overflow"), "msg: {msg}")
+            }
+            Err(other) => panic!("expected MemoryError for len {len}, got {other}"),
+            Ok(_) => panic!("oversized alloc unexpectedly succeeded"),
         }
     }
 
@@ -274,6 +268,17 @@ mod stub_contract {
             acc.ternary_gemm(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .is_err()
         );
+    }
+
+    /// The CPU stub stays fail-closed for empty Poisson requests on both entry
+    /// points (GH #48), matching the CUDA fallback contract.
+    #[test]
+    fn accelerator_empty_poisson_returns_no_gpu() {
+        let acc = GpuAccelerator::new();
+        let stim = GpuBuffer::<f32>::alloc(0).unwrap();
+        let mut spikes = GpuBuffer::<u32>::alloc(0).unwrap();
+        assert!(acc.poisson_encode(&stim, &mut spikes, 7).is_err());
+        assert!(acc.poisson_encode_async(&stim, &mut spikes, 7).is_err());
     }
 
     #[test]
