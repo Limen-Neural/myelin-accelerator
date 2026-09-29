@@ -54,40 +54,98 @@ fn device() -> Device {
     }
 }
 
-fn report(ctx: &TraceContext<'_>, steps: usize, gpu: &Coverage, oracle: &Coverage) {
-    eprintln!(
-        "[snn-fixture gpu] {} steps={steps} result=match gpu_coverage={gpu:?} oracle_coverage={oracle:?}",
-        ctx.describe()
-    );
-    assert_eq!(gpu.spikes, oracle.spikes, "spike totals must agree");
-    assert_eq!(
-        gpu.refractory_ticks, oracle.refractory_ticks,
-        "refractory totals must agree"
-    );
-    assert!(gpu.spikes > 0, "no GPU spikes ({})", ctx.describe());
-    assert!(
-        gpu.refractory_ticks > 0,
-        "no GPU refractory transition ({})",
-        ctx.describe()
-    );
+/// Persistent per-run LIF state on the device (lives for the whole trace).
+struct LifState {
+    membrane: GpuBuffer<f32>,
+    refract: GpuBuffer<u32>,
+    spikes_out: GpuBuffer<u32>,
+    n: usize,
+}
+
+impl LifState {
+    fn new(n: usize) -> Self {
+        Self {
+            membrane: GpuBuffer::alloc(n).expect("alloc membrane"),
+            refract: GpuBuffer::alloc(n).expect("alloc refract"),
+            spikes_out: GpuBuffer::from_slice(&vec![SPIKE_POISON; n]).expect("alloc spikes_out"),
+            n,
+        }
+    }
+
+    fn poison_spikes(&mut self) {
+        self.spikes_out
+            .upload(&vec![SPIKE_POISON; self.n])
+            .expect("poison spikes_out");
+    }
+
+    fn read(&self) -> StepState {
+        StepState {
+            membrane: self.membrane.to_vec().expect("read membrane"),
+            refract: self.refract.to_vec().expect("read refract"),
+            spikes: self.spikes_out.to_vec().expect("read spikes"),
+        }
+    }
 }
 
 /// Count coverage from GPU-read state (independent of the oracle's counter).
 /// `ignored_input_ticks` needs the per-neuron current, so it is reported from
 /// the oracle side only.
 fn gpu_coverage(cov: &mut Coverage, prev_refract: &[u32], got: &StepState) {
-    for i in 0..got.membrane.len() {
-        cov.spikes += got.spikes[i] as usize;
-        if prev_refract[i] > 0 {
-            cov.refractory_ticks += 1;
-        }
-        if got.spikes[i] == 0 && got.membrane[i] != 0.0 {
-            cov.subthreshold_nonzero += 1;
-        }
-        if got.membrane[i] < 0.0 {
-            cov.negative_membrane += 1;
-        }
+    let neurons = prev_refract.iter().zip(&got.spikes).zip(&got.membrane);
+    for ((&prev, &spike), &v) in neurons {
+        cov.spikes += spike as usize;
+        cov.refractory_ticks += usize::from(prev > 0);
+        cov.subthreshold_nonzero += usize::from(spike == 0 && v != 0.0);
+        cov.negative_membrane += usize::from(v < 0.0);
     }
+}
+
+/// Drive one trace: per tick, poison spikes, `launch(t)` (upload + launch),
+/// synchronize, read membrane/refract/spikes back, advance the oracle with
+/// `oracle(t)`, and compare. Returns GPU-side coverage.
+fn drive(
+    dev: &Device,
+    ctx: &TraceContext<'_>,
+    state: &mut LifState,
+    steps: usize,
+    mut launch_tick: impl FnMut(usize, &LifState),
+    mut oracle_tick: impl FnMut(usize) -> StepState,
+) -> Coverage {
+    let mut cov = Coverage::default();
+    let mut prev_refract = vec![0u32; state.n];
+    for t in 0..steps {
+        state.poison_spikes();
+        launch_tick(t, state);
+        dev.stream
+            .synchronize()
+            .unwrap_or_else(|e| panic!("sync t={t}: {e:?} ({})", ctx.describe()));
+        let got = state.read();
+        let expected = oracle_tick(t);
+        assert_no_subnormals(ctx, t, &expected.membrane, "oracle membrane");
+        if let Err(msg) = check_step(ctx, t, &got, &expected) {
+            panic!("{msg}");
+        }
+        gpu_coverage(&mut cov, &prev_refract, &got);
+        prev_refract = got.refract;
+    }
+    cov
+}
+
+fn report(ctx: &TraceContext<'_>, steps: usize, gpu: &Coverage, oracle: &Coverage) {
+    eprintln!(
+        "[snn-fixture gpu] {} steps={steps} result=match gpu_coverage={gpu:?} oracle_coverage={oracle:?}",
+        ctx.describe()
+    );
+    assert_eq!(
+        (gpu.spikes, gpu.refractory_ticks),
+        (oracle.spikes, oracle.refractory_ticks),
+        "GPU vs oracle (spikes, refractory ticks)"
+    );
+    assert!(
+        gpu.spikes > 0 && gpu.refractory_ticks > 0,
+        "need ≥1 spike and ≥1 refractory tick ({})",
+        ctx.describe()
+    );
 }
 
 fn run_spikenaut_weighted(dev: &Device, block: u32) {
@@ -103,71 +161,55 @@ fn run_spikenaut_weighted(dev: &Device, block: u32) {
         seed: Some(f.seed),
         block: Some(block),
     };
+    let shared_bytes = (k * size_of::<f32>()) as u32;
     eprintln!(
-        "[snn-fixture gpu] start {} steps={} shared_bytes={}",
+        "[snn-fixture gpu] start {} steps={} shared_bytes={shared_bytes}",
         ctx.describe(),
-        f.steps,
-        k * size_of::<f32>()
+        f.steps
     );
 
     let func = dev
         .kernels
         .get_function("lif_step_weighted")
         .expect("lif_step_weighted registered");
-    // Persistent device state for the whole run.
-    let membrane = GpuBuffer::<f32>::alloc(n).expect("membrane");
     let weights = GpuBuffer::from_slice(&f.weights).expect("weights");
     let mut input = GpuBuffer::<f32>::alloc(k).expect("input");
-    let refract = GpuBuffer::<u32>::alloc(n).expect("refract");
-    let mut spikes_out = GpuBuffer::from_slice(&vec![SPIKE_POISON; n]).expect("spikes_out");
-
+    let mut state = LifState::new(n);
     let grid = (n as u32).div_ceil(block);
-    let shared_bytes = (k * size_of::<f32>()) as u32;
+    let inputs = f.inputs();
     let mut oracle = WeightedOracle::new(&f.weights, n, k);
-    let mut cov = Coverage::default();
-    let mut prev_refract = vec![0u32; n];
 
-    for (t, x) in f.inputs().iter().enumerate() {
-        input.upload(x).expect("upload input");
-        spikes_out
-            .upload(&vec![SPIKE_POISON; n])
-            .expect("poison spikes_out");
-        // SAFETY: membrane/refract/spikes_out hold n elements, weights n×k,
-        // input k; dynamic shared memory holds k floats as the kernel requires.
-        // All buffers outlive the synchronize below.
-        let stream = &dev.stream;
-        unsafe {
-            launch!(func<<<grid, block, shared_bytes, stream>>>(
-                membrane.as_device_ptr(),
-                weights.as_device_ptr(),
-                input.as_device_ptr(),
-                refract.as_device_ptr(),
-                spikes_out.as_device_ptr(),
-                n as i32,
-                k as i32
-            ))
-            .unwrap_or_else(|e| panic!("launch t={t}: {e:?} ({})", ctx.describe()));
-        }
-        dev.stream
-            .synchronize()
-            .unwrap_or_else(|e| panic!("sync t={t}: {e:?} ({})", ctx.describe()));
-
-        let got = StepState {
-            membrane: membrane.to_vec().expect("read membrane"),
-            refract: refract.to_vec().expect("read refract"),
-            spikes: spikes_out.to_vec().expect("read spikes"),
-        };
-        let expected = oracle.step(x);
-        assert_no_subnormals(&ctx, t, &expected.membrane, "oracle membrane");
-        if let Err(msg) = check_step(&ctx, t, &got, &expected) {
-            panic!("{msg}");
-        }
-        gpu_coverage(&mut cov, &prev_refract, &got);
-        prev_refract = got.refract;
-    }
+    let cov = drive(
+        dev,
+        &ctx,
+        &mut state,
+        f.steps,
+        |t, s| {
+            input.upload(&inputs[t]).expect("upload input");
+            let stream = &dev.stream;
+            // SAFETY: membrane/refract/spikes_out hold n elements, weights
+            // n×k, input k; dynamic shared memory holds the k floats the
+            // kernel stages. All buffers outlive the synchronize in `drive`.
+            unsafe {
+                launch!(func<<<grid, block, shared_bytes, stream>>>(
+                    s.membrane.as_device_ptr(),
+                    weights.as_device_ptr(),
+                    input.as_device_ptr(),
+                    s.refract.as_device_ptr(),
+                    s.spikes_out.as_device_ptr(),
+                    n as i32,
+                    k as i32
+                ))
+                .unwrap_or_else(|e| panic!("launch t={t}: {e:?}"));
+            }
+        },
+        |t| oracle.step(&inputs[t]),
+    );
     report(&ctx, f.steps, &cov, &oracle.coverage);
-    assert!(cov.subthreshold_nonzero > 0, "membrane never integrated");
-    assert!(cov.negative_membrane > 0, "negative rows never exercised");
+    assert!(
+        cov.subthreshold_nonzero > 0 && cov.negative_membrane > 0,
+        "membrane never integrated / negative rows never exercised: {cov:?}"
+    );
 }
 
 #[test]
@@ -206,6 +248,9 @@ fn synfire_lifneuron_affine_lif_matches_v0_2_0_oracle_every_timestep() {
         };
         // Host Affine node only; NIR LIF parameters are deliberately unused.
         let currents = f.currents(stim);
+        for (t, &i) in currents.iter().enumerate() {
+            assert_no_subnormals(&ctx, t, &[i], "current");
+        }
         eprintln!(
             "[snn-fixture gpu] start {} steps={} affine_w={} affine_b={}",
             ctx.describe(),
@@ -214,50 +259,33 @@ fn synfire_lifneuron_affine_lif_matches_v0_2_0_oracle_every_timestep() {
             f.affine_bias
         );
 
-        let membrane = GpuBuffer::<f32>::alloc(1).expect("membrane");
         let mut i_ext = GpuBuffer::<f32>::alloc(1).expect("i_ext");
-        let refract = GpuBuffer::<u32>::alloc(1).expect("refract");
-        let mut spikes_out = GpuBuffer::from_slice(&[SPIKE_POISON]).expect("spikes_out");
+        let mut state = LifState::new(1);
         let mut oracle = UnweightedOracle::new(1);
-        let mut cov = Coverage::default();
-        let mut prev_refract = vec![0u32];
-
-        for (t, &current) in currents.iter().enumerate() {
-            assert_no_subnormals(&ctx, t, &[current], "current");
-            i_ext.upload(&[current]).expect("upload i_ext");
-            spikes_out
-                .upload(&[SPIKE_POISON])
-                .expect("poison spikes_out");
-            // SAFETY: every buffer holds exactly one element for n_neurons=1
-            // and outlives the synchronize below; no shared memory is used.
-            let stream = &dev.stream;
-            unsafe {
-                launch!(func<<<1u32, block, 0u32, stream>>>(
-                    membrane.as_device_ptr(),
-                    i_ext.as_device_ptr(),
-                    refract.as_device_ptr(),
-                    spikes_out.as_device_ptr(),
-                    1i32
-                ))
-                .unwrap_or_else(|e| panic!("launch t={t}: {e:?} ({})", ctx.describe()));
-            }
-            dev.stream
-                .synchronize()
-                .unwrap_or_else(|e| panic!("sync t={t}: {e:?} ({})", ctx.describe()));
-
-            let got = StepState {
-                membrane: membrane.to_vec().expect("read membrane"),
-                refract: refract.to_vec().expect("read refract"),
-                spikes: spikes_out.to_vec().expect("read spikes"),
-            };
-            let expected = oracle.step(&[current]);
-            assert_no_subnormals(&ctx, t, &expected.membrane, "oracle membrane");
-            if let Err(msg) = check_step(&ctx, t, &got, &expected) {
-                panic!("{msg}");
-            }
-            gpu_coverage(&mut cov, &prev_refract, &got);
-            prev_refract = got.refract;
-        }
+        let cov = drive(
+            &dev,
+            &ctx,
+            &mut state,
+            currents.len(),
+            |t, s| {
+                i_ext.upload(&currents[t..=t]).expect("upload i_ext");
+                let stream = &dev.stream;
+                // SAFETY: every buffer holds exactly one element for
+                // n_neurons=1 and outlives the synchronize in `drive`; no
+                // shared memory is used.
+                unsafe {
+                    launch!(func<<<1u32, block, 0u32, stream>>>(
+                        s.membrane.as_device_ptr(),
+                        i_ext.as_device_ptr(),
+                        s.refract.as_device_ptr(),
+                        s.spikes_out.as_device_ptr(),
+                        1i32
+                    ))
+                    .unwrap_or_else(|e| panic!("launch t={t}: {e:?}"));
+                }
+            },
+            |t| oracle.step(&currents[t..=t]),
+        );
         report(&ctx, currents.len(), &cov, &oracle.coverage);
     }
 }

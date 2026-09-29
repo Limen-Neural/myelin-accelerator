@@ -16,6 +16,19 @@ use serde::Deserialize;
 
 const SPIKENAUT_JSON: &str = include_str!("../fixtures/snn/spikenaut/fixture.json");
 const SPIKENAUT_MEM: &str = include_str!("../fixtures/snn/spikenaut/parameters_weights.mem");
+/// Hard-coded pin, independent of `fixture.json`, so editing the card cannot
+/// silently re-bless different weights.
+pub const SPIKENAUT_MEM_SHA256: &str =
+    "825969873444d215d09920e69592700a2cc8594d92e7b14c4059eef8919fe4f3";
+
+/// Lower-case hex SHA-256 of the embedded `parameters_weights.mem` bytes.
+pub fn spikenaut_mem_sha256() -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(SPIKENAUT_MEM.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
 const SYNFIRE_JSON: &str = include_str!("../fixtures/snn/synfire_lifneuron/fixture.json");
 
 /// The only classification either fixture may carry in v0.2.0.
@@ -438,9 +451,50 @@ impl TraceContext<'_> {
     }
 }
 
+/// Bit-exact membrane equality. NaN never matches, even an identical NaN
+/// bit pattern (same rule as `oracle::f32_close`).
+pub fn membrane_bits_match(expected: f32, got: f32) -> bool {
+    !expected.is_nan() && !got.is_nan() && expected.to_bits() == got.to_bits()
+}
+
+/// First differing field of neuron `i`, checked spike → refract → membrane.
+fn neuron_mismatch(
+    ctx: &TraceContext<'_>,
+    t: usize,
+    i: usize,
+    got: &StepState,
+    expected: &StepState,
+) -> Option<String> {
+    let at = format!("at timestep={t} neuron={i}");
+    if got.spikes[i] != expected.spikes[i] {
+        let (e, g) = (expected.spikes[i], got.spikes[i]);
+        return Some(format!(
+            "spike mismatch {at}: expected {e} got {g} ({})",
+            ctx.describe()
+        ));
+    }
+    if got.refract[i] != expected.refract[i] {
+        let (e, g) = (expected.refract[i], got.refract[i]);
+        return Some(format!(
+            "refract mismatch {at}: expected {e} got {g} ({})",
+            ctx.describe()
+        ));
+    }
+    let (e, g) = (expected.membrane[i], got.membrane[i]);
+    (!membrane_bits_match(e, g)).then(|| {
+        format!(
+            "membrane mismatch {at}: expected {e:e} (0x{:08x}) got {g:e} (0x{:08x}) \
+             (bit-exact policy; {})",
+            e.to_bits(),
+            g.to_bits(),
+            ctx.describe()
+        )
+    })
+}
+
 /// Compare one tick. Spikes and refractory counters are exact; membrane is
 /// compared **bit-for-bit** (see `docs/SNN_COMPATIBILITY.md`, comparison
-/// policy). Returns the first mismatch with full replay context.
+/// policy). Returns the lowest-index mismatch with full replay context.
 pub fn check_step(
     ctx: &TraceContext<'_>,
     t: usize,
@@ -448,47 +502,21 @@ pub fn check_step(
     expected: &StepState,
 ) -> Result<(), String> {
     let n = expected.membrane.len();
-    for (field, glen) in [
+    let lens = [
         ("membrane", got.membrane.len()),
         ("refract", got.refract.len()),
         ("spikes", got.spikes.len()),
-    ] {
-        if glen != n {
-            return Err(format!(
-                "length mismatch in {field}: expected {n} got {glen} at timestep={t} ({})",
-                ctx.describe()
-            ));
-        }
+    ];
+    if let Some((field, glen)) = lens.into_iter().find(|&(_, len)| len != n) {
+        return Err(format!(
+            "length mismatch in {field}: expected {n} got {glen} at timestep={t} ({})",
+            ctx.describe()
+        ));
     }
-    for i in 0..n {
-        if got.spikes[i] != expected.spikes[i] {
-            return Err(format!(
-                "spike mismatch at timestep={t} neuron={i}: expected {} got {} ({})",
-                expected.spikes[i],
-                got.spikes[i],
-                ctx.describe()
-            ));
-        }
-        if got.refract[i] != expected.refract[i] {
-            return Err(format!(
-                "refract mismatch at timestep={t} neuron={i}: expected {} got {} ({})",
-                expected.refract[i],
-                got.refract[i],
-                ctx.describe()
-            ));
-        }
-        let (e, g) = (expected.membrane[i], got.membrane[i]);
-        if e.to_bits() != g.to_bits() {
-            return Err(format!(
-                "membrane mismatch at timestep={t} neuron={i}: expected {e:e} (0x{:08x}) got {g:e} (0x{:08x}) \
-                 (bit-exact policy; {})",
-                e.to_bits(),
-                g.to_bits(),
-                ctx.describe()
-            ));
-        }
+    match (0..n).find_map(|i| neuron_mismatch(ctx, t, i, got, expected)) {
+        Some(msg) => Err(msg),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// The device is built with `--use_fast_math` (flush-to-zero). The bit-exact

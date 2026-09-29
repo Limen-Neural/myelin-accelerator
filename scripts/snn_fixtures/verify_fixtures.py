@@ -25,6 +25,7 @@ import re
 import struct
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -48,7 +49,11 @@ def sha256(data: bytes) -> str:
 
 
 def fetch(url: str) -> bytes:
-    with urllib.request.urlopen(url, timeout=TIMEOUT) as resp:  # noqa: S310
+    """GET an https URL. Any other scheme (file:, ftp:, custom) is refused."""
+    if urllib.parse.urlsplit(url).scheme != "https":
+        raise ValueError(f"refusing non-https URL: {url!r}")
+    # Scheme validated above, so urlopen cannot be steered to file:/custom handlers.
+    with urllib.request.urlopen(url, timeout=TIMEOUT) as resp:  # noqa: S310  # nosec B310
         return resp.read()
 
 
@@ -56,9 +61,18 @@ def f32_bits(x: float) -> str:
     return f"0x{struct.unpack('<I', struct.pack('<f', x))[0]:08x}"
 
 
+Q88_WORD = re.compile(r"[0-9A-Fa-f]{4}")
+
+
 def decode_q88(text: str) -> list[int]:
+    """Strict decode, same rules as the Rust loader: LF-terminated lines of
+    exactly four hex digits, no blank lines or other whitespace."""
+    if not text.endswith("\n"):
+        raise ValueError("Q8.8 .mem must end with a newline")
     codes = []
-    for line in text.split():
+    for lineno, line in enumerate(text[:-1].split("\n"), start=1):
+        if not Q88_WORD.fullmatch(line):
+            raise ValueError(f"line {lineno}: expected 4 hex digits, got {line!r}")
         word = int(line, 16)
         codes.append(word - 0x10000 if word & 0x8000 else word)
     return codes
@@ -125,63 +139,75 @@ def verify_spikenaut_network(card: dict, raw: bytes) -> None:
     check(row_major == n * k, "spikenaut: neuron-major orientation (row-major [n_neurons x n_inputs])")
 
 
-def verify_synfire_network(card: dict) -> None:
-    src, g = card["source"], card["graph"]
+def _verify_synfire_release(src: dict) -> dict[str, bytes]:
     meta = json.loads(fetch(src["release_api"]))
-    check(meta["id"] == src["release_id"], "synfire: release id")
-    check(meta["version"] == src["release_version"], "synfire: release version")
-    check(meta["license"] == src["license"], "synfire: release license")
+    for key in ("id", "version", "license"):
+        want = src[{"id": "release_id", "version": "release_version"}.get(key, key)]
+        check(meta[key] == want, f"synfire: release {key}")
     remote_files = {f["name"]: f for f in meta["files"]}
     blobs: dict[str, bytes] = {}
     for rec in src["files"]:
-        remote = remote_files.get(rec["name"])
-        check(remote is not None and remote["sha256"] == rec["sha256"], f"synfire: registry sha256 {rec['name']}")
-        if remote is None:
+        remote = remote_files.get(rec["name"], {})
+        check(remote.get("sha256") == rec["sha256"], f"synfire: registry sha256 {rec['name']}")
+        if "downloadUrl" not in remote:
             continue
         blob = fetch(remote["downloadUrl"])
         blobs[rec["name"]] = blob
-        check(sha256(blob) == rec["sha256"] and len(blob) == rec["size_bytes"], f"synfire: downloaded {rec['name']}")
+        ok = sha256(blob) == rec["sha256"] and len(blob) == rec["size_bytes"]
+        check(ok, f"synfire: downloaded {rec['name']}")
+    return blobs
 
-    upstream = fetch(
-        f"https://raw.githubusercontent.com/neuromorphs/NIR/{src['upstream_commit']}/{src['upstream_path']}"
-    )
+
+def _verify_synfire_upstream(card: dict) -> bytes:
+    src = card["source"]
+    base = f"https://raw.githubusercontent.com/neuromorphs/NIR/{src['upstream_commit']}"
+    upstream = fetch(f"{base}/{src['upstream_path']}")
     check(sha256(upstream) == src["upstream_sha256"], "synfire: upstream NIR lif_norse.nir sha256")
 
     stim = card["stimuli"][0]
     m = re.search(r"commit ([0-9a-f]{40}), sha256 ([0-9a-f]{64})", stim["source"])
-    nb_raw = fetch(
-        f"https://raw.githubusercontent.com/neuromorphs/NIR/{m.group(1)}/paper/01_lif/lif_norse.ipynb"
-    )
+    nb_raw = fetch(f"https://raw.githubusercontent.com/neuromorphs/NIR/{m.group(1)}/paper/01_lif/lif_norse.ipynb")
     check(sha256(nb_raw) == m.group(2), "synfire: lif_norse.ipynb sha256")
-    code = ["".join(c["source"]) for c in json.loads(nb_raw)["cells"] if c["cell_type"] == "code"]
-    found = [json.loads(x.group(1)) for c in code if (x := re.search(r"d0 = (\[.*?\])", c))]
+    cells = ["".join(c["source"]) for c in json.loads(nb_raw)["cells"] if c["cell_type"] == "code"]
+    found = [json.loads(x.group(1)) for c in cells if (x := re.search(r"d0 = (\[[^\]]*\])", c))]
     check(found == [stim["d0"]], "synfire: d0 stimulus matches notebook")
+    return upstream
 
+
+def _verify_synfire_nir_params(g: dict, model_nir: bytes) -> None:
     try:
         import h5py  # type: ignore[import-not-found]
     except ImportError:
         print("skip synfire: NIR parameter re-extraction (h5py not installed)")
         return
+    datasets = {
+        "affine_weight": "0/weight",
+        "affine_bias": "0/bias",
+        "lif_tau": "1/tau",
+        "lif_r": "1/r",
+        "lif_v_leak": "1/v_leak",
+        "lif_v_threshold": "1/v_threshold",
+    }
     with tempfile.NamedTemporaryFile(suffix=".nir") as tmp:
-        tmp.write(blobs.get("model.nir", upstream))
+        tmp.write(model_nir)
         tmp.flush()
         with h5py.File(tmp.name, "r") as f:
             nodes = f["node/nodes"]
             check(f["version"][()].decode() == g["nir_version"], "synfire: NIR version")
             edges = [[a.decode(), b.decode()] for a, b in f["node/edges"][()]]
             check(edges == g["edges"], "synfire: graph edges")
-            check(nodes["0/type"][()].decode() == "Affine" and nodes["1/type"][()].decode() == "LIF", "synfire: node types")
-            pairs = {
-                "affine_weight": nodes["0/weight"][()].reshape(-1)[0],
-                "affine_bias": nodes["0/bias"][()].reshape(-1)[0],
-                "lif_tau": nodes["1/tau"][()].reshape(-1)[0],
-                "lif_r": nodes["1/r"][()].reshape(-1)[0],
-                "lif_v_leak": nodes["1/v_leak"][()].reshape(-1)[0],
-                "lif_v_threshold": nodes["1/v_threshold"][()].reshape(-1)[0],
-            }
-            for key, val in pairs.items():
-                check(f32_bits(float(val)) == f32_bits(g[key]), f"synfire: {key} f32 bits from model.nir")
+            types = (nodes["0/type"][()].decode(), nodes["1/type"][()].decode())
+            check(types == ("Affine", "LIF"), "synfire: node types")
+            for key, path in datasets.items():
+                val = float(nodes[path][()].reshape(-1)[0])
+                check(f32_bits(val) == f32_bits(g[key]), f"synfire: {key} f32 bits from model.nir")
             check(("v_reset" in nodes["1"]) == (g["lif_v_reset"] is not None), "synfire: v_reset presence")
+
+
+def verify_synfire_network(card: dict) -> None:
+    blobs = _verify_synfire_release(card["source"])
+    upstream = _verify_synfire_upstream(card)
+    _verify_synfire_nir_params(card["graph"], blobs.get("model.nir", upstream))
 
 
 def main() -> int:
