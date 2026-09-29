@@ -169,7 +169,7 @@ kernels validated end-to-end.”
 These are what CLion/`ctest` run for lint-style checks. They **must not** pull in CUDA:
 
 ```bash
-cd ~/Limen-Neural/myelin-accelerator
+cd ~/rmems/myelin-accelerator
 
 cargo test --locked
 cargo build --locked --no-default-features
@@ -208,7 +208,7 @@ is **13.3** via `/usr/local/cuda`.
 #### Minimal path (proven green on branch `test/cuda-rust`)
 
 ```bash
-cd ~/Limen-Neural/myelin-accelerator
+cd ~/rmems/myelin-accelerator
 
 # 1) Compile real CUDA path (nvcc → embedded PTX)
 cargo build --lib --features cuda
@@ -316,7 +316,7 @@ Make self-hosted required only when the runner is reliably online; otherwise PRs
 
 - A host cron may keep a *different* `~/actions-runner/run.sh` process alive;
   that is not automatically the myelin-accelerator registration. Confirm with
-  `gh api repos/Limen-Neural/myelin-accelerator/actions/runners` (expect status
+  `gh api repos/rmems/myelin-accelerator/actions/runners` (expect status
   `online` when listening).
 
 ## 7. Host baseline (ShipOfTheseus, branch `test/cuda-rust`)
@@ -401,7 +401,7 @@ commit **`9091d992edaf105058a1b38bf86a2402b533e45f`**, with a **clean** source
 tree before and after the complete gate. This documentation-only follow-up
 records those completed runs; it does not change the tested implementation.
 
-Baseline: Astra's [#37 / LIM-1443 audit](https://github.com/Limen-Neural/myelin-accelerator/issues/37#issuecomment-5889402053)
+Baseline: Astra's [#37 / LIM-1443 audit](https://github.com/rmems/myelin-accelerator/issues/37#issuecomment-5889402053)
 of `d4f699b0a32ac7d8faf28c7ef978b0bd814f1f68`. A fresh external consumer of
 that checkout running `drop(GpuAccelerator::require_gpu().unwrap())`
 reproduced **exit 99 / 8 errors**. The new lifecycle suite before the repair

@@ -2,10 +2,12 @@
 name = "myelin-accelerator"
 version = "0.2.0"
 edition = "2024"
-description = "Rust/CUDA acceleration primitives for SNN / neuromorphic workloads"
+description = "Rust/CUDA acceleration primitives for spiking neural networks and neuromorphic workloads"
 authors = ["Raul Cardenas Montoya <montoyaraul34@gmail.com>"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/Limen-Neural/myelin-accelerator"
+repository = "https://github.com/rmems/myelin-accelerator"
+keywords = ["cuda", "snn", "neuromorphic", "gpu", "spiking-network"]
+categories = ["hardware-support", "artificial-intelligence", "simulation"]
 exclude = [".codex/**"]
 
 [lib]

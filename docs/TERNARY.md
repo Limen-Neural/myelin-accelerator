@@ -1,7 +1,7 @@
 # Ternary packing and group-scale GEMV / GEMM
 
 Host-side ternary layouts, group scales, reference matmul, and device
-kernels for [GH #9](https://github.com/Limen-Neural/myelin-accelerator/issues/9).
+kernels for [GH #9](https://github.com/rmems/myelin-accelerator/issues/9).
 
 | Layer | Location |
 |-------|----------|
@@ -167,4 +167,4 @@ ncu --kernel-name-base function --kernel-name regex:ternary_gem \
 
 - `docs/ARCHITECTURE.md` — ownership (kernels here; GOZ1 experiment orchestration not here)
 - `src/bitpacking.rs` — public host API and unit tests
-- GH #9 / [LIM-890](https://linear.app/rpd-34/issue/LIM-890) — packed ternary path (Limen-Neural SoT; not rmems)
+- GH #9 / [LIM-890](https://linear.app/rpd-34/issue/LIM-890) — packed ternary path 
