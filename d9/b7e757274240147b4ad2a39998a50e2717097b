@@ -1,0 +1,30 @@
+src/bench/manifest.rs
+  s_2e936c8275887f::t_d8517b5b68eaf5 403-405,461
+src/bench/redact.rs
+  s_2e936c8275887f::t_d795aff932adde 147-152,313
+  s_2e936c8275887f::t_714310b380520b 329-342
+examples/benchmark.rs
+  s_2e936c8275887f::t_714310b380520b 1687-1714,1716-1752,1754-1762,2106-2166
+  s_2e936c8275887f::t_d8517b5b68eaf5 868,889,909-910,933-954,970,983-985,994,1130-1143,1181-1182,1211-1212,1245-1246,1321,1344,1457
+  s_2e936c8275887f::t_1fd69f6227b5a5 1530-1541,1636,1676,1715,1753,1792,1841,1878,1910,1931,1955,1991,2028,2065,2100
+tests/bench_repro.rs
+  s_2e936c8275887f::t_7be5964a4e0653 117
+src/bench/compare.rs
+  s_2e936c8275887f::t_d8517b5b68eaf5 93-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d9b7e757274240147b4ad2a39998a50e2717097b",
+  "prompts": {},
+  "sessions": {
+    "s_2e936c8275887f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c474-16c9-7241-89e4-7f6b425b2e5c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}

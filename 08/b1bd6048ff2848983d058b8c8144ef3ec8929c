@@ -1,0 +1,9 @@
+REVIEW.md
+  ai_agent 400,420-422,457,486
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "08b1bd6048ff2848983d058b8c8144ef3ec8929c",
+  "prompts": {}
+}

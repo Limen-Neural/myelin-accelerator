@@ -1,0 +1,11 @@
+src/gpu/accelerator.rs
+  ai_agent 641,761,835-842
+.codex/environments/environment.toml
+  ai_agent 84-87,94-96,98-101,108-110,112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d809085a870bced6511f32cc48902695091c840b",
+  "prompts": {}
+}

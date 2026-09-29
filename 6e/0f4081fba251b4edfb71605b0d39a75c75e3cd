@@ -1,0 +1,21 @@
+docs/ARCHITECTURE.md
+  s_2e936c8275887f::t_119b7066d1f66c 148-151
+src/error.rs
+  s_2e936c8275887f::t_119b7066d1f66c 78-95,184-191,246-276
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6e0f4081fba251b4edfb71605b0d39a75c75e3cd",
+  "prompts": {},
+  "sessions": {
+    "s_2e936c8275887f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c474-16c9-7241-89e4-7f6b425b2e5c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}

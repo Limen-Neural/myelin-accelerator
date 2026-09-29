@@ -1,0 +1,27 @@
+.github/workflows/ci.yml
+  s_560aed441389cf::t_d935eef37fdcb5 63-72
+docs/ARCHITECTURE.md
+  s_560aed441389cf::t_d935eef37fdcb5 56-68
+src/bench/manifest.rs
+  s_560aed441389cf::t_25fef70c332ef1 372,767-768,773-775,777-778,785-786,790-793
+  s_560aed441389cf::t_9a0d50438da664 373-384,406,409
+  s_560aed441389cf::t_2c2acda94905b2 766,769-772,776,779-784,787-789,794-796
+Cargo.toml
+  s_560aed441389cf::t_d935eef37fdcb5 9-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c252f912de732043a7e67420d1b50b6ed8df6153",
+  "prompts": {},
+  "sessions": {
+    "s_560aed441389cf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c83a-84bf-7fd2-a2b9-348e8c8be4fe",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}

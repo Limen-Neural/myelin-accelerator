@@ -1,0 +1,19 @@
+REVIEW.md
+  s_a3c9a09723df6b::t_1ecbe54fbff85f 231-234,396-484
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "de7db2a638a2d3287d76cb0552c7269a532bf277",
+  "prompts": {},
+  "sessions": {
+    "s_a3c9a09723df6b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ed47-536a-71f1-a209-f68a9fc3edfa",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
