@@ -149,6 +149,8 @@ def _verify_synfire_release(src: dict) -> dict[str, bytes]:
     for rec in src["files"]:
         remote = remote_files.get(rec["name"], {})
         check(remote.get("sha256") == rec["sha256"], f"synfire: registry sha256 {rec['name']}")
+        # A release file that cannot be downloaded is an audit failure, never a skip.
+        check("downloadUrl" in remote, f"synfire: registry offers download for {rec['name']}")
         if "downloadUrl" not in remote:
             continue
         blob = fetch(remote["downloadUrl"])
@@ -158,7 +160,7 @@ def _verify_synfire_release(src: dict) -> dict[str, bytes]:
     return blobs
 
 
-def _verify_synfire_upstream(card: dict) -> bytes:
+def _verify_synfire_upstream(card: dict) -> None:
     src = card["source"]
     base = f"https://raw.githubusercontent.com/neuromorphs/NIR/{src['upstream_commit']}"
     upstream = fetch(f"{base}/{src['upstream_path']}")
@@ -168,13 +170,12 @@ def _verify_synfire_upstream(card: dict) -> bytes:
     m = re.search(r"commit ([0-9a-f]{40}), sha256 ([0-9a-f]{64})", stim["source"])
     check(m is not None, "synfire: d0 source records notebook commit + sha256")
     if m is None:
-        return upstream
+        return
     nb_raw = fetch(f"https://raw.githubusercontent.com/neuromorphs/NIR/{m.group(1)}/paper/01_lif/lif_norse.ipynb")
     check(sha256(nb_raw) == m.group(2), "synfire: lif_norse.ipynb sha256")
     cells = ["".join(c["source"]) for c in json.loads(nb_raw)["cells"] if c["cell_type"] == "code"]
     found = [json.loads(x.group(1)) for c in cells if (x := re.search(r"d0 = (\[[^\]]*\])", c))]
     check(found == [stim["d0"]], "synfire: d0 stimulus matches notebook")
-    return upstream
 
 
 def _verify_synfire_nir_params(g: dict, model_nir: bytes) -> None:
@@ -209,8 +210,11 @@ def _verify_synfire_nir_params(g: dict, model_nir: bytes) -> None:
 
 def verify_synfire_network(card: dict) -> None:
     blobs = _verify_synfire_release(card["source"])
-    upstream = _verify_synfire_upstream(card)
-    _verify_synfire_nir_params(card["graph"], blobs.get("model.nir", upstream))
+    _verify_synfire_upstream(card)
+    # Parameters are re-extracted from the *release* bytes only; no fallback
+    # to the upstream copy, so a passing audit covers the pinned release.
+    if "model.nir" in blobs:
+        _verify_synfire_nir_params(card["graph"], blobs["model.nir"])
 
 
 def main() -> int:

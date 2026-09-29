@@ -359,8 +359,10 @@ semantics are out of scope and belong to #43 / LIM-1461 (v0.3.0).
 Recorded 2026-09-29 on ShipOfTheseus. Code under test is commit
 `2bef80e507d0e5135c3adb905859b2fd13b5a3e6`, a clean tree on branch
 `lim-1462-snn-fixture-validation` that includes both review-repair commits.
-The same gate also passed earlier on `183513b` and `d7aa582`. The follow-up commit only updates
-this section.
+The same gate also passed earlier on `183513b` and `d7aa582`. Later
+commits change only this section and the manual network-audit script
+`scripts/snn_fixtures/verify_fixtures.py`, which no cargo gate runs. The
+`--network` audit passed after that script change.
 
 | Layer | Observed |
 |-------|----------|
