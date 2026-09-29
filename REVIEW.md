@@ -171,6 +171,8 @@ These are what CLion/`ctest` run for lint-style checks. They **must not** pull i
 ```bash
 cd ~/Limen-Neural/myelin-accelerator
 export CARGO_TARGET_DIR=.myelin-target
+rm -rf "$CARGO_TARGET_DIR"
+export CARGO_TARGET_DIR=.myelin-target
 
 cargo test --locked
 cargo build --locked --no-default-features
@@ -241,6 +243,7 @@ cargo run --example benchmark --profile bench --features bench,cuda
 ```bash
 export CUDA_NVCC="${CUDA_NVCC:-/usr/local/cuda/bin/nvcc}"
 export CARGO_TARGET_DIR=.myelin-target
+rm -rf "$CARGO_TARGET_DIR"
 
 cargo build --locked --features cuda --release
 cargo clippy --locked --features cuda -- -D warnings
