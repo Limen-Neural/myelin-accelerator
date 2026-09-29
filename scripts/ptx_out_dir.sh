@@ -22,10 +22,12 @@ command -v python3 >/dev/null || { echo 'ERROR: python3 is required to parse Car
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+# stderr stays visible: with json-render-diagnostics, human-readable
+# diagnostics go to stderr while JSON goes to stdout.
 if [ "$release" -eq 1 ]; then
-    cargo build --locked --features cuda --release --message-format=json-render-diagnostics > "$work/cargo.json" 2>/dev/null
+    cargo build --locked --features cuda --release --message-format=json-render-diagnostics > "$work/cargo.json"
 else
-    cargo build --locked --features cuda --message-format=json-render-diagnostics > "$work/cargo.json" 2>/dev/null
+    cargo build --locked --features cuda --message-format=json-render-diagnostics > "$work/cargo.json"
 fi
 
 out_dir="$(python3 - "$work/cargo.json" <<'PY'
@@ -43,9 +45,13 @@ with open(sys.argv[1], encoding="utf-8") as messages:
             continue
         if item.get("reason") != "build-script-executed":
             continue
-        if "myelin-accelerator" not in str(item.get("package_id", "")):
+        out = item.get("out_dir", "")
+        # Match on the Cargo unit directory, which embeds the package name
+        # (`build/myelin-accelerator-<hash>/out`). The `package_id` for a
+        # path dependency is a file URI of the checkout directory and does
+        # not reliably contain the package name.
+        if "/build/myelin-accelerator-" not in f"/{out}/":
             continue
-        out = item.get("out_dir")
         if out:
             out_dirs.add(out)
 if len(out_dirs) != 1:
