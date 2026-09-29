@@ -348,3 +348,45 @@ cloud CI.
 - `examples/benchmark.rs` (real GPU info + honest feature messaging)
 - `REVIEW.md` (this file)
 - `CLAUDE.md` / `AGENTS.md`
+
+## 8. SNN fixture validation (LIM-1462 / #44)
+
+v0.2.0 release evidence for raw `lif_step` / `lif_step_weighted` on pinned,
+**workload-only** SNN fixtures. Details, fixture revisions and the
+compatibility matrix are in `docs/SNN_COMPATIBILITY.md`. Exact external-model
+semantics are out of scope and belong to #43 / LIM-1461 (v0.3.0).
+
+Recorded 2026-09-29 on ShipOfTheseus. Code under test is commit
+`66ecd0af66a0135e345982874708ea81877af2c5`, a clean tree on branch
+`lim-1462-snn-fixture-validation` that includes all review repairs. The
+same gate also passed earlier on `183513b`, `d7aa582`, and `2bef80e`. The
+follow-up commit only updates this section. The `--network` fixture audit
+passed on this revision, and exits 2 (INCOMPLETE) when `h5py` is missing.
+
+| Layer | Observed |
+|-------|----------|
+| GPU / driver | NVIDIA GeForce RTX 5080 (`sm_120`, 15877 MB); KMD **610.43.03**, CUDA UMD **13.3** |
+| Toolkit | `/usr/local/cuda` → `cuda-13.3`, `nvcc`/`ptxas` V13.3.73; PTX `.version 9.3`, `.target sm_120` |
+| Rust | rustc / cargo 1.98.1 |
+| CPU gates | `cargo fmt --all -- --check`, `cargo test --locked`, `cargo build --locked --no-default-features`, `cargo clippy --locked --no-default-features --all-targets -- -D warnings` — **pass** |
+| CUDA gates (`CUDA_NVCC=/usr/local/cuda/bin/nvcc`) | `cargo build --locked --features cuda`, `cargo clippy --locked --features cuda -- -D warnings` (also `--all-targets`), `cargo test --locked --features cuda` — **pass** |
+| Ignored GPU suite | `cargo test --locked --features cuda -- --ignored --nocapture --test-threads=1` — **45 passed, 0 failed**. Includes all existing ignored tests: lib, `capability_probe`, `gpu_buffer`, `kernel_hazards_gpu`, `oracle_gpu`, `ternary_gpu` |
+| PTX entries | `scripts/check_ptx_entries.sh <OUT_DIR> local-debug` — 22/22 entries, incl. `lif_step`, `lif_step_weighted` |
+| Offline ISA | `ptxas -arch=sm_120` on all four `*_sm_120.ptx` — exit 0 |
+| LIF PTX arithmetic | `lif_step`: 1× `fma.rn.ftz.f32` (decay `0f3F59999A`); `lif_step_weighted`: 30× `fma.rn.ftz.f32`; no separate `mul`/`add.f32` in either |
+| Bench harness | `cargo run --locked --example benchmark --profile bench --features bench,cuda` — pass; `poisson_encode_4096` 5.05 µs, `satsolver_extract_1024x256` 5.26 µs mean |
+
+New SNN fixture tests (`tests/snn_fixtures_gpu.rs`). Every tick: exact spikes
+and refractory state, bit-exact membrane.
+
+| Test | Fixture / label | Run | Result |
+|------|-----------------|-----|--------|
+| `spikenaut_weighted_lif_matches_v0_2_0_oracle_every_timestep` | `spikenaut-snn@6965e12a:merged_v2/parameters_weights.mem`, workload-only | 16×16, 128 ticks, stimulus seed 68, block 32 and block 8 | match; 396 spikes, 792 refractory neuron-ticks, 790 sub-threshold, 518 negative states (each block size) |
+| `synfire_lifneuron_affine_lif_matches_v0_2_0_oracle_every_timestep` | `synfire:pabogdan/lifneuron:1.0.0`, workload-only | 1×1, `nir-paper-d0` 100 ticks + `myelin-ramp-256` 128 ticks, block 32 | match; d0: 15 spikes / 30 refractory ticks (19 with ignored input); ramp: 14 spikes / 28 refractory, 86 sub-threshold |
+
+A negative control was run: shifting the oracle decay by one ulp makes both
+tests fail at timestep 1. Messages carry fixture, label, neuron, expected and
+actual bits, dimensions, stimulus, seed and block. Fixture provenance was
+re-audited with `scripts/snn_fixtures/verify_fixtures.py --network` (all
+checks passed; `h5py` 3.15.1 used for NIR parameter extraction). Ordinary
+`cargo test` stays offline.

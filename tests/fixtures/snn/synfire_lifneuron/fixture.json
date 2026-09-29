@@ -1,0 +1,70 @@
+{
+  "fixture_id": "synfire:pabogdan/lifneuron:1.0.0",
+  "compatibility": "workload-only",
+  "kernel": "lif_step",
+  "source": {
+    "registry": "https://synfire.dev/pabogdan/lifneuron",
+    "release_api": "https://synfire.dev/api/v1/repos/pabogdan/lifneuron/releases/1.0.0",
+    "release_id": "01a01fa8-902e-4517-b47a-bc5fa6b55d2b",
+    "release_version": "1.0.0",
+    "release_created_at": "2026-06-30T18:01:30.224332Z",
+    "release_is_verified": false,
+    "license": "BSD-3-Clause",
+    "files": [
+      {
+        "name": "model.nir",
+        "size_bytes": 17584,
+        "sha256": "0dd9143ef624892d4a6461f474d93653a337b3490a62e23ec9ec5d18fde9b7b6"
+      },
+      {
+        "name": "nir-card.json",
+        "size_bytes": 2006,
+        "sha256": "1ab401bc3082f3f816cb07222ec3db45ce1d239ee53b6a9247e35ce36b99f59d"
+      }
+    ],
+    "upstream_repository": "https://github.com/neuromorphs/NIR",
+    "upstream_commit": "da0551dad03c4818689fdae7a48bfcff0be07b81",
+    "upstream_path": "paper/01_lif/lif_norse.nir",
+    "upstream_sha256": "0dd9143ef624892d4a6461f474d93653a337b3490a62e23ec9ec5d18fde9b7b6",
+    "upstream_license": "BSD-3-Clause",
+    "citation": "Pedersen JE, Abreu S, Jobst M, et al. Neuromorphic Intermediate Representation: A Unified Instruction Set for Interoperable Brain-Inspired Computing. Nature Communications (2024). doi:10.1038/s41467-024-52259-9",
+    "inspected": "2026-09-29",
+    "raw_artifact_checked_in": false
+  },
+  "graph": {
+    "nir_version": "0.1.1",
+    "topology": "Input(1) -> Affine(1) -> LIF(1) -> Output(1)",
+    "edges": [["input", "0"], ["0", "1"], ["1", "output"]],
+    "affine_weight": 1.0,
+    "affine_weight_f32_bits": "0x3f800000",
+    "affine_weight_shape": [1, 1],
+    "affine_bias": 0.0,
+    "affine_bias_f32_bits": "0x00000000",
+    "lif_tau": 0.0025,
+    "lif_tau_f32_bits": "0x3b23d70a",
+    "lif_r": 1.0,
+    "lif_v_leak": 0.0,
+    "lif_v_threshold": 0.1,
+    "lif_v_threshold_f32_bits": "0x3dcccccd",
+    "lif_v_reset": null,
+    "lif_v_reset_note": "absent from model.nir (the model card lists v_reset, the artifact does not store it)",
+    "dt_seconds": 0.0001,
+    "dt_note": "from the model card / NIR paper README; not stored in the graph"
+  },
+  "stimuli": [
+    {
+      "identity": "nir-paper-d0",
+      "definition": "x[t] = d0[t] for t in 0..100 (binary)",
+      "source": "NIR paper/01_lif/lif_norse.ipynb (commit da0551dad03c4818689fdae7a48bfcff0be07b81, sha256 d8c248f06cf5cfd3a35296ef64be64c7dd4ed48f44390408a0a5fad426a003a7), list d0 before the paper's x10 zero-upsampling",
+      "d0": [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      "steps": 100
+    },
+    {
+      "identity": "myelin-ramp-256",
+      "definition": "x[t] = (t + 1) / 256 for t in 0..128 (exact dyadic f32)",
+      "source": "myelin test stimulus modelled on the card's 'ramp input' description; not part of the artifact",
+      "steps": 128
+    }
+  ],
+  "host_affine": "I_ext[t] = affine_weight.mul_add(x[t], affine_bias) on the host; only the Affine node is applied. The NIR LIF parameters (tau, r, v_leak, v_threshold) are recorded but NOT executed: both CPU oracle and GPU use fixed myelin v0.2.0 LIF dynamics."
+}

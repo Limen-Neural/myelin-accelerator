@@ -1,0 +1,49 @@
+{
+  "fixture_id": "spikenaut-snn@6965e12a:merged_v2/parameters_weights.mem",
+  "compatibility": "workload-only",
+  "kernel": "lif_step_weighted",
+  "source": {
+    "repository": "https://github.com/rmems/Spikenaut-SNN",
+    "commit": "6965e12a6e46d29783e69f6b0fda3dda1058bd29",
+    "commit_note": "last commit touching dataset/merged_v2/parameters_weights.mem; unchanged at inspected HEAD 18cd1c2b08bcccbbbbf4d5c2a286f90d35dcfad8",
+    "huggingface_repo": "rmems/Spikenaut-SNN",
+    "huggingface_revision": "da93893d53dc2c28b58d0b48db7bd78a39ba8f8d",
+    "path": "dataset/merged_v2/parameters_weights.mem",
+    "sha256": "825969873444d215d09920e69592700a2cc8594d92e7b14c4059eef8919fe4f3",
+    "size_bytes": 1280,
+    "companion_checkpoint": "dataset/merged_v2/snn_model.json",
+    "companion_checkpoint_sha256": "cf3b7a47c5eb62d93b28480804e2ca82923db5bece1285bcbeba723437bfaf89",
+    "license": "MIT OR Apache-2.0",
+    "copyright": "Copyright (c) 2026 Raul Montoya Cardenas",
+    "inspected": "2026-09-29"
+  },
+  "weights": {
+    "file": "parameters_weights.mem",
+    "encoding": "one signed two's-complement Q8.8 word per line, 4 hex digits, value = code / 256",
+    "orientation": "neuron-major: line n*16 + j is the weight of input j for hidden neuron n (row-major [n_neurons x n_inputs], identical to the lif_step_weighted layout; no transpose)",
+    "orientation_evidence": "decoded words match round(snn_model.json neurons[n].weights[j] * 256) / 256 for 256/256 entries neuron-major and 140/256 if read input-major",
+    "n_neurons": 16,
+    "n_inputs": 16,
+    "word_count": 256,
+    "raw_code_sum": 5812,
+    "nonzero_count": 69,
+    "min_code": -256,
+    "max_code": 410
+  },
+  "stimulus": {
+    "identity": "spikenaut-bernoulli-axons0-4/seed=0x44",
+    "generator": "myelin_accelerator::oracle::CaseRng::new(seed); per tick, per input j in 0..16 in order: x[j] = 1.0 if next_rate_f32() < rates[j] else 0.0",
+    "seed": 68,
+    "rates": [0.35, 0.5, 0.3, 0.6, 0.45, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "steps": 128,
+    "note": "Deterministic 0/1 spike inputs per the lif_step_weighted input contract. Axons 5-15 are held at zero because the shipped bank has zero weights there (unused width). This is a myelin test stimulus, not Spikenaut's analog-current / telemetry encoder."
+  },
+  "shipped_model_semantics_not_executed": {
+    "input_modality": "analog current on axons 0-4 (normalised telemetry)",
+    "decay_q88": "00DA (0.8515625) for all 16 neurons, parameters_decay.mem",
+    "threshold_q88": "019A (1.6015625) x10, 0199 (1.59765625) x2, 0073 (0.44921875) x4, parameters.mem",
+    "reset": "zero baseline (NIR v_reset default)",
+    "refractory": "none documented",
+    "readout": "16x3 neuron-major output weights (parameters_output_weights.mem) - not exercised"
+  }
+}

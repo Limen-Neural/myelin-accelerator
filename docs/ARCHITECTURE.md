@@ -99,11 +99,13 @@ myelin-accelerator/
 │       └── accelerator.rs       # High-level launch wrappers
 ├── examples/benchmark.rs        # Optional bench harness (feature = "bench")
 ├── tests/fixtures/bench/        # Sanitized manifest + classification fixtures
+├── tests/fixtures/snn/          # Pinned SNN model fixtures (workload-only, v0.2.0)
 ├── build.rs                     # nvcc → PTX into OUT_DIR
 ├── CMakeLists.txt               # CLion/CTest quality gate (nvcc -ptx)
 └── docs/
     ├── ARCHITECTURE.md          # This file
     ├── BENCHMARKS.md            # Manifests, compare, baseline refresh
+    ├── SNN_COMPATIBILITY.md     # External SNN fixtures vs fixed v0.2.0 LIF
     └── TERNARY.md               # Ternary encoding, scales, GOZ1, kernels
 ```
 
@@ -177,7 +179,8 @@ These are the **ergonomic** wrappers currently implemented:
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
 
 Scalar CPU oracles for the Poisson and ternary wrappers, plus
-`cosine_similarity_batched` (loaded, not yet wrapped), live in `src/oracle.rs`.
+`cosine_similarity_batched`, `lif_step`, and `lif_step_weighted` (loaded, not
+yet wrapped), live in `src/oracle.rs`.
 
 Additional kernels may be **loaded** in `KernelModule` and still lack a
 dedicated `GpuAccelerator` method. Advanced callers can use
@@ -193,6 +196,17 @@ consumers share.
 | `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` |
 | `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass1`, `satsolver_best_reduce_pass2` |
 | `ternary_gemm` | `ternary_gemv`, `ternary_gemm` |
+
+`lif_step` and `lif_step_weighted` have raw-symbol differential coverage:
+`tests/snn_fixtures_gpu.rs` compares membrane, refractory state, and spikes
+bit-exactly against `oracle::lif_step_oracle` /
+`oracle::lif_step_weighted_oracle` every timestep. It runs on pinned
+Spikenaut-shaped (16×16) and Synfire/NIR-shaped (1×1) workloads.
+They still have **no stable `GpuAccelerator` wrapper in v0.2.0**, and their
+LIF dynamics are fixed (decay 0.85, threshold 1.0, reset 0.0, 2 refractory
+ticks). The fixtures are workload-only, not model-parity claims. See
+[SNN_COMPATIBILITY.md](SNN_COMPATIBILITY.md). Exact external-model
+interoperability is GH #43 / LIM-1461 (v0.3.0).
 
 The old raw `stdp_update` symbol is retired. Direct CUDA callers must launch
 `stdp_update_weights` followed by `stdp_update_traces` on the same stream; the
