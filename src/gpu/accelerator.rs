@@ -691,8 +691,14 @@ impl GpuAccelerator {
     /// Async variant of [`Self::poisson_encode`]: enqueues the launch on the
     /// internal stream and returns without waiting.
     ///
-    /// The caller must call [`Self::synchronize`] before reading `spikes` on the
-    /// host or dropping/reusing either buffer.
+    /// An empty stimulus is a defined no-op on a ready accelerator: it
+    /// succeeds without launching a kernel (a zero-grid launch would fail
+    /// with `InvalidValue`) and leaves any pooled output tail untouched.
+    /// Readiness is still required, so a CPU-fallback accelerator reports
+    /// `Unavailable` here exactly as it does for non-empty inputs, keeping
+    /// the sync/async contract coherent. The caller must call
+    /// [`Self::synchronize`] before reading `spikes` on the host or
+    /// dropping/reusing either buffer.
     pub fn poisson_encode_async(
         &self,
         stimuli: &GpuBuffer<f32>,
@@ -711,6 +717,19 @@ impl GpuAccelerator {
                 "poisson_encode: element count {n} exceeds i32::MAX kernel limit"
             ))
         })?;
+
+        if n == 0 {
+            // Defined empty-input contract (GH #48): the spikes-length check
+            // above already ran, so an invalid buffer relationship still fails
+            // before this no-op return. Readiness is required so a
+            // CPU-fallback accelerator stays fail-closed (matching non-empty
+            // inputs and the sync wrapper, which must synchronize). No launch
+            // occurs and pooled tails are untouched.
+            if !self.is_ready() {
+                return Err(self.unavailable_error());
+            }
+            return Ok(());
+        }
 
         let kernels = self.kernels()?;
         let func = kernels.get_function("poisson_encode")?;
@@ -1224,5 +1243,40 @@ mod tests {
         assert!(report.device_available);
         assert!(report.gpu_usable());
         assert_eq!(report.selected_backend, Backend::Cuda);
+    }
+
+    /// An empty Poisson request on a CPU-fallback accelerator stays
+    /// fail-closed on both entry points (GH #48): the async no-op requires
+    /// readiness, and the sync wrapper propagates the same `Unavailable`
+    /// instead of succeeding-then-failing at `synchronize`.
+    #[test]
+    #[ignore] // requires GPU + driver ≥ 570
+    fn empty_poisson_on_cpu_fallback_fails_closed_on_both_paths() {
+        let _gpu = GpuAccelerator::require_gpu().expect("GPU required for buffer setup");
+        let facts = CapabilityFacts {
+            cuda_built: true,
+            runtime_available: false,
+            device_available: false,
+            compute_capability: None,
+            kernels: KernelAvailability::compiled_unverified(),
+        };
+        let report = capability_report_for_failure(
+            facts,
+            FallbackReason::DriverRuntimeFailure,
+            "no device for fallback probe",
+        );
+        let acc = GpuAccelerator::cpu_fallback(report);
+        assert!(!acc.is_ready());
+
+        let stim = GpuBuffer::<f32>::alloc(0).unwrap();
+        let mut spikes = GpuBuffer::<u32>::alloc(0).unwrap();
+        match acc.poisson_encode_async(&stim, &mut spikes, 7).unwrap_err() {
+            GpuError::Unavailable { .. } => {}
+            other => panic!("expected Unavailable, got {other}"),
+        }
+        match acc.poisson_encode(&stim, &mut spikes, 7).unwrap_err() {
+            GpuError::Unavailable { .. } => {}
+            other => panic!("expected Unavailable, got {other}"),
+        }
     }
 }

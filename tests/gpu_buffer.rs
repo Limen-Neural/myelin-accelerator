@@ -166,8 +166,38 @@ fn from_slice_preserves_f32_bit_patterns() {
     assert_eq!(got_bits, want_bits, "f32 bit patterns not preserved");
 }
 
-// ── Upload ───────────────────────────────────────────────────────────────────
+/// Oversized allocations return `MemoryError` with the same category as the CPU
+/// stub (GH #48). Every case fails checked byte arithmetic before touching
+/// VRAM, so no device memory is exhausted by this probe.
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn alloc_overflow_returns_memory_error_without_allocating() {
+    let _gpu = require_gpu();
+    for len in [usize::MAX, isize::MAX as usize] {
+        assert_alloc_overflow::<u64>(len);
+    }
+    for len in [usize::MAX, isize::MAX as usize + 1] {
+        assert_alloc_overflow::<u8>(len);
+    }
+    assert_alloc_overflow::<u32>(usize::MAX);
+    // Zero and ordinary allocations still succeed alongside the overflow probes.
+    assert!(GpuBuffer::<u64>::alloc(0).unwrap().is_empty());
+    assert_eq!(
+        GpuBuffer::<u64>::alloc(4).unwrap().to_vec().unwrap(),
+        vec![0u64; 4]
+    );
+}
 
+/// Assert an oversized `alloc` fails with the overflow `MemoryError`.
+fn assert_alloc_overflow<T: cust::memory::DeviceCopy + Default + Clone>(len: usize) {
+    match GpuBuffer::<T>::alloc(len) {
+        Err(GpuError::MemoryError(msg)) => assert!(msg.contains("size overflow"), "msg: {msg}"),
+        Err(other) => panic!("expected MemoryError for len {len}, got {other}"),
+        Ok(_) => panic!("oversized alloc unexpectedly succeeded"),
+    }
+}
+
+// ── Upload ───────────────────────────────────────────────────────────────────
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn upload_equal_length_replaces_all() {

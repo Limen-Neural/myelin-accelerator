@@ -55,10 +55,18 @@ impl<T: Default + Clone> GpuBuffer<T> {
     /// `alloc(0)` succeeds and yields an empty, readable buffer. This mirrors
     /// the CUDA backend's initialisation contract so callers behave identically
     /// on either path.
+    ///
+    /// Oversized requests fail with [`GpuError::MemoryError`] instead of
+    /// panicking: the byte size is checked with the same
+    /// `size_of::<T>() * len` arithmetic and `isize::MAX` ceiling as the CUDA
+    /// backend, and the backing `Vec` is reserved fallibly (GH #48).
     pub fn alloc(len: usize) -> GpuResult<Self> {
-        Ok(Self {
-            data: vec![T::default(); len],
-        })
+        crate::error::checked_alloc_bytes::<T>(len)?;
+        let mut data: Vec<T> = Vec::new();
+        data.try_reserve_exact(len)
+            .map_err(|e| GpuError::MemoryError(format!("alloc({len}): reserve failed: {e:?}")))?;
+        data.resize(len, T::default());
+        Ok(Self { data })
     }
     /// Allocate a buffer holding a copy of `data`. `from_slice(&[])` yields an
     /// empty buffer.
@@ -487,6 +495,59 @@ mod tests {
         assert_eq!(buf.len(), 64);
         let data = buf.to_vec().unwrap();
         assert!(data.iter().all(|&v| v == 0.0f32));
+    }
+
+    /// Oversized requests return `MemoryError` instead of panicking (GH #48),
+    /// mirroring the CUDA backend. All cases fail checked arithmetic before
+    /// any physical allocation.
+    #[test]
+    fn buffer_alloc_overflow_returns_memory_error() {
+        // u64: `8 * len` overflows `usize` / exceeds the `isize::MAX` ceiling.
+        for len in [usize::MAX, isize::MAX as usize] {
+            assert_alloc_overflow::<u64>(len);
+        }
+        // u8: one byte per element, so `usize::MAX` / past-ceiling byte counts.
+        for len in [usize::MAX, isize::MAX as usize + 1] {
+            assert_alloc_overflow::<u8>(len);
+        }
+        // Wide element type: overflow with a smaller element count.
+        assert_alloc_overflow::<Wide512>(usize::MAX);
+    }
+
+    /// Assert an oversized `alloc` fails with the overflow `MemoryError`.
+    fn assert_alloc_overflow<T: Default + Clone>(len: usize) {
+        match GpuBuffer::<T>::alloc(len) {
+            Err(GpuError::MemoryError(msg)) => {
+                assert!(msg.contains("size overflow"), "msg: {msg}")
+            }
+            Err(other) => panic!("expected MemoryError, got {other}"),
+            Ok(_) => panic!("oversized alloc unexpectedly succeeded"),
+        }
+    }
+
+    /// 4 KiB element used to probe overflow with a wide element size.
+    #[derive(Clone)]
+    struct Wide512 {
+        _payload: [u64; 512],
+    }
+
+    impl Default for Wide512 {
+        fn default() -> Self {
+            Self {
+                _payload: [0u64; 512],
+            }
+        }
+    }
+
+    /// Zero-sized types allocate without bytes; zero and ordinary lengths work.
+    #[test]
+    fn buffer_alloc_zero_sized_type() {
+        let empty = GpuBuffer::<()>::alloc(0).unwrap();
+        assert_eq!(empty.len(), 0);
+        assert!(empty.to_vec().unwrap().is_empty());
+        let buf = GpuBuffer::<()>::alloc(8).unwrap();
+        assert_eq!(buf.len(), 8);
+        assert_eq!(buf.to_vec().unwrap(), vec![(); 8]);
     }
 
     #[test]
