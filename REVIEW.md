@@ -278,8 +278,9 @@ ctest --test-dir cmake-build-debug --output-on-failure
 
 ### Cloud CI vs local
 
-Toolkit pin for containerized jobs: **CUDA 13.3.1** (`nvidia/cuda:13.3.1-devel-ubuntu24.04`),
-matching ShipOfTheseus `/usr/local/cuda` → `cuda-13.3`.
+Toolkit pin for the cloud CI container job: **CUDA 13.3.1** (`nvidia/cuda:13.3.1-devel-ubuntu24.04`),
+matching ShipOfTheseus `/usr/local/cuda` → `cuda-13.3`. This `container:` entry is
+GitHub Actions CI plumbing for PTX compilation, not a distributed consumer image.
 
 | Job | Runner | GPU runtime? |
 |-----|--------|--------------|
@@ -288,13 +289,12 @@ matching ShipOfTheseus `/usr/local/cuda` → `cuda-13.3`.
 | `CUDA build [self-hosted] (sm_120)` | Labels `self-hosted,linux,x64,gpu,cuda` | Full: build/clippy/test + **`--ignored` goldens** + PTX symbols (incl. ternary) + ptxas + short `bench,cuda` |
 | Local quality gate above | Developer workstation | Full runtime (same as self-hosted, optional Nsight) |
 
-The GitHub-hosted `Docker CUDA 13.3.1` image-build job was removed. It built
-`./Dockerfile` via `docker/build-push-action` inside the 13.3.1 devel image
-(compile-only, no GPU runtime). The `cargo build/clippy --features cuda` compile
-signal it produced is already covered by the `CUDA PTX compile [cloud]` job; the
-only thing dropped is automated verification that the `Dockerfile` itself still
-builds. The `Dockerfile` is retained for local/manual image builds — build it
-on demand with `docker build -t myelin-accelerator:cuda13.3.1 .`.
+Docker is not a supported v0.2.0 distribution surface (#49 / LIM-1467).
+The former `Dockerfile` / `.dockerignore` consumer surface was removed; no
+container image is built, published, or required for release qualification.
+Cargo/crates.io is the supported distribution path. The `cargo build/clippy
+--features cuda` compile signal remains covered by the `CUDA PTX compile
+[cloud]` container job above.
 
 **Branch protection (recommended):** require lint, CPU checks, and cloud PTX compile.
 Make self-hosted required only when the runner is reliably online; otherwise PRs queue.
