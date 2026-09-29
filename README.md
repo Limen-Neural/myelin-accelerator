@@ -12,7 +12,7 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![Release: v0.2.0 candidate](https://img.shields.io/badge/release-v0.2.0%20candidate-orange)](https://github.com/Limen-Neural/myelin-accelerator/issues/37)
 
-Reusable Rust/CUDA acceleration primitives for SNN / neuromorphic workloads: spiking networks, routing, SAT search, and packed ternary matrix operations. The CUDA path targets `sm_120` (Blackwell); the default build works without a CUDA toolkit or device.
+Rust/CUDA acceleration primitives for spiking neural networks (SNN) and neuromorphic workloads: a low-level compute layer of safe Rust wrappers around first-party CUDA kernels for spiking networks, routing, SAT search, and packed ternary GEMV/GEMM. The CUDA path targets and is validated on `sm_120` (NVIDIA Blackwell); the default build works without a CUDA toolkit or device. This is a compute layer, not a complete SNN framework or a general model-compatibility layer.
 
 **Release status:** `Cargo.toml` is at `0.2.0` as a crates.io candidate (not yet published). Qualification is tracked in [release issue #37](https://github.com/Limen-Neural/myelin-accelerator/issues/37); publication after qualification is owned by LIM-1460. Cargo/crates.io is the supported distribution path; Docker/container images are not a supported consumer surface. The CI and GPU CI badges reflect `main`, not this checkout or an open pull request.
 
