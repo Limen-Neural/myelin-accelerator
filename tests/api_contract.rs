@@ -164,6 +164,54 @@ mod stub_contract {
         assert!(result.is_err());
     }
 
+    /// Oversized allocations return `MemoryError` instead of panicking (GH #48),
+    /// matching the CUDA backend's checked-arithmetic contract. All probes fail
+    /// before any physical allocation.
+    #[test]
+    fn buffer_alloc_overflow_returns_memory_error_not_panic() {
+        let overflow_u64 = [usize::MAX, isize::MAX as usize];
+        for len in overflow_u64 {
+            match GpuBuffer::<u64>::alloc(len) {
+                Err(GpuError::MemoryError(msg)) => {
+                    assert!(msg.contains("size overflow"), "msg: {msg}")
+                }
+                Err(other) => panic!("expected MemoryError for u64 len {len}, got {other}"),
+                Ok(_) => panic!("oversized u64 alloc unexpectedly succeeded"),
+            }
+        }
+        for len in [usize::MAX, isize::MAX as usize + 1] {
+            match GpuBuffer::<u8>::alloc(len) {
+                Err(GpuError::MemoryError(msg)) => {
+                    assert!(msg.contains("size overflow"), "msg: {msg}")
+                }
+                Err(other) => panic!("expected MemoryError for u8 len {len}, got {other}"),
+                Ok(_) => panic!("oversized u8 alloc unexpectedly succeeded"),
+            }
+        }
+        match GpuBuffer::<u32>::alloc(usize::MAX) {
+            Err(GpuError::MemoryError(_)) => {}
+            Err(other) => panic!("expected MemoryError for u32::MAX elems, got {other}"),
+            Ok(_) => panic!("oversized u32 alloc unexpectedly succeeded"),
+        }
+    }
+
+    /// Zero-length allocation still succeeds and ordinary allocation still
+    /// yields `T::default()` with unchanged upload/`to_vec` behavior (GH #48).
+    #[test]
+    fn buffer_alloc_zero_and_ordinary_unchanged() {
+        let empty = GpuBuffer::<u64>::alloc(0).expect("alloc(0) must succeed");
+        assert_eq!(empty.len(), 0);
+        assert!(empty.is_empty());
+        assert!(empty.to_vec().unwrap().is_empty());
+
+        let buf = GpuBuffer::<u64>::alloc(4).expect("ordinary alloc must succeed");
+        assert_eq!(buf.to_vec().unwrap(), vec![0u64; 4]);
+
+        let mut buf = GpuBuffer::<i32>::alloc(3).expect("alloc must succeed");
+        buf.upload(&[5, 6, 7]).expect("upload must succeed");
+        assert_eq!(buf.to_vec().unwrap(), vec![5, 6, 7]);
+    }
+
     #[test]
     fn accelerator_construction() {
         let acc = GpuAccelerator::new();

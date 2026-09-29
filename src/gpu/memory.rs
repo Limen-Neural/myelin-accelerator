@@ -36,19 +36,13 @@ impl<T: cust::memory::DeviceCopy + Default + Clone> GpuBuffer<T> {
     /// element-count arithmetic is checked against `isize::MAX` bytes (the
     /// allocation ceiling) before reserving.
     pub fn alloc(len: usize) -> GpuResult<Self> {
-        // Check size arithmetic before any staging allocation. `DeviceCopy`
-        // implies `Sized`, so `size_of::<T>()` is the exact per-element byte
-        // cost; the Rust allocator rejects any single allocation exceeding
-        // `isize::MAX` bytes, so reject earlier with a categorised error.
-        let elem_size = std::mem::size_of::<T>();
-        let too_large = elem_size
-            .checked_mul(len)
-            .is_none_or(|bytes| bytes > isize::MAX as usize);
-        if too_large {
-            return Err(GpuError::MemoryError(format!(
-                "alloc({len}): size overflow, {len} elements of {elem_size} bytes exceeds isize::MAX"
-            )));
-        }
+        // Check size arithmetic before any staging allocation, using the same
+        // helper as the CPU stub so the overflow contract cannot drift
+        // (GH #48). `DeviceCopy` implies `Sized`, so `size_of::<T>()` is the
+        // exact per-element byte cost; the Rust allocator rejects any single
+        // allocation exceeding `isize::MAX` bytes, so reject earlier with a
+        // categorised error.
+        crate::error::checked_alloc_bytes::<T>(len)?;
 
         // Fallible host reservation: an OOM here becomes a categorised error
         // rather than an allocation abort.

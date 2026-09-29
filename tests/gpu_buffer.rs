@@ -166,8 +166,41 @@ fn from_slice_preserves_f32_bit_patterns() {
     assert_eq!(got_bits, want_bits, "f32 bit patterns not preserved");
 }
 
-// ── Upload ───────────────────────────────────────────────────────────────────
+/// Oversized allocations return `MemoryError` with the same category as the CPU
+/// stub (GH #48). Every case fails checked byte arithmetic before touching
+/// VRAM, so no device memory is exhausted by this probe.
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn alloc_overflow_returns_memory_error_without_allocating() {
+    let _gpu = require_gpu();
+    for len in [usize::MAX, isize::MAX as usize] {
+        match GpuBuffer::<u64>::alloc(len) {
+            Err(GpuError::MemoryError(msg)) => assert!(msg.contains("size overflow"), "msg: {msg}"),
+            Err(other) => panic!("expected MemoryError for u64 len {len}, got {other}"),
+            Ok(_) => panic!("oversized u64 alloc unexpectedly succeeded"),
+        }
+    }
+    for len in [usize::MAX, isize::MAX as usize + 1] {
+        match GpuBuffer::<u8>::alloc(len) {
+            Err(GpuError::MemoryError(msg)) => assert!(msg.contains("size overflow"), "msg: {msg}"),
+            Err(other) => panic!("expected MemoryError for u8 len {len}, got {other}"),
+            Ok(_) => panic!("oversized u8 alloc unexpectedly succeeded"),
+        }
+    }
+    match GpuBuffer::<u32>::alloc(usize::MAX) {
+        Err(GpuError::MemoryError(_)) => {}
+        Err(other) => panic!("expected MemoryError for u32::MAX elems, got {other}"),
+        Ok(_) => panic!("oversized u32 alloc unexpectedly succeeded"),
+    }
+    // Zero and ordinary allocations still succeed alongside the overflow probes.
+    assert!(GpuBuffer::<u64>::alloc(0).unwrap().is_empty());
+    assert_eq!(
+        GpuBuffer::<u64>::alloc(4).unwrap().to_vec().unwrap(),
+        vec![0u64; 4]
+    );
+}
 
+// ── Upload ───────────────────────────────────────────────────────────────────
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn upload_equal_length_replaces_all() {

@@ -691,8 +691,11 @@ impl GpuAccelerator {
     /// Async variant of [`Self::poisson_encode`]: enqueues the launch on the
     /// internal stream and returns without waiting.
     ///
-    /// The caller must call [`Self::synchronize`] before reading `spikes` on the
-    /// host or dropping/reusing either buffer.
+    /// An empty stimulus is a defined no-op: it succeeds without launching a
+    /// kernel (a zero-grid launch would fail with `InvalidValue`), leaves any
+    /// pooled output tail untouched, and requires no GPU resources beyond the
+    /// buffer-length validation. The caller must call [`Self::synchronize`]
+    /// before reading `spikes` on the host or dropping/reusing either buffer.
     pub fn poisson_encode_async(
         &self,
         stimuli: &GpuBuffer<f32>,
@@ -711,6 +714,14 @@ impl GpuAccelerator {
                 "poisson_encode: element count {n} exceeds i32::MAX kernel limit"
             ))
         })?;
+
+        if n == 0 {
+            // Defined empty-input contract (GH #48): the spikes-length check
+            // above already ran, so an invalid buffer relationship still fails
+            // before this no-op return. No launch occurs and pooled tails are
+            // untouched.
+            return Ok(());
+        }
 
         let kernels = self.kernels()?;
         let func = kernels.get_function("poisson_encode")?;

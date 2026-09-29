@@ -120,6 +120,23 @@ impl fmt::Display for GpuError {
 
 impl std::error::Error for GpuError {}
 
+/// Checked host-side byte size for `GpuBuffer::<T>::alloc(len)`, shared by the
+/// CPU stub and the CUDA backend so overflow handling cannot drift (GH #48).
+///
+/// Returns the total byte footprint when `size_of::<T>() * len` is defined and
+/// within the `isize::MAX` single-allocation ceiling; otherwise returns a
+/// categorised [`GpuError::MemoryError`] instead of panicking. Callers still
+/// perform their own fallible reservation after this check.
+pub(crate) fn checked_alloc_bytes<T>(len: usize) -> GpuResult<usize> {
+    let elem_size = std::mem::size_of::<T>();
+    match elem_size.checked_mul(len) {
+        Some(bytes) if bytes <= isize::MAX as usize => Ok(bytes),
+        _ => Err(GpuError::MemoryError(format!(
+            "alloc({len}): size overflow, {len} elements of {elem_size} bytes exceeds isize::MAX"
+        ))),
+    }
+}
+
 #[cfg(feature = "cuda")]
 impl From<cust::error::CudaError> for GpuError {
     fn from(e: cust::error::CudaError) -> Self {
@@ -274,5 +291,41 @@ mod tests {
         for (err, expected) in cases {
             assert_eq!(err.to_string(), expected);
         }
+    }
+
+    #[test]
+    fn checked_alloc_bytes_accepts_zero_ordinary_and_zst() {
+        assert_eq!(checked_alloc_bytes::<u64>(0).unwrap(), 0);
+        assert_eq!(checked_alloc_bytes::<u64>(4).unwrap(), 32);
+        assert_eq!(checked_alloc_bytes::<u8>(16).unwrap(), 16);
+        // Zero-sized types occupy no bytes at any length.
+        assert_eq!(checked_alloc_bytes::<()>(0).unwrap(), 0);
+        assert_eq!(checked_alloc_bytes::<()>(usize::MAX).unwrap(), 0);
+    }
+
+    #[test]
+    fn checked_alloc_bytes_rejects_overflow_and_over_ceiling() {
+        let overflow_u64 = [usize::MAX, isize::MAX as usize, isize::MAX as usize / 8 + 1];
+        for len in overflow_u64 {
+            match checked_alloc_bytes::<u64>(len).unwrap_err() {
+                GpuError::MemoryError(msg) => {
+                    assert!(msg.contains("size overflow"), "msg: {msg}")
+                }
+                other => panic!("expected MemoryError, got {other}"),
+            }
+        }
+        for len in [usize::MAX, isize::MAX as usize + 1] {
+            match checked_alloc_bytes::<u8>(len).unwrap_err() {
+                GpuError::MemoryError(msg) => {
+                    assert!(msg.contains("size overflow"), "msg: {msg}")
+                }
+                other => panic!("expected MemoryError, got {other}"),
+            }
+        }
+        // Exactly at the ceiling is still accepted; one byte past is not.
+        assert_eq!(
+            checked_alloc_bytes::<u8>(isize::MAX as usize).unwrap(),
+            isize::MAX as usize
+        );
     }
 }
