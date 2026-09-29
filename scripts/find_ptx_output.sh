@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Locate the one Cargo build-script output directory containing every PTX file.
-# Cargo hashes build-script directories, so do not select one by modification time.
+# Locate the newest real-CUDA Cargo build-script PTX output directory.
+# Cargo retains hashed output directories for prior feature sets and revisions.
 set -euo pipefail
 
 target_dir="${1:?usage: find_ptx_output.sh <cargo-target-dir> <debug|release>}"
@@ -13,19 +13,26 @@ if [[ ! -d "$build_dir" ]]; then
   exit 1
 fi
 
-matches=()
+latest_candidate=""
+latest_mtime=""
 while IFS= read -r -d '' candidate; do
   valid=true
   for file in $required; do
     [[ -f "$candidate/$file" ]] || valid=false
+    grep -q '^\.target sm_120' "$candidate/$file" || valid=false
   done
-  "$valid" && matches+=("$candidate")
+  if "$valid"; then
+    mtime="$(stat -c '%y' "$candidate")"
+    if [[ -z "$latest_mtime" || "$mtime" > "$latest_mtime" ]]; then
+      latest_candidate="$candidate"
+      latest_mtime="$mtime"
+    fi
+  fi
 done < <(find "$build_dir" -mindepth 2 -maxdepth 2 -type d -name out -print0 | sort -z)
 
-if (( ${#matches[@]} != 1 )); then
-  echo "Expected exactly one complete PTX output directory under $build_dir; found ${#matches[@]}" >&2
-  printf '  %s\n' "${matches[@]}" >&2
+if [[ -z "$latest_candidate" ]]; then
+  echo "No complete sm_120 PTX output directory found under $build_dir" >&2
   exit 1
 fi
 
-printf '%s\n' "${matches[0]}"
+printf '%s\n' "$latest_candidate"
