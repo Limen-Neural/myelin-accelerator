@@ -397,7 +397,7 @@ checks passed; `h5py` 3.15.1 used for NIR parameter extraction). Ordinary
 ## 9. CUDA accelerator lifecycle qualification (#46 / LIM-1464)
 
 Recorded 2026-09-29 on **ShipOfTheseus**, against repaired implementation
-commit **`de7db2a638a2d3287d76cb0552c7269a532bf277`**, with a **clean** source
+commit **`9091d992edaf105058a1b38bf86a2402b533e45f`**, with a **clean** source
 tree before and after the complete gate. This documentation-only follow-up
 records those completed runs; it does not change the tested implementation.
 
@@ -417,7 +417,9 @@ caller's context binding if changed, and finally releases the owned context
 reference. `_ctx` is last as a backstop. Resource locals have reverse declaration
 order so unwinding also destroys them before the context guard. CPU fallback
 teardown returns without CUDA calls. Scratch allocation/replacement now checks
-that the accelerator context is current before touching CUDA resources.
+that the accelerator context is current before touching CUDA resources. The
+private `ensure_aux_scratch` helper keeps that check, synchronization, and
+replacement together without increasing the launch method's complexity.
 
 Verified directly against local **cust 0.3.2**: primary `Context` implements
 `ContextHandle`; `get_current()` succeeds with a null-backed `UnownedContext`
@@ -452,7 +454,7 @@ logged. Restoration is attempted only after owned CUDA resources are gone.
 | PTX manifest | `scripts/check_ptx_entries.sh <Cargo-JSON OUT_DIR> local-lifecycle` — **22/22** |
 | Offline assembly | `/usr/local/cuda/bin/ptxas -arch=sm_120 -o <output.cubin> <module.ptx>` — exit 0 for all four Cargo-generated modules |
 | Lifecycle memcheck | `CUDA_NVCC=/usr/local/cuda/bin/nvcc ./scripts/sanitize_lifecycle.sh` — **exit 0; 7 passed, 0 failed; ERROR SUMMARY: 0 errors** |
-| Benchmark smoke | `cargo run --locked --example benchmark --profile bench --features bench,cuda -- --warmup 2 --iterations 10` — exit 0; clean-SHA manifest; Poisson mean **5.12 µs**, SAT extract mean **5.95 µs** (smoke, not a controlled performance comparison) |
+| Benchmark smoke | `cargo run --locked --example benchmark --profile bench --features bench,cuda -- --warmup 2 --iterations 10` — exit 0; clean-SHA manifest; Poisson mean **4.94 µs**, SAT extract mean **5.12 µs** (smoke, not a controlled performance comparison) |
 
 Exact sanitizer invocation emitted by the script on this workstation:
 
@@ -481,4 +483,4 @@ The same mandatory script now runs after the serial ignored GPU suite in the
 self-hosted `sm_120` CI job. The registered local runner is online and its toolkit
 contains Compute Sanitizer; the cloud PTX job is unchanged. Logs and local probe
 sources are retained under `/tmp/myelin46-evidence/`, with clean repaired-commit
-results in `final-commit/`; this is local evidence, not an uploaded artifact.
+results in `scratch-final-code/`; this is local evidence, not an uploaded artifact.
