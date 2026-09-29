@@ -170,6 +170,7 @@ These are what CLion/`ctest` run for lint-style checks. They **must not** pull i
 
 ```bash
 cd ~/Limen-Neural/myelin-accelerator
+export CARGO_TARGET_DIR=.myelin-target
 
 cargo test --locked
 cargo build --locked --no-default-features
@@ -219,7 +220,7 @@ cargo build --lib --features cuda
 #    After: cmake --build cmake-build-debug --target cuda_kernels
 ptxas -arch=sm_120 -o /tmp/sn.cubin cmake-build-debug/spiking_network.ptx
 #    Or cargo OUT_DIR PTX:
-# ptx_dir="$(./scripts/find_ptx_output.sh target debug)"
+# ptx_dir="$(./scripts/find_ptx_output.sh "$CARGO_TARGET_DIR" debug)"
 # ptxas -arch=sm_120 -o /tmp/sn.cubin "$ptx_dir/spiking_network_sm_120.ptx"
 # Success = no output, exit 0. Repeat for vector_similarity / satsolver if desired.
 
@@ -239,13 +240,14 @@ cargo run --example benchmark --profile bench --features bench,cuda
 
 ```bash
 export CUDA_NVCC="${CUDA_NVCC:-/usr/local/cuda/bin/nvcc}"
+export CARGO_TARGET_DIR=.myelin-target
 
 cargo build --locked --features cuda --release
 cargo clippy --locked --features cuda -- -D warnings
 cargo test --locked --features cuda
 
 # Cargo PTX shape (self-hosted CI does similar checks)
-ptx_dir="$(./scripts/find_ptx_output.sh target debug)"
+ptx_dir="$(./scripts/find_ptx_output.sh "$CARGO_TARGET_DIR" debug)"
 grep -q '^\.target sm_120' "$ptx_dir/spiking_network_sm_120.ptx"
 grep -Eq '\.entry[[:space:]]+lif_step[[:space:]]*\(' "$ptx_dir/spiking_network_sm_120.ptx"
 

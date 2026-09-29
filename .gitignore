@@ -1,5 +1,6 @@
 # Build outputs
 target/
+.myelin-target/
 cmake-build-*/
 CMakeCache.txt
 CMakeFiles/

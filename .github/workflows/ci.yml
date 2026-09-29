@@ -18,8 +18,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # A job-local target directory makes PTX output discovery unambiguous.
-  CARGO_TARGET_DIR: ${{ runner.temp }}/myelin-target
+  # An isolated target directory makes PTX output discovery unambiguous.
+  CARGO_TARGET_DIR: .myelin-target
   RUSTFLAGS: "-D warnings"
   # Match ShipOfTheseus local default (CUDA 13.3.1 / sm_120).
   MYELIN_CUDA_ARCH: sm_120
@@ -170,7 +170,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: ptx-sm_120-cloud-13.3.1
-          path: ${{ runner.temp }}/myelin-target/debug/build/myelin-accelerator-*/out/*.ptx
+          path: .myelin-target/debug/build/myelin-accelerator-*/out/*.ptx
           retention-days: 14
 
   # ── CUDA build & validation (SELF-HOSTED GPU RUNNER) ─────────────────────
@@ -290,8 +290,8 @@ jobs:
         with:
           name: ptx-sm_120-self-hosted
           path: |
-            ${{ runner.temp }}/myelin-target/debug/build/myelin-accelerator-*/out/*.ptx
-            ${{ runner.temp }}/myelin-target/release/build/myelin-accelerator-*/out/*.ptx
+            .myelin-target/debug/build/myelin-accelerator-*/out/*.ptx
+            .myelin-target/release/build/myelin-accelerator-*/out/*.ptx
           retention-days: 30
 
       - name: CUDA build done
