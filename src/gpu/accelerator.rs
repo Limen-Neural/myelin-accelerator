@@ -20,13 +20,21 @@ use tracing::warn;
 const SATSOLVER_BLOCK_SIZE: u32 = 256;
 const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
 
+/// Owns CUDA resources whose explicit teardown is implemented in `Drop`.
+///
+/// `KernelModule` and `GpuBuffer` do not retain a context. Every CUDA-owning
+/// field added here must be handled in `Drop`, while our context is current,
+/// before restoring the caller binding and releasing `_ctx`. Keep `_ctx` last
+/// as a defensive lifetime backstop; field order alone is not the teardown.
+/// If teardown cannot capture or activate the context, the process aborts:
+/// unwinding or returning would destroy resources under an unknown context.
 pub struct GpuAccelerator {
-    _ctx: Option<GpuContext>,
     modules: Option<KernelModule>,
     stream: Option<Stream>,
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
     capabilities: CapabilityReport,
+    _ctx: Option<GpuContext>,
 }
 
 struct InitFailure {
@@ -586,6 +594,10 @@ impl GpuAccelerator {
             n_clauses_usize.saturating_mul(clause_len_usize),
         )?;
 
+        let grid_x = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
+        let block = SATSOLVER_BLOCK_SIZE;
+        let partial_len = grid_x as usize;
+        self.ensure_aux_scratch(partial_len)?;
         let kernels = self.kernels()?;
         let satsolver_aux_update = kernels.get_function("satsolver_aux_update")?;
         let satsolver_best_reduce_pass2 = kernels.get_function("satsolver_best_reduce_pass2")?;
@@ -593,28 +605,8 @@ impl GpuAccelerator {
             .stream
             .as_ref()
             .ok_or_else(|| self.unavailable_error())?;
-        let grid_x = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
-        let block = SATSOLVER_BLOCK_SIZE;
-        let partial_len = grid_x as usize;
-        let mut partial_scores = self.aux_partial_scores.borrow_mut();
-        let mut partial_walkers = self.aux_partial_walkers.borrow_mut();
-        let need_partial_realloc = partial_scores
-            .as_ref()
-            .is_none_or(|b| b.len() < partial_len)
-            || partial_walkers
-                .as_ref()
-                .is_none_or(|b| b.len() < partial_len);
-        if need_partial_realloc {
-            stream.synchronize().map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "stream sync before partial realloc: {e:?}"
-                )))
-            })?;
-            let scores = GpuBuffer::<i32>::alloc(partial_len)?;
-            let walkers = GpuBuffer::<i32>::alloc(partial_len)?;
-            *partial_scores = Some(scores);
-            *partial_walkers = Some(walkers);
-        }
+        let partial_scores = self.aux_partial_scores.borrow();
+        let partial_walkers = self.aux_partial_walkers.borrow();
         let partial_scores = partial_scores.as_ref().expect("partial_scores buffer");
         let partial_walkers = partial_walkers.as_ref().expect("partial_walkers buffer");
 
@@ -1017,6 +1009,41 @@ impl GpuAccelerator {
         Ok(())
     }
 
+    /// Allocate/grow the owned SAT scratch buffers only in our current
+    /// context, after their last stream use has completed.
+    fn ensure_aux_scratch(&self, partial_len: usize) -> GpuResult<()> {
+        self._ctx
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?
+            .require_current()?;
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
+        let mut partial_scores = self.aux_partial_scores.borrow_mut();
+        let mut partial_walkers = self.aux_partial_walkers.borrow_mut();
+        let need_partial_realloc = partial_scores
+            .as_ref()
+            .is_none_or(|b| b.len() < partial_len)
+            || partial_walkers
+                .as_ref()
+                .is_none_or(|b| b.len() < partial_len);
+        if need_partial_realloc {
+            // The current-context check protects allocation and destruction
+            // of replaced scratch buffers. Wait for their last queued use.
+            stream.synchronize().map_err(|e| {
+                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
+                    "stream sync before partial realloc: {e:?}"
+                )))
+            })?;
+            let scores = GpuBuffer::<i32>::alloc(partial_len)?;
+            let walkers = GpuBuffer::<i32>::alloc(partial_len)?;
+            *partial_scores = Some(scores);
+            *partial_walkers = Some(walkers);
+        }
+        Ok(())
+    }
+
     fn zero_output_prefix(&self, output: &mut GpuBuffer<f32>, count: usize) -> GpuResult<()> {
         let stream = self
             .stream
@@ -1044,11 +1071,48 @@ impl GpuAccelerator {
 
 impl Drop for GpuAccelerator {
     fn drop(&mut self) {
-        if self.stream.is_some()
-            && let Err(error) = self.synchronize()
+        let Some(ctx) = self._ctx.as_ref() else {
+            // CPU fallback owns no CUDA resources and makes no CUDA calls.
+            return;
+        };
+        let current_context = match CurrentContextGuard::enter(ctx) {
+            Ok(guard) => guard,
+            Err(error) => {
+                // Returning OR panicking would run field destructors under
+                // an unknown context. There is no fallible Drop API and no
+                // safe recovery here without leaking resources. Fail-stop;
+                // even a failed diagnostic write must not cause unwinding.
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "fatal: cannot establish accelerator context for teardown: {error:?}"
+                );
+                std::process::abort();
+            }
+        };
+        // Move every resource out before any fallible work or user-provided
+        // tracing callback. Reverse local declaration order also preserves
+        // teardown during unwinding: these locals drop before the guard.
+        let modules = self.modules.take();
+        let stream = self.stream.take();
+        let partial_walkers = self.aux_partial_walkers.get_mut().take();
+        let partial_scores = self.aux_partial_scores.get_mut().take();
+        if let Some(stream) = &stream
+            && let Err(error) = stream.synchronize()
         {
-            warn!(%error, "accelerator stream synchronization failed during drop");
+            warn!(
+                ?error,
+                "accelerator stream synchronization failed during drop"
+            );
         }
+        // Explicit ownership invariant: synchronize -> scratch -> stream ->
+        // modules -> caller context restoration -> final context release.
+        drop(partial_scores);
+        drop(partial_walkers);
+        drop(stream);
+        drop(modules);
+        drop(current_context);
+        drop(self._ctx.take());
     }
 }
 
