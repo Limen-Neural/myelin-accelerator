@@ -1,0 +1,33 @@
+tests/gpu_lifecycle.rs
+  s_a3c9a09723df6b::t_4c0df0b6466c22 1-152
+src/gpu/context.rs
+  s_a3c9a09723df6b::t_e5ca9058e74027 15-16,26,30-47,50-52,59-77,85-95,114-118,135-146
+  s_a3c9a09723df6b::t_7ffd663f8f739f 13
+scripts/sanitize_lifecycle.sh
+  s_a3c9a09723df6b::t_4c0df0b6466c22 1-58
+.github/workflows/ci.yml
+  s_a3c9a09723df6b::t_b4c14930a0819b 235-238
+CLAUDE.md
+  s_a3c9a09723df6b::t_b4c14930a0819b 92
+src/gpu/accelerator.rs
+  s_a3c9a09723df6b::t_9e07539b1013a7 1080-1088,1097-1100
+  s_a3c9a09723df6b::t_4a9796ec38cfba 29-30
+  s_a3c9a09723df6b::t_e5ca9058e74027 23-28,37,597-600,620-621,1061-1079,1095-1096,1101-1102
+  s_a3c9a09723df6b::t_9d0c6f14266e85 1090-1093
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "675c4ab05be47efd4008eed4b0ade43e6e91e657",
+  "prompts": {},
+  "sessions": {
+    "s_a3c9a09723df6b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ed47-536a-71f1-a209-f68a9fc3edfa",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
