@@ -124,7 +124,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "MYELIN_DEBUG_PTX_DIR=$(./scripts/find_ptx_output.sh \"$CARGO_TARGET_DIR\" debug)" >> "$GITHUB_ENV"
+          echo "MYELIN_DEBUG_PTX_DIR=$(./scripts/find_ptx_output.sh "$CARGO_TARGET_DIR" debug)" >> "$GITHUB_ENV"
 
       - name: Clippy (features cuda)
         shell: bash
@@ -237,7 +237,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "MYELIN_DEBUG_PTX_DIR=$(./scripts/find_ptx_output.sh \"$CARGO_TARGET_DIR\" debug)" >> "$GITHUB_ENV"
+          echo "MYELIN_DEBUG_PTX_DIR=$(./scripts/find_ptx_output.sh "$CARGO_TARGET_DIR" debug)" >> "$GITHUB_ENV"
 
       - name: Build (release)
         run: cargo build --locked --features cuda --release
@@ -246,7 +246,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "MYELIN_RELEASE_PTX_DIR=$(./scripts/find_ptx_output.sh \"$CARGO_TARGET_DIR\" release)" >> "$GITHUB_ENV"
+          echo "MYELIN_RELEASE_PTX_DIR=$(./scripts/find_ptx_output.sh "$CARGO_TARGET_DIR" release)" >> "$GITHUB_ENV"
 
       - name: Clippy with CUDA feature
         run: cargo clippy --locked --features cuda -- -D warnings
