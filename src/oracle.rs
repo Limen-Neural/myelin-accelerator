@@ -22,11 +22,16 @@
 //! | `satsolver_aux_reduce_best` | [`satsolver_aux_reduce_best_oracle`] | exact flags / `i32` |
 //! | `ternary_gemv` | [`ternary_gemv_oracle`] | abs `1e-4`, rel `1e-5` |
 //! | `ternary_gemm` | [`ternary_gemm_oracle`] | abs `1e-4`, rel `1e-5` |
+//! | `lif_step` | [`lif_step_oracle`] | exact membrane bits / `u32` state |
+//! | `lif_step_weighted` | [`lif_step_weighted_oracle`] | exact membrane bits / `u32` state |
 //!
 //! `cosine_similarity_batched` is loaded in `KernelModule` but has no
-//! `GpuAccelerator` launch wrapper yet; CPU tests still run in CI. The
-//! remaining rows have public wrappers and GPU differential tests (capability
-//! gated with `#[ignore]`).
+//! `GpuAccelerator` launch wrapper yet; CPU tests still run in CI.
+//! `lif_step` / `lif_step_weighted` are likewise raw registered symbols with no
+//! `GpuAccelerator` wrapper in v0.2.0; their GPU differential tests launch the
+//! raw symbols (`tests/snn_fixtures_gpu.rs`, see `docs/SNN_COMPATIBILITY.md`).
+//! The remaining rows have public wrappers and GPU differential tests
+//! (capability gated with `#[ignore]`).
 
 #![allow(clippy::needless_range_loop)]
 
@@ -350,6 +355,135 @@ pub fn ternary_gemm_oracle(
         }
     }
     c
+}
+
+// ── Fixed v0.2.0 LIF dynamics ───────────────────────────────────────────────
+//
+// The v0.2.0 `lif_step` / `lif_step_weighted` kernels have *fixed* dynamics
+// (no per-neuron or configurable parameters). The contract, per tick and per
+// neuron, is:
+//
+// 1. Refractory branch first: if `refract > 0`, force the membrane to
+//    `LIF_RESET`, decrement `refract`, ignore the input, emit no spike.
+// 2. Otherwise integrate once with a single-rounded fused multiply-add:
+//    `v = fma(LIF_DECAY, v, I)`.
+// 3. If `v >= LIF_THRESHOLD`, spike: output `1`, `v = LIF_RESET`,
+//    `refract = LIF_REFRACT_TICKS`.
+//
+// Consequently a neuron that spikes at tick `t` is held at reset for ticks
+// `t+1` and `t+2` and integrates again from reset at `t+3`.
+
+/// v0.2.0 membrane decay multiplier per tick (fixed; not configurable).
+pub const LIF_DECAY: f32 = 0.85;
+/// v0.2.0 normalised firing threshold; `v >= LIF_THRESHOLD` spikes.
+pub const LIF_THRESHOLD: f32 = 1.0;
+/// v0.2.0 membrane value after a spike and throughout the refractory period.
+pub const LIF_RESET: f32 = 0.0;
+/// v0.2.0 absolute refractory period, in ticks, set on each spike.
+pub const LIF_REFRACT_TICKS: u32 = 2;
+
+/// One neuron, one tick of the fixed v0.2.0 LIF rule. Returns the spike flag.
+fn lif_update(v: &mut f32, refract: &mut u32, current: f32) -> u32 {
+    if *refract > 0 {
+        *v = LIF_RESET;
+        *refract -= 1;
+        return 0;
+    }
+    let next = LIF_DECAY.mul_add(*v, current);
+    if next >= LIF_THRESHOLD {
+        *v = LIF_RESET;
+        *refract = LIF_REFRACT_TICKS;
+        1
+    } else {
+        *v = next;
+        0
+    }
+}
+
+/// Scalar reference for one `lif_step` tick with pre-summed current `i_ext`.
+///
+/// Updates `membrane` and `refract` in place and returns the per-neuron spike
+/// flags (`0` / `1`). All three slices must have the same length
+/// (`n_neurons`); mismatches panic with the offending dimensions.
+#[must_use]
+pub fn lif_step_oracle(membrane: &mut [f32], i_ext: &[f32], refract: &mut [u32]) -> Vec<u32> {
+    let n = membrane.len();
+    assert_eq!(
+        i_ext.len(),
+        n,
+        "lif_step_oracle: i_ext has {} elements but membrane has n_neurons={n}",
+        i_ext.len()
+    );
+    assert_eq!(
+        refract.len(),
+        n,
+        "lif_step_oracle: refract has {} elements but membrane has n_neurons={n}",
+        refract.len()
+    );
+    let mut spikes = vec![0u32; n];
+    for i in 0..n {
+        spikes[i] = lif_update(&mut membrane[i], &mut refract[i], i_ext[i]);
+    }
+    spikes
+}
+
+/// Scalar reference for one `lif_step_weighted` tick.
+///
+/// `weights` is row-major `[n_neurons × n_inputs]` (`weights[n * n_inputs + j]`
+/// weighs input `j` for neuron `n`); `n_neurons` is `membrane.len()`. For a
+/// non-refractory neuron the current is accumulated from `0.0` in input-index
+/// order with one fused multiply-add per input, `I = fma(w[n,j], x[j], I)`,
+/// then the fixed LIF rule is applied. Refractory neurons skip the dot
+/// product entirely. Returns the per-neuron spike flags.
+///
+/// Panics with the offending dimensions if `weights`, `input_spikes`, or
+/// `refract` do not match `n_neurons` / `n_inputs` exactly.
+#[must_use]
+pub fn lif_step_weighted_oracle(
+    membrane: &mut [f32],
+    weights: &[f32],
+    input_spikes: &[f32],
+    refract: &mut [u32],
+    n_inputs: usize,
+) -> Vec<u32> {
+    let n = membrane.len();
+    assert_eq!(
+        input_spikes.len(),
+        n_inputs,
+        "lif_step_weighted_oracle: input_spikes has {} elements but n_inputs={n_inputs}",
+        input_spikes.len()
+    );
+    assert_eq!(
+        refract.len(),
+        n,
+        "lif_step_weighted_oracle: refract has {} elements but membrane has n_neurons={n}",
+        refract.len()
+    );
+    let expected_weights = n
+        .checked_mul(n_inputs)
+        .expect("lif_step_weighted_oracle: n_neurons×n_inputs overflows usize");
+    assert_eq!(
+        weights.len(),
+        expected_weights,
+        "lif_step_weighted_oracle: weights has {} elements but n_neurons×n_inputs = {n}×{n_inputs} = {expected_weights}",
+        weights.len()
+    );
+    let mut spikes = vec![0u32; n];
+    for i in 0..n {
+        let current = if refract[i] > 0 {
+            // Ignored by `lif_update`; the dot product is skipped like the device.
+            0.0
+        } else {
+            let row = &weights[i * n_inputs..(i + 1) * n_inputs];
+            let mut acc = 0.0f32;
+            for j in 0..n_inputs {
+                acc = row[j].mul_add(input_spikes[j], acc);
+            }
+            acc
+        };
+        spikes[i] = lif_update(&mut membrane[i], &mut refract[i], current);
+    }
+    spikes
 }
 
 // ── Comparison helpers ──────────────────────────────────────────────────────
