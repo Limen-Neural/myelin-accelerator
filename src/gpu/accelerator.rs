@@ -594,10 +594,10 @@ impl GpuAccelerator {
             n_clauses_usize.saturating_mul(clause_len_usize),
         )?;
 
-        self._ctx
-            .as_ref()
-            .ok_or_else(|| self.unavailable_error())?
-            .require_current()?;
+        let grid_x = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
+        let block = SATSOLVER_BLOCK_SIZE;
+        let partial_len = grid_x as usize;
+        self.ensure_aux_scratch(partial_len)?;
         let kernels = self.kernels()?;
         let satsolver_aux_update = kernels.get_function("satsolver_aux_update")?;
         let satsolver_best_reduce_pass2 = kernels.get_function("satsolver_best_reduce_pass2")?;
@@ -605,30 +605,8 @@ impl GpuAccelerator {
             .stream
             .as_ref()
             .ok_or_else(|| self.unavailable_error())?;
-        let grid_x = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
-        let block = SATSOLVER_BLOCK_SIZE;
-        let partial_len = grid_x as usize;
-        let mut partial_scores = self.aux_partial_scores.borrow_mut();
-        let mut partial_walkers = self.aux_partial_walkers.borrow_mut();
-        let need_partial_realloc = partial_scores
-            .as_ref()
-            .is_none_or(|b| b.len() < partial_len)
-            || partial_walkers
-                .as_ref()
-                .is_none_or(|b| b.len() < partial_len);
-        if need_partial_realloc {
-            // require_current above protects both allocation and destruction
-            // of replaced scratch buffers. Wait for their last queued use.
-            stream.synchronize().map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "stream sync before partial realloc: {e:?}"
-                )))
-            })?;
-            let scores = GpuBuffer::<i32>::alloc(partial_len)?;
-            let walkers = GpuBuffer::<i32>::alloc(partial_len)?;
-            *partial_scores = Some(scores);
-            *partial_walkers = Some(walkers);
-        }
+        let partial_scores = self.aux_partial_scores.borrow();
+        let partial_walkers = self.aux_partial_walkers.borrow();
         let partial_scores = partial_scores.as_ref().expect("partial_scores buffer");
         let partial_walkers = partial_walkers.as_ref().expect("partial_walkers buffer");
 
@@ -1028,6 +1006,41 @@ impl GpuAccelerator {
             GpuError::LaunchFailed(sanitize_diagnostic(&format!("ternary_gemm launch: {e:?}")))
         })?;
 
+        Ok(())
+    }
+
+    /// Allocate/grow the owned SAT scratch buffers only in our current
+    /// context, after their last stream use has completed.
+    fn ensure_aux_scratch(&self, partial_len: usize) -> GpuResult<()> {
+        self._ctx
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?
+            .require_current()?;
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
+        let mut partial_scores = self.aux_partial_scores.borrow_mut();
+        let mut partial_walkers = self.aux_partial_walkers.borrow_mut();
+        let need_partial_realloc = partial_scores
+            .as_ref()
+            .is_none_or(|b| b.len() < partial_len)
+            || partial_walkers
+                .as_ref()
+                .is_none_or(|b| b.len() < partial_len);
+        if need_partial_realloc {
+            // The current-context check protects allocation and destruction
+            // of replaced scratch buffers. Wait for their last queued use.
+            stream.synchronize().map_err(|e| {
+                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
+                    "stream sync before partial realloc: {e:?}"
+                )))
+            })?;
+            let scores = GpuBuffer::<i32>::alloc(partial_len)?;
+            let walkers = GpuBuffer::<i32>::alloc(partial_len)?;
+            *partial_scores = Some(scores);
+            *partial_walkers = Some(walkers);
+        }
         Ok(())
     }
 
