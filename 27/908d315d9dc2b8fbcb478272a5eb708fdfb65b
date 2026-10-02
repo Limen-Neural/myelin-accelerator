@@ -1,0 +1,19 @@
+README.md
+  s_171b203c5b7b72::t_b26a361bea1ef3 85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "27908d315d9dc2b8fbcb478272a5eb708fdfb65b",
+  "prompts": {},
+  "sessions": {
+    "s_171b203c5b7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ece1-e072-7f91-a064-453b9c302bbf",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
