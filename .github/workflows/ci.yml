@@ -234,7 +234,7 @@ jobs:
       - name: Test GPU goldens (ignored)
         run: cargo test --locked --features cuda -- --ignored --nocapture --test-threads=1
 
-      - name: Compute Sanitizer lifecycle memcheck
+      - name: Compute Sanitizer accelerator and SNN fixture memcheck
         run: ./scripts/sanitize_lifecycle.sh
 
       - name: Verify PTX output is non-stub

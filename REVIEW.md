@@ -228,7 +228,7 @@ ptxas -arch=sm_120 -o /tmp/sn.cubin cmake-build-debug/spiking_network.ptx
 cargo test --features cuda -- --ignored
 # Expect: test gpu::kernel::tests::test_load_kernels ... ok
 
-# 4) Mandatory lifecycle teardown gate (zero CUDA API/resource errors)
+# 4) Mandatory accelerator + SNN fixture teardown gate (zero errors per suite)
 CUDA_NVCC=/usr/local/cuda/bin/nvcc ./scripts/sanitize_lifecycle.sh
 
 # 5) Optimized microbenchmarks (device + launch)
@@ -237,6 +237,21 @@ cargo run --example benchmark --profile bench --features bench,cuda
 # Expect kernel rows: poisson_encode_4096, satsolver_extract_1024x256 (~5 µs mean)
 # --features bench alone is stub path — not a GPU gate.
 ```
+
+The mandatory teardown script builds `gpu_lifecycle` and `snn_fixtures_gpu`,
+discovers each executable from Cargo JSON, and runs them in separate serial
+memcheck processes with `--include-ignored`, covering ordinary tests as well as
+the GPU-only ignored tests. Each suite must execute at least one passing test,
+have no failed or ignored tests, and report `ERROR SUMMARY: 0 errors`.
+Missing tools/executables, nonzero process exits, and missing summaries fail
+the gate. No extra context is retained to mask a destruction-order defect.
+
+The SNN fixture helper releases its stream and modules before its context.
+The existing per-timestep comparisons and fixture bytes remain unchanged;
+these tests still establish workload-only compatibility, not full external
+model semantics. For manual provenance qualification, run the fixture verifier
+both offline and with `--network` (with `h5py` installed); an incomplete audit
+is not a pass.
 
 #### Extended path (CI-parity + CLion, with CUDA)
 

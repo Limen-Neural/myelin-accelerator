@@ -38,9 +38,12 @@ use snn_support::{
 const SPIKE_POISON: u32 = 0xDEAD_BEEF;
 
 struct Device {
-    _ctx: GpuContext,
-    kernels: KernelModule,
+    // Rust drops fields in declaration order. Each trace synchronizes before
+    // returning and its buffers are scoped below Device; release the stream
+    // and modules before the final context reference, including on unwind.
     stream: Stream,
+    kernels: KernelModule,
+    _ctx: GpuContext,
 }
 
 fn device() -> Device {
@@ -48,9 +51,9 @@ fn device() -> Device {
     let kernels = KernelModule::load().unwrap_or_else(|e| panic!("KernelModule::load: {e}"));
     let stream = Stream::new(StreamFlags::DEFAULT, None).expect("create CUDA stream");
     Device {
-        _ctx: ctx,
-        kernels,
         stream,
+        kernels,
+        _ctx: ctx,
     }
 }
 
