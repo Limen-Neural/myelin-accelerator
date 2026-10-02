@@ -164,6 +164,48 @@ mod stub_contract {
         assert!(result.is_err());
     }
 
+    /// Oversized allocations return `MemoryError` instead of panicking (GH #48),
+    /// matching the CUDA backend's checked-arithmetic contract. All probes fail
+    /// before any physical allocation.
+    #[test]
+    fn buffer_alloc_overflow_returns_memory_error_not_panic() {
+        for len in [usize::MAX, isize::MAX as usize] {
+            assert_alloc_overflow::<u64>(len);
+        }
+        for len in [usize::MAX, isize::MAX as usize + 1] {
+            assert_alloc_overflow::<u8>(len);
+        }
+        assert_alloc_overflow::<u32>(usize::MAX);
+    }
+
+    /// Assert an oversized `alloc` fails with the overflow `MemoryError`.
+    fn assert_alloc_overflow<T: Default + Clone>(len: usize) {
+        match GpuBuffer::<T>::alloc(len) {
+            Err(GpuError::MemoryError(msg)) => {
+                assert!(msg.contains("size overflow"), "msg: {msg}")
+            }
+            Err(other) => panic!("expected MemoryError for len {len}, got {other}"),
+            Ok(_) => panic!("oversized alloc unexpectedly succeeded"),
+        }
+    }
+
+    /// Zero-length allocation still succeeds and ordinary allocation still
+    /// yields `T::default()` with unchanged upload/`to_vec` behavior (GH #48).
+    #[test]
+    fn buffer_alloc_zero_and_ordinary_unchanged() {
+        let empty = GpuBuffer::<u64>::alloc(0).expect("alloc(0) must succeed");
+        assert_eq!(empty.len(), 0);
+        assert!(empty.is_empty());
+        assert!(empty.to_vec().unwrap().is_empty());
+
+        let buf = GpuBuffer::<u64>::alloc(4).expect("ordinary alloc must succeed");
+        assert_eq!(buf.to_vec().unwrap(), vec![0u64; 4]);
+
+        let mut buf = GpuBuffer::<i32>::alloc(3).expect("alloc must succeed");
+        buf.upload(&[5, 6, 7]).expect("upload must succeed");
+        assert_eq!(buf.to_vec().unwrap(), vec![5, 6, 7]);
+    }
+
     #[test]
     fn accelerator_construction() {
         let acc = GpuAccelerator::new();
@@ -226,6 +268,17 @@ mod stub_contract {
             acc.ternary_gemm(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .is_err()
         );
+    }
+
+    /// The CPU stub stays fail-closed for empty Poisson requests on both entry
+    /// points (GH #48), matching the CUDA fallback contract.
+    #[test]
+    fn accelerator_empty_poisson_returns_no_gpu() {
+        let acc = GpuAccelerator::new();
+        let stim = GpuBuffer::<f32>::alloc(0).unwrap();
+        let mut spikes = GpuBuffer::<u32>::alloc(0).unwrap();
+        assert!(acc.poisson_encode(&stim, &mut spikes, 7).is_err());
+        assert!(acc.poisson_encode_async(&stim, &mut spikes, 7).is_err());
     }
 
     #[test]

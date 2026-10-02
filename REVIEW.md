@@ -170,8 +170,6 @@ These are what CLion/`ctest` run for lint-style checks. They **must not** pull i
 
 ```bash
 cd ~/Limen-Neural/myelin-accelerator
-export CARGO_TARGET_DIR=.myelin-target
-rm -rf "$CARGO_TARGET_DIR"
 
 cargo test --locked
 cargo build --locked --no-default-features
@@ -211,8 +209,6 @@ is **13.3** via `/usr/local/cuda`.
 
 ```bash
 cd ~/Limen-Neural/myelin-accelerator
-export CARGO_TARGET_DIR=.myelin-target
-rm -rf "$CARGO_TARGET_DIR"
 
 # 1) Compile real CUDA path (nvcc → embedded PTX)
 cargo build --lib --features cuda
@@ -223,7 +219,7 @@ cargo build --lib --features cuda
 #    After: cmake --build cmake-build-debug --target cuda_kernels
 ptxas -arch=sm_120 -o /tmp/sn.cubin cmake-build-debug/spiking_network.ptx
 #    Or cargo OUT_DIR PTX:
-# ptx_dir="$(./scripts/find_ptx_output.sh "$CARGO_TARGET_DIR" debug)"
+# ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -1)"
 # ptxas -arch=sm_120 -o /tmp/sn.cubin "$ptx_dir/spiking_network_sm_120.ptx"
 # Success = no output, exit 0. Repeat for vector_similarity / satsolver if desired.
 
@@ -232,7 +228,10 @@ ptxas -arch=sm_120 -o /tmp/sn.cubin cmake-build-debug/spiking_network.ptx
 cargo test --features cuda -- --ignored
 # Expect: test gpu::kernel::tests::test_load_kernels ... ok
 
-# 4) Optimized microbenchmarks (device + launch)
+# 4) Mandatory lifecycle teardown gate (zero CUDA API/resource errors)
+CUDA_NVCC=/usr/local/cuda/bin/nvcc ./scripts/sanitize_lifecycle.sh
+
+# 5) Optimized microbenchmarks (device + launch)
 cargo run --example benchmark --profile bench --features bench,cuda
 # Expect: [bench] GPU: NVIDIA GeForce RTX 5080 (sm_120, … MB)
 # Expect kernel rows: poisson_encode_4096, satsolver_extract_1024x256 (~5 µs mean)
@@ -243,15 +242,13 @@ cargo run --example benchmark --profile bench --features bench,cuda
 
 ```bash
 export CUDA_NVCC="${CUDA_NVCC:-/usr/local/cuda/bin/nvcc}"
-export CARGO_TARGET_DIR=.myelin-target
-rm -rf "$CARGO_TARGET_DIR"
 
 cargo build --locked --features cuda --release
 cargo clippy --locked --features cuda -- -D warnings
 cargo test --locked --features cuda
 
 # Cargo PTX shape (self-hosted CI does similar checks)
-ptx_dir="$(./scripts/find_ptx_output.sh "$CARGO_TARGET_DIR" debug)"
+ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out 2>/dev/null | head -n1)"
 grep -q '^\.target sm_120' "$ptx_dir/spiking_network_sm_120.ptx"
 grep -Eq '\.entry[[:space:]]+lif_step[[:space:]]*\(' "$ptx_dir/spiking_network_sm_120.ptx"
 
@@ -281,8 +278,9 @@ ctest --test-dir cmake-build-debug --output-on-failure
 
 ### Cloud CI vs local
 
-Toolkit pin for cloud CUDA PTX compilation: **CUDA 13.3.1**,
-matching ShipOfTheseus `/usr/local/cuda` → `cuda-13.3`.
+Toolkit pin for the cloud CI container job: **CUDA 13.3.1** (`nvidia/cuda:13.3.1-devel-ubuntu24.04`),
+matching ShipOfTheseus `/usr/local/cuda` → `cuda-13.3`. This `container:` entry is
+GitHub Actions CI plumbing for PTX compilation, not a distributed consumer image.
 
 | Job | Runner | GPU runtime? |
 |-----|--------|--------------|
@@ -291,8 +289,12 @@ matching ShipOfTheseus `/usr/local/cuda` → `cuda-13.3`.
 | `CUDA build [self-hosted] (sm_120)` | Labels `self-hosted,linux,x64,gpu,cuda` | Full: build/clippy/test + **`--ignored` goldens** + PTX symbols (incl. ternary) + ptxas + short `bench,cuda` |
 | Local quality gate above | Developer workstation | Full runtime (same as self-hosted, optional Nsight) |
 
-The cloud PTX compile job covers the compile-only CUDA signal. The local GPU
-quality gate remains the path for runtime validation.
+Docker is not a supported v0.2.0 distribution surface (#49 / LIM-1467).
+The former `Dockerfile` / `.dockerignore` consumer surface was removed; no
+container image is built, published, or required for release qualification.
+Cargo/crates.io is the supported distribution path. The `cargo build/clippy
+--features cuda` compile signal remains covered by the `CUDA PTX compile
+[cloud]` container job above.
 
 **Branch protection (recommended):** require lint, CPU checks, and cloud PTX compile.
 Make self-hosted required only when the runner is reliably online; otherwise PRs queue.
@@ -391,3 +393,94 @@ actual bits, dimensions, stimulus, seed and block. Fixture provenance was
 re-audited with `scripts/snn_fixtures/verify_fixtures.py --network` (all
 checks passed; `h5py` 3.15.1 used for NIR parameter extraction). Ordinary
 `cargo test` stays offline.
+
+## 9. CUDA accelerator lifecycle qualification (#46 / LIM-1464)
+
+Recorded 2026-09-29 on **ShipOfTheseus**, against repaired implementation
+commit **`9091d992edaf105058a1b38bf86a2402b533e45f`**, with a **clean** source
+tree before and after the complete gate. This documentation-only follow-up
+records those completed runs; it does not change the tested implementation.
+
+Baseline: Astra's [#37 / LIM-1443 audit](https://github.com/Limen-Neural/myelin-accelerator/issues/37#issuecomment-5889402053)
+of `d4f699b0a32ac7d8faf28c7ef978b0bd814f1f68`. A fresh external consumer of
+that checkout running `drop(GpuAccelerator::require_gpu().unwrap())`
+reproduced **exit 99 / 8 errors**. The new lifecycle suite before the repair
+reported **154 errors**; its foreign-context scratch assertion also failed.
+This evidence addresses the v0.2.0 blocker #46 / LIM-1464; publication remains
+owned by LIM-1460. It does not qualify unrelated #47–#49 or deferred v0.3/SAAQ work.
+
+### Ownership and context contract
+
+Teardown establishes the owned context as current, synchronizes outstanding
+stream work, destroys scratch buffers, stream, then modules, restores the
+caller's context binding if changed, and finally releases the owned context
+reference. `_ctx` is last as a backstop. Resource locals have reverse declaration
+order so unwinding also destroys them before the context guard. CPU fallback
+teardown returns without CUDA calls. Scratch allocation/replacement now checks
+that the accelerator context is current before touching CUDA resources. The
+private `ensure_aux_scratch` helper keeps that check, synchronization, and
+replacement together without increasing the launch method's complexity.
+
+Verified directly against local **cust 0.3.2**: primary `Context` implements
+`ContextHandle`; `get_current()` succeeds with a null-backed `UnownedContext`
+when no context is current. Passing that handle to the checked `set_current()`
+restores the absent binding without new unsafe production code. CUDA 13.3's
+header describes `cuCtxSetCurrent(NULL)` as popping the top binding: an
+originally empty stack becomes empty again. Nested caller-stack preservation
+is tested. `Context::new()` ignores its internal activation status, so
+`GpuContext::init()` now checks activation before any resource loading.
+
+If teardown capture or activation fails, a fatal diagnostic is written and
+the process **aborts**; returning or unwinding would otherwise invoke resource
+destructors under an unknown context. This deliberately replaces the CodeRabbit
+plan's unsafe log-and-continue path. No `mem::forget`, retained-context workaround,
+or sanitizer suppression is used. Synchronization and restoration errors are
+logged. Restoration is attempted only after owned CUDA resources are gone.
+
+### Measured gate
+
+| Layer | Result |
+|-------|--------|
+| GPU / driver | NVIDIA GeForce RTX 5080 (`sm_120`); driver **610.43.03**, CUDA UMD **13.3** |
+| Toolkit | `/usr/local/cuda` → `/usr/local/cuda-13.3`; nvcc / ptxas **V13.3.73** |
+| Rust | rustc **1.98.1 (48a229cea 2026-09-01)**; cargo **1.98.1 (797e8a9bc 2026-08-05)** |
+| Compute Sanitizer | **2026.2.1.0**, build **38334959** |
+| Formatting | `cargo fmt --all -- --check` — exit 0 |
+| CPU tests | `cargo test --locked` — **225 passed, 0 failed** |
+| CPU build / lint | `cargo build --locked --no-default-features`; `cargo clippy --locked --no-default-features --all-targets -- -D warnings` — exit 0 |
+| CUDA build / lint | `cargo build --locked --features cuda`; `cargo clippy --locked --features cuda,bench --all-targets -- -D warnings` — exit 0 |
+| CUDA ordinary tests | `cargo test --locked --features cuda` — **171 passed, 0 failed, 52 ignored** |
+| Ignored GPU suite | `cargo test --locked --features cuda -- --ignored --nocapture --test-threads=1` — **52 passed, 0 failed**, including all prior 45 tests and 7 lifecycle regressions |
+| PTX manifest | `scripts/check_ptx_entries.sh <Cargo-JSON OUT_DIR> local-lifecycle` — **22/22** |
+| Offline assembly | `/usr/local/cuda/bin/ptxas -arch=sm_120 -o <output.cubin> <module.ptx>` — exit 0 for all four Cargo-generated modules |
+| Lifecycle memcheck | `CUDA_NVCC=/usr/local/cuda/bin/nvcc ./scripts/sanitize_lifecycle.sh` — **exit 0; 7 passed, 0 failed; ERROR SUMMARY: 0 errors** |
+| Benchmark smoke | `cargo run --locked --example benchmark --profile bench --features bench,cuda -- --warmup 2 --iterations 10` — exit 0; clean-SHA manifest; Poisson mean **4.94 µs**, SAT extract mean **5.12 µs** (smoke, not a controlled performance comparison) |
+
+Exact sanitizer invocation emitted by the script on this workstation:
+
+```bash
+/usr/local/cuda-13.3/bin/compute-sanitizer --tool memcheck --error-exitcode 99 /home/raulmc/.codex/worktrees/feec/myelin-accelerator/target/debug/deps/gpu_lifecycle-5884ed5cf557fe2c --ignored --test-threads=1 --nocapture
+```
+
+The script obtains the executable from Cargo JSON, not modification times.
+Its mandatory pass criterion is exit 0 plus `ERROR SUMMARY: 0 errors`.
+There were **zero context-destroyed, invalid-handle, module-unload,
+stream-destroy, or other resource teardown errors**. Output is unsuppressed.
+The seven tests cover immediate drop, sixteen retain/release cycles, scratch
+allocation/growth, foreign-context scratch rejection, different caller context,
+nested caller stack, and no caller context. They do not retain an extra
+`GpuContext` that could mask early context release.
+
+Additional local driver-interposition probes (separate from the sanitizer gate)
+injected capture and activation failures: both exited with **SIGABRT (-6)**
+before any CUDA resource destructor. A synchronization failure with a panicking
+tracing subscriber unwound through stream and module destruction under the
+correct context, then restored the caller; the probe exited 0. These are local
+fault-path probes, not additional committed GPU tests. ShellCheck passed; an
+unavailable `COMPUTE_SANITIZER` override failed clearly with exit 1.
+
+The same mandatory script now runs after the serial ignored GPU suite in the
+self-hosted `sm_120` CI job. The registered local runner is online and its toolkit
+contains Compute Sanitizer; the cloud PTX job is unchanged. Logs and local probe
+sources are retained under `/tmp/myelin46-evidence/`, with clean repaired-commit
+results in `scratch-final-code/`; this is local evidence, not an uploaded artifact.

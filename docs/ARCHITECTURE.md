@@ -219,6 +219,65 @@ same buffers.
 The weight kernel uses a flattened 1-D grid; raw callers should cover
 `n_post * n_pre` threads. The trace kernel should cover `max(n_post, n_pre)`.
 
+### Cosine normalization and selection (v0.2.0)
+
+Both raw cosine entry points use the same device helper and equation:
+
+```text
+nq = sum(q[i] * q[i]); nk = sum(k[i] * k[i]); dot = sum(q[i] * k[i])
+score(q, k) = dot / (sqrt(nq) * sqrt(nk) + SHIP_EPS)
+SHIP_EPS = 1e-8f
+```
+
+The epsilon is an **additive denominator regularizer**, not a clamp on
+either squared norm. This preserves the batched kernel and CPU oracle's
+contract. A zero query, zero key, or two zero vectors yield zero. Small
+positive finite norms follow the same equation, so identical tiny vectors
+need not score one: `[1e-4, 0, 0]` against itself scores approximately 0.5.
+The CUDA build uses fast math (including flush-to-zero): subnormal products,
+accumulations, and results can become zero. If a squared norm underflows but
+the dot product survives, the denominator is epsilon and the score is
+`dot / SHIP_EPS`; there is no extra zero-norm branch. Non-finite inputs and
+overflowing accumulations are outside this finite-score contract.
+
+`cosine_similarity_top_k` writes the full row-major `n_queries × n_keys`
+score matrix plus row-major `n_queries × top_k` indices. Selection orders
+scores descending, breaking equal-score ties by **lower key index** (including
+numeric equality of signed zeros). Up to `min(top_k, n_keys, 32)` indices
+are selected; remaining index slots are `-1`. `top_k <= 0` returns without
+writing either output. No launch ABI or output layout changed in GH #47.
+Use one-dimensional blocks of 32–1024 threads in multiples of 32, zero
+dynamic shared memory, batched grid `(n_keys, n_queries)`, and top-k grid
+`(n_queries)`. Both remain raw symbols without a `GpuAccelerator` wrapper.
+
+Both kernels compute each pair with the same **dimension-dependent FMA
+accumulation order**, followed by the shared normalization helper: a scalar
+chain for dimensions up to 32, otherwise a fixed 32-lane accumulation and
+warp reduction tree. This is required for ranking correctness: merely sharing the denominator leaves
+rounding-order differences that can reverse dense near ties. Batched uses the
+first thread (small vectors) or first warp (larger vectors) of each pair's
+block. Top-k distributes small keys across threads and larger keys across
+warps, with each owning thread/lane zero feeding the existing selection/merge
+logic. The small-vector path avoids a measured slowdown from assigning a
+whole warp to very short vectors. This changes batched summation order from its former block-wide reduction,
+while preserving the normalization equation and raw launch ABI. Scores are
+independent of the number of full warps launched.
+
+`tests/cosine_gpu.rs` compares **every score bit-exactly** between kernels,
+then compares all selected indices **exactly** against sorting the actual
+batched output. No score or ranking tolerance is used for this contract.
+Sparse adjacent tiny keys and dense perturbed keys exercise near ties;
+repeated ties span warps and successive keys per warp. Dense signed fixtures
+also compare against the existing independent CPU oracle using its unchanged
+`1e-5` absolute/relative tolerance (different scalar accumulation and no FTZ).
+
+Selection uses negative infinity as its empty-candidate sentinel. With FTZ,
+a squared norm can vanish while a dot product survives, so even finite scores
+can fall below -1 (for example, `q=[1e-20,0,0]`, `k=[-1e18,0,0]` scores near
+-1e6). Every finite score must remain selectable; a -2 sentinel would discard
+such keys. This preserves the existing epsilon equation rather than adding
+an inconsistent per-kernel clamp.
+
 ### Internal (not a stability promise)
 
 - `src/gpu/*` private details, aux buffer caching, launch grid heuristics

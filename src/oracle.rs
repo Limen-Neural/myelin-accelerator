@@ -37,7 +37,7 @@
 
 use std::fmt::Debug;
 
-/// Device `SHIP_EPS` from `cu/common.cuh` (cosine denominator floor).
+/// Device `SHIP_EPS` from `cu/common.cuh` (additive cosine denominator regularizer).
 pub const SHIP_EPS: f32 = 1.0e-8;
 
 /// Absolute tolerance for ternary GEMV / GEMM vs device FMA order.
@@ -98,6 +98,9 @@ pub fn poisson_encode_oracle(stimuli: &[f32], seed: u32) -> Vec<u32> {
 /// Batched cosine similarity: `out[q,k] = dot / (|q| |k| + eps)`.
 ///
 /// Scalar loops; `eps` is [`SHIP_EPS`]. Empty `dim` yields `0 / eps`.
+/// Neither squared norm is clamped. Zero vectors score zero; very small
+/// positive norms use the same equation. CUDA builds use fast-math FTZ and
+/// different reduction orders; this scalar oracle does not emulate either.
 #[must_use]
 pub fn cosine_similarity_batched_oracle(
     queries: &[f32],

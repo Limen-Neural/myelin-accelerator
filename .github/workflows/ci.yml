@@ -18,8 +18,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # An isolated target directory makes PTX output discovery unambiguous.
-  CARGO_TARGET_DIR: .myelin-target
   RUSTFLAGS: "-D warnings"
   # Match ShipOfTheseus local default (CUDA 13.3.1 / sm_120).
   MYELIN_CUDA_ARCH: sm_120
@@ -96,9 +94,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Prepare isolated Cargo target
-        run: rm -rf "$CARGO_TARGET_DIR"
-
       - name: Install Rust + build deps
         shell: bash
         run: |
@@ -106,7 +101,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
           apt-get install -y --no-install-recommends \
-            curl ca-certificates build-essential pkg-config libssl-dev git
+            curl ca-certificates build-essential pkg-config libssl-dev git python3
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --default-toolchain stable --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -120,12 +115,6 @@ jobs:
           source "$HOME/.cargo/env"
           cargo build --locked --features cuda
 
-      - name: Record debug PTX output
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "MYELIN_DEBUG_PTX_DIR=$(./scripts/find_ptx_output.sh "$CARGO_TARGET_DIR" debug)" >> "$GITHUB_ENV"
-
       - name: Clippy (features cuda)
         shell: bash
         run: |
@@ -137,7 +126,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ptx_dir="$MYELIN_DEBUG_PTX_DIR"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
+          if [ -z "$ptx_dir" ]; then
+            echo "::error::Could not find PTX output directory"
+            exit 1
+          fi
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
                    satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
             if [ ! -f "$ptx_dir/$f" ]; then
@@ -161,14 +154,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ptx_dir="$MYELIN_DEBUG_PTX_DIR"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           ./scripts/check_ptx_entries.sh "$ptx_dir" cloud
 
       - name: Offline ptxas assemble (sm_120)
         shell: bash
         run: |
           set -euo pipefail
-          ptx_dir="$MYELIN_DEBUG_PTX_DIR"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
                    satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
             ptxas -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
@@ -179,8 +172,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: ptx-sm_120-cloud-13.3.1
-          include-hidden-files: true
-          path: .myelin-target/debug/build/myelin-accelerator-*/out/*.ptx
+          path: target/debug/build/myelin-accelerator-*/out/*.ptx
           retention-days: 14
 
   # ── CUDA build & validation (SELF-HOSTED GPU RUNNER) ─────────────────────
@@ -209,9 +201,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Prepare isolated Cargo target
-        run: rm -rf "$CARGO_TARGET_DIR"
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
         with:
@@ -233,20 +222,8 @@ jobs:
       - name: Build (debug)
         run: cargo build --locked --features cuda
 
-      - name: Record debug PTX output
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "MYELIN_DEBUG_PTX_DIR=$(./scripts/find_ptx_output.sh "$CARGO_TARGET_DIR" debug)" >> "$GITHUB_ENV"
-
       - name: Build (release)
         run: cargo build --locked --features cuda --release
-
-      - name: Record release PTX output
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "MYELIN_RELEASE_PTX_DIR=$(./scripts/find_ptx_output.sh "$CARGO_TARGET_DIR" release)" >> "$GITHUB_ENV"
 
       - name: Clippy with CUDA feature
         run: cargo clippy --locked --features cuda -- -D warnings
@@ -255,17 +232,24 @@ jobs:
         run: cargo test --locked --features cuda
 
       - name: Test GPU goldens (ignored)
-        run: cargo test --locked --features cuda -- --ignored --nocapture
+        run: cargo test --locked --features cuda -- --ignored --nocapture --test-threads=1
+
+      - name: Compute Sanitizer lifecycle memcheck
+        run: ./scripts/sanitize_lifecycle.sh
 
       - name: Verify PTX output is non-stub
         shell: bash
         run: |
           set -euo pipefail
           for profile in debug release; do
-            if [ "$profile" = debug ]; then
-              ptx_dir="$MYELIN_DEBUG_PTX_DIR"
+            if [ "$profile" = "release" ]; then
+              ptx_dir="$(./scripts/ptx_out_dir.sh --release)"
             else
-              ptx_dir="$MYELIN_RELEASE_PTX_DIR"
+              ptx_dir="$(./scripts/ptx_out_dir.sh)"
+            fi
+            if [ -z "$ptx_dir" ]; then
+              echo "::error::Could not find PTX output directory for profile=$profile"
+              exit 1
             fi
             for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
                      satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
@@ -291,10 +275,10 @@ jobs:
         run: |
           set -euo pipefail
           for profile in debug release; do
-            if [ "$profile" = debug ]; then
-              ptx_dir="$MYELIN_DEBUG_PTX_DIR"
+            if [ "$profile" = "release" ]; then
+              ptx_dir="$(./scripts/ptx_out_dir.sh --release)"
             else
-              ptx_dir="$MYELIN_RELEASE_PTX_DIR"
+              ptx_dir="$(./scripts/ptx_out_dir.sh)"
             fi
             echo "Checking kernel entry points in $profile PTX files..."
             ./scripts/check_ptx_entries.sh "$ptx_dir" "$profile"
@@ -306,7 +290,7 @@ jobs:
         run: |
           set -euo pipefail
           PTXAS="$(dirname "$CUDA_NVCC")/ptxas"
-          ptx_dir="$MYELIN_DEBUG_PTX_DIR"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
                    satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
             "$PTXAS" -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
@@ -322,10 +306,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: ptx-sm_120-self-hosted
-          include-hidden-files: true
           path: |
-            .myelin-target/debug/build/myelin-accelerator-*/out/*.ptx
-            .myelin-target/release/build/myelin-accelerator-*/out/*.ptx
+            target/debug/build/myelin-accelerator-*/out/*.ptx
+            target/release/build/myelin-accelerator-*/out/*.ptx
           retention-days: 30
 
       - name: CUDA build done
