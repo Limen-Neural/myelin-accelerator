@@ -21,9 +21,6 @@ jobs:
     name: CPU Rust coverage
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - name: Checkout measured commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -50,6 +47,9 @@ jobs:
           cargo llvm-cov clean --workspace
           cargo llvm-cov --locked --no-default-features --features bench \
             --all-targets --no-report --remap-path-prefix
+          cargo llvm-cov run --locked --no-default-features --features bench \
+            --example benchmark --no-report --remap-path-prefix -- \
+            --warmup 2 --iterations 10 --output target/coverage/benchmark-smoke
           # Paths are already remapped. Export separately so the default
           # remapped-path filter does not discard examples/benchmark.rs.
           cargo llvm-cov report --lcov \
@@ -66,13 +66,35 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Fork and Dependabot PRs still generate an artifact, but cannot rely on
-      # write-capable OIDC credentials. Never use pull_request_target here.
+  qlty-upload:
+    name: Upload CPU coverage to Qlty
+    needs: cpu-coverage
+    # Fork and Dependabot PRs still generate an artifact. Never grant OIDC to
+    # the job executing build scripts/tests, or use pull_request_target here.
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # Qlty OIDC authentication; this job executes no project code.
+    steps:
+      # Checkout only supplies source text for Qlty's path/line validation.
+      - name: Checkout measured source for report validation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Download report from this workflow run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cpu-rust-coverage
+          path: target/coverage
+
       - name: Upload informational coverage to Qlty
-        if: >-
-          github.actor != 'dependabot[bot]' &&
-          (github.event_name != 'pull_request' ||
-          github.event.pull_request.head.repo.full_name == github.repository)
         uses: qltysh/qlty-action/coverage@c9b09987143d1e4ac955f4803c7bea742102feb5 # v2
         with:
           oidc: true

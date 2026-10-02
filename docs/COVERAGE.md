@@ -9,6 +9,8 @@ measure the PR head commit so the uploaded report corresponds to that SHA.
 
 The initial `cpu-rust` report uses `--no-default-features --features bench
 --all-targets`. It measures CPU/stub Rust code and the benchmark harness.
+It also runs a short instrumented CPU benchmark smoke to exercise the CLI
+entry point; its timings are not performance-regression evidence.
 Test fixtures and test source files, plus `build.rs`, are excluded from the
 coverage denominator. Inline unit tests inside reported source files can still
 contribute to their coverage. Dependencies and generated build output are not
@@ -29,6 +31,9 @@ mkdir -p target/coverage
 cargo llvm-cov clean --workspace
 cargo llvm-cov --locked --no-default-features --features bench \
   --all-targets --no-report --remap-path-prefix
+cargo llvm-cov run --locked --no-default-features --features bench \
+  --example benchmark --no-report --remap-path-prefix -- \
+  --warmup 2 --iterations 10 --output target/coverage/benchmark-smoke
 cargo llvm-cov report --lcov \
   --ignore-filename-regex '(^|/)(tests/|build\.rs$)' \
   --output-path target/coverage/lcov.info
@@ -47,9 +52,13 @@ than silently presenting a missing report as successful coverage.
 
 ## Qlty and authentication
 
-The upload job grants only `contents: read` and `id-token: write`; no long-lived
+The generation job has only `contents: read`, with no OIDC permission while
+compiling or executing project code. A separate dependent upload job downloads
+the artifact from the same workflow run and grants `contents: read` and
+`id-token: write`. Its checkout supplies source text for report validation;
+it does not run Rust, build scripts, tests, or repository scripts. No long-lived
 coverage token is stored. Fork and Dependabot pull requests generate the report
-artifact but skip the OIDC upload. The workflow uses `pull_request`, not
+artifact but skip the entire upload job. The workflow uses `pull_request`, not
 `pull_request_target`.
 
 Coverage is initially informational: this change sets no percentage threshold,
