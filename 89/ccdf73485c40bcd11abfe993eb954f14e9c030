@@ -1,0 +1,19 @@
+scripts/prepare_crate.py
+  s_171b203c5b7b72::t_12890db2ba5f94 14,27-28,31,129,137,146,165,174-176,179,183,185
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "89ccdf73485c40bcd11abfe993eb954f14e9c030",
+  "prompts": {},
+  "sessions": {
+    "s_171b203c5b7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ece1-e072-7f91-a064-453b9c302bbf",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
