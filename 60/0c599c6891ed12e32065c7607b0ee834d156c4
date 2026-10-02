@@ -1,0 +1,47 @@
+src/oracle.rs
+  f77a829281efeffb 29-34,40,101-103,363-507
+src/gpu_stub.rs
+  f77a829281efeffb 64-69,500-552
+docs/ARCHITECTURE.md
+  f77a829281efeffb 182-183,200-210,222-280
+.github/workflows/ci.yml
+  f77a829281efeffb 107,132,160,167,206-207,240-260,267-271,300-304,315
+src/error.rs
+  f77a829281efeffb 326-327
+tests/api_contract.rs
+  f77a829281efeffb 170-208,273-283
+src/gpu/context.rs
+  f77a829281efeffb 26,30-47,50-52,59-77,85-95,114-118,135-147
+README.md
+  f77a829281efeffb 15,17,21-28,68-70,85
+.gitignore
+  f77a829281efeffb 47
+tests/gpu_buffer.rs
+  f77a829281efeffb 169
+tests/oracle.rs
+  f77a829281efeffb 15-18,648-933
+src/lib.rs
+  f77a829281efeffb 4-6,11
+  c2d3838da0e1c9fc 7-10
+cu/vector_similarity.cu
+  f77a829281efeffb 20-57,128-129,154-160,168-169,171-175,177,230-233,235-238
+Cargo.lock
+  f77a829281efeffb 55,78-101,148-158,234-242,288,524-534,607-612
+Cargo.toml
+  f77a829281efeffb 5,9,16
+  c2d3838da0e1c9fc 10
+REVIEW.md
+  f77a829281efeffb 231-234,241-255,296-298,307-312
+src/gpu/accelerator.rs
+  f77a829281efeffb 597-600,608-609,694-701,721-733,1031-1065,1093-1120,1122-1125,1127-1134,1247-1281
+src/gpu/memory.rs
+  f77a829281efeffb 39-45
+tests/oracle_gpu.rs
+  f77a829281efeffb 81-88,90-102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "600c599c6891ed12e32065c7607b0ee834d156c4",
+  "prompts": {}
+}
