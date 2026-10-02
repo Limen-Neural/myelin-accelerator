@@ -63,6 +63,9 @@ jobs:
       - name: Cargo test
         run: cargo test --locked
 
+      - name: Crate archive boundary tests
+        run: python3 -B -m unittest discover -s tests -p test_release_prep.py -v
+
       - name: Benchmark harness tests
         run: cargo test --locked --features bench --example benchmark
 
@@ -236,6 +239,12 @@ jobs:
 
       - name: Compute Sanitizer accelerator and SNN fixture memcheck
         run: ./scripts/sanitize_lifecycle.sh
+
+      - name: Prepare crates.io candidate from exact commit
+        run: |
+          python3 -B scripts/prepare_crate.py \
+            --candidate-sha "$(git rev-parse HEAD)" \
+            --output-dir "$RUNNER_TEMP/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}"
 
       - name: Verify PTX output is non-stub
         shell: bash
