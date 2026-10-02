@@ -47,6 +47,12 @@ class ArchiveBoundaryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "outside crate root"):
                 inspect_archive(archive)
 
+    def test_rejects_absolute_path_inside_archive_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive = self.archive(Path(temp), set(REQUIRED_PATHS) | {"/outside.txt"})
+            with self.assertRaisesRegex(ValueError, "outside crate root"):
+                inspect_archive(archive)
+
 
 if __name__ == "__main__":
     unittest.main()

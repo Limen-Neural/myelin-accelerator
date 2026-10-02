@@ -16,6 +16,7 @@ import sys
 import tarfile
 import tempfile
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,19 +68,7 @@ def inspect_archive(archive_path: Path) -> set[str]:
         for member in archive.getmembers():
             if member.isdir() and member.name.rstrip("/") == ARCHIVE_ROOT:
                 continue
-            prefix = f"{ARCHIVE_ROOT}/"
-            if not member.name.startswith(prefix):
-                raise ValueError(f"outside crate root: {member.name}")
-            raw_path = member.name[len(prefix) :]
-            parts = PurePosixPath(raw_path).parts
-            if not parts or any(part in {".", ".."} for part in raw_path.split("/")):
-                raise ValueError(f"outside crate root: {member.name}")
-            if any(part in FORBIDDEN_DIRECTORIES for part in parts[:-1]) or any(
-                part.startswith("cmake-build-") for part in parts[:-1]
-            ):
-                raise ValueError(f"forbidden archive path: {raw_path}")
-            if parts[-1] in FORBIDDEN_NAMES or raw_path.endswith(FORBIDDEN_SUFFIXES):
-                raise ValueError(f"forbidden archive path: {raw_path}")
+            raw_path = archive_relative_path(member.name)
             if member.isdir():
                 continue
             if not member.isfile():
@@ -91,14 +80,69 @@ def inspect_archive(archive_path: Path) -> set[str]:
     return files
 
 
-def run(name: str, args: list[str], *, cwd: Path, env: dict[str, str], output: Path) -> None:
-    log_path = output / f"{name}.log"
-    with log_path.open("w", encoding="utf-8") as log:
-        result = subprocess.run(args, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
-    print(f"{name}: {'PASS' if result.returncode == 0 else 'FAIL'} ({log_path})", flush=True)
-    if result.returncode:
-        print("\n".join(log_path.read_text().splitlines()[-30:]), file=sys.stderr)
-        raise RuntimeError(f"{name} failed with exit {result.returncode}")
+def archive_relative_path(member_name: str) -> str:
+    prefix = f"{ARCHIVE_ROOT}/"
+    if not member_name.startswith(prefix):
+        raise ValueError(f"outside crate root: {member_name}")
+    raw_path = member_name[len(prefix) :]
+    parts = PurePosixPath(raw_path).parts
+    if not parts or raw_path.startswith("/") or any(part in {".", ".."} for part in raw_path.split("/")):
+        raise ValueError(f"outside crate root: {member_name}")
+    if any(part in FORBIDDEN_DIRECTORIES or part.startswith("cmake-build-") for part in parts[:-1]):
+        raise ValueError(f"forbidden archive path: {raw_path}")
+    if parts[-1] in FORBIDDEN_NAMES or raw_path.endswith(FORBIDDEN_SUFFIXES):
+        raise ValueError(f"forbidden archive path: {raw_path}")
+    return raw_path
+
+
+@dataclass
+class RunContext:
+    env: dict[str, str]
+    output: Path
+
+    def run(self, name: str, args: list[str], cwd: Path) -> None:
+        log_path = self.output / f"{name}.log"
+        with log_path.open("w", encoding="utf-8") as log:
+            result = subprocess.run(args, cwd=cwd, env=self.env, stdout=log, stderr=subprocess.STDOUT)
+        print(f"{name}: {'PASS' if result.returncode == 0 else 'FAIL'} ({log_path})", flush=True)
+        if result.returncode:
+            print("\n".join(log_path.read_text().splitlines()[-30:]), file=sys.stderr)
+            raise RuntimeError(f"{name} failed with exit {result.returncode}")
+
+
+def check_extracted_crate(unpacked: Path, context: RunContext) -> None:
+    manifest = str(unpacked / "Cargo.toml")
+    context.run("artifact-cpu-tests", ["cargo", "test", "--locked", "--manifest-path", manifest], unpacked)
+    context.run("artifact-cuda-build", ["cargo", "build", "--locked", "--features", "cuda", "--manifest-path", manifest], unpacked)
+    context.run("artifact-gpu-tests", ["cargo", "test", "--locked", "--features", "cuda", "--manifest-path", manifest, "--", "--ignored", "--test-threads=1"], unpacked)
+    context.run("artifact-memcheck", ["bash", str(unpacked / "scripts" / "sanitize_lifecycle.sh")], unpacked)
+
+
+def write_consumer(consumer: Path) -> None:
+    (consumer / "src").mkdir(parents=True)
+    (consumer / "Cargo.toml").write_text(
+        "[package]\nname = \"myelin-release-consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n"
+        "[features]\ncuda = [\"myelin-accelerator/cuda\"]\n"
+        "[dependencies]\nmyelin-accelerator = { path = \"../artifact/myelin-accelerator-0.2.0\" }\n",
+        encoding="utf-8",
+    )
+    (consumer / "src" / "main.rs").write_text(
+        "use myelin_accelerator::{bitpacking, GpuAccelerator, GpuBuffer};\n"
+        "fn main() {\n"
+        " assert_eq!(bitpacking::unpack_ternary(&bitpacking::pack_ternary(&[-1, 0, 1]), Some(3)), vec![-1, 0, 1]);\n"
+        " #[cfg(not(feature = \"cuda\"))] { assert!(!GpuAccelerator::new().is_ready()); assert_eq!(GpuBuffer::<u32>::alloc(1).unwrap().to_vec().unwrap(), [0]); }\n"
+        " #[cfg(feature = \"cuda\")] { let acc = GpuAccelerator::require_gpu().unwrap(); let rates = GpuBuffer::from_slice(&[0.0_f32, 1.0]).unwrap(); let mut spikes = GpuBuffer::<u32>::alloc(2).unwrap(); acc.poisson_encode(&rates, &mut spikes, 42).unwrap(); assert_eq!(spikes.to_vec().unwrap(), [0, 1]); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+
+def check_consumer(consumer: Path, context: RunContext) -> None:
+    write_consumer(consumer)
+    manifest = str(consumer / "Cargo.toml")
+    context.run("consumer-lock", ["cargo", "generate-lockfile", "--manifest-path", manifest], consumer)
+    context.run("consumer-cpu", ["cargo", "run", "--locked", "--manifest-path", manifest], consumer)
+    context.run("consumer-cuda", ["cargo", "run", "--locked", "--features", "cuda", "--manifest-path", manifest], consumer)
 
 
 def main() -> int:
@@ -138,45 +182,22 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="myelin-cargo-build-") as build_dir:
         env["CARGO_TARGET_DIR"] = str(Path(build_dir) / "target")
-        run("package-list", ["cargo", "package", "--locked", "--list"], cwd=ROOT, env=env, output=output)
-        run("package", ["cargo", "package", "--locked"], cwd=ROOT, env=env, output=output)
+        context = RunContext(env, output)
+        context.run("package-list", ["cargo", "package", "--locked", "--list"], ROOT)
+        context.run("package", ["cargo", "package", "--locked"], ROOT)
         package_archive = Path(env["CARGO_TARGET_DIR"]) / "package" / f"{ARCHIVE_ROOT}.crate"
         files = inspect_archive(package_archive)
         archived_copy = output / package_archive.name
         shutil.copyfile(package_archive, archived_copy)
-        run("publish-dry-run", ["cargo", "publish", "--dry-run", "--locked"], cwd=ROOT, env=env, output=output)
+        context.run("publish-dry-run", ["cargo", "publish", "--dry-run", "--locked"], ROOT)
 
         extracted = output / "artifact"
         with tarfile.open(archived_copy, "r:gz") as archive:
             archive.extractall(extracted, filter="data")
         unpacked = extracted / ARCHIVE_ROOT
-        manifest = str(unpacked / "Cargo.toml")
-        run("artifact-cpu-tests", ["cargo", "test", "--locked", "--manifest-path", manifest], cwd=unpacked, env=env, output=output)
-        run("artifact-cuda-build", ["cargo", "build", "--locked", "--features", "cuda", "--manifest-path", manifest], cwd=unpacked, env=env, output=output)
-        run("artifact-gpu-tests", ["cargo", "test", "--locked", "--features", "cuda", "--manifest-path", manifest, "--", "--ignored", "--test-threads=1"], cwd=unpacked, env=env, output=output)
-        run("artifact-memcheck", ["bash", str(unpacked / "scripts" / "sanitize_lifecycle.sh")], cwd=unpacked, env=env, output=output)
-
+        check_extracted_crate(unpacked, context)
         consumer = output / "consumer"
-        (consumer / "src").mkdir(parents=True)
-        (consumer / "Cargo.toml").write_text(
-            "[package]\nname = \"myelin-release-consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n"
-            "[features]\ncuda = [\"myelin-accelerator/cuda\"]\n"
-            "[dependencies]\nmyelin-accelerator = { path = \"../artifact/myelin-accelerator-0.2.0\" }\n",
-            encoding="utf-8",
-        )
-        (consumer / "src" / "main.rs").write_text(
-            "use myelin_accelerator::{bitpacking, GpuAccelerator, GpuBuffer};\n"
-            "fn main() {\n"
-            " assert_eq!(bitpacking::unpack_ternary(&bitpacking::pack_ternary(&[-1, 0, 1]), Some(3)), vec![-1, 0, 1]);\n"
-            " #[cfg(not(feature = \"cuda\"))] { assert!(!GpuAccelerator::new().is_ready()); assert_eq!(GpuBuffer::<u32>::alloc(1).unwrap().to_vec().unwrap(), [0]); }\n"
-            " #[cfg(feature = \"cuda\")] { let acc = GpuAccelerator::require_gpu().unwrap(); let rates = GpuBuffer::from_slice(&[0.0_f32, 1.0]).unwrap(); let mut spikes = GpuBuffer::<u32>::alloc(2).unwrap(); acc.poisson_encode(&rates, &mut spikes, 42).unwrap(); assert_eq!(spikes.to_vec().unwrap(), [0, 1]); }\n"
-            "}\n",
-            encoding="utf-8",
-        )
-        consumer_manifest = str(consumer / "Cargo.toml")
-        run("consumer-lock", ["cargo", "generate-lockfile", "--manifest-path", consumer_manifest], cwd=consumer, env=env, output=output)
-        run("consumer-cpu", ["cargo", "run", "--locked", "--manifest-path", consumer_manifest], cwd=consumer, env=env, output=output)
-        run("consumer-cuda", ["cargo", "run", "--locked", "--features", "cuda", "--manifest-path", consumer_manifest], cwd=consumer, env=env, output=output)
+        check_consumer(consumer, context)
 
     summary = {
         "candidate_sha": head,
