@@ -11,7 +11,7 @@ import json
 import os
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404 - fixed local Cargo/Git commands, never a shell
 import sys
 import tarfile
 import tempfile
@@ -24,9 +24,11 @@ VERSION = "0.2.0"
 CRATE_NAME = "myelin-accelerator"
 ARCHIVE_ROOT = f"{CRATE_NAME}-{VERSION}"
 AUTHOR = "Raul Cardenas Montoya"
+MANIFEST_NAME = "Cargo.toml"
+GIT = shutil.which("git")
 REQUIRED_PATHS = frozenset(
     {
-        "Cargo.toml",
+        MANIFEST_NAME,
         "Cargo.lock",
         "README.md",
         "LICENSE-MIT",
@@ -124,7 +126,7 @@ class RunContext:
     def run(self, name: str, args: list[str], cwd: Path) -> None:
         log_path = self.output / f"{name}.log"
         with log_path.open("w", encoding="utf-8") as log:
-            result = subprocess.run(args, cwd=cwd, env=self.env, stdout=log, stderr=subprocess.STDOUT)
+            result = subprocess.run(args, cwd=cwd, env=self.env, stdout=log, stderr=subprocess.STDOUT)  # nosec B603 - fixed local commands
         print(f"{name}: {'PASS' if result.returncode == 0 else 'FAIL'} ({log_path})", flush=True)
         if result.returncode:
             print("\n".join(log_path.read_text().splitlines()[-30:]), file=sys.stderr)
@@ -132,7 +134,7 @@ class RunContext:
 
 
 def check_extracted_crate(unpacked: Path, context: RunContext) -> None:
-    manifest = str(unpacked / "Cargo.toml")
+    manifest = str(unpacked / MANIFEST_NAME)
     context.run("artifact-cpu-tests", ["cargo", "test", "--locked", "--manifest-path", manifest], unpacked)
     context.run("artifact-cuda-build", ["cargo", "build", "--locked", "--features", "cuda", "--manifest-path", manifest], unpacked)
     context.run("artifact-gpu-tests", ["cargo", "test", "--locked", "--features", "cuda", "--manifest-path", manifest, "--", "--ignored", "--test-threads=1"], unpacked)
@@ -141,7 +143,7 @@ def check_extracted_crate(unpacked: Path, context: RunContext) -> None:
 
 def write_consumer(consumer: Path) -> None:
     (consumer / "src").mkdir(parents=True)
-    (consumer / "Cargo.toml").write_text(
+    (consumer / MANIFEST_NAME).write_text(
         "[package]\nname = \"myelin-release-consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n"
         "[features]\ncuda = [\"myelin-accelerator/cuda\"]\n"
         "[dependencies]\nmyelin-accelerator = { path = \"../artifact/myelin-accelerator-0.2.0\" }\n",
@@ -160,7 +162,7 @@ def write_consumer(consumer: Path) -> None:
 
 def check_consumer(consumer: Path, context: RunContext) -> None:
     write_consumer(consumer)
-    manifest = str(consumer / "Cargo.toml")
+    manifest = str(consumer / MANIFEST_NAME)
     context.run("consumer-lock", ["cargo", "generate-lockfile", "--manifest-path", manifest], consumer)
     context.run("consumer-cpu", ["cargo", "run", "--locked", "--manifest-path", manifest], consumer)
     context.run("consumer-cuda", ["cargo", "run", "--locked", "--features", "cuda", "--manifest-path", manifest], consumer)
@@ -169,16 +171,18 @@ def check_consumer(consumer: Path, context: RunContext) -> None:
 def validate_candidate(parser: argparse.ArgumentParser, candidate_sha: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{40}", candidate_sha):
         parser.error("--candidate-sha must be a full lowercase 40-digit SHA")
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    if not GIT:
+        parser.error("git is required")
+    head = subprocess.check_output([GIT, "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()  # nosec B603 - fixed local command
     if head != candidate_sha:
         parser.error(f"checkout HEAD {head} differs from candidate {candidate_sha}")
-    status = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)
+    status = subprocess.check_output([GIT, "status", "--porcelain"], cwd=ROOT, text=True)  # nosec B603 - fixed local command
     if status:
         parser.error("working tree must be clean before preparing a crate")
 
-    package = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]
+    package = tomllib.loads((ROOT / MANIFEST_NAME).read_text(encoding="utf-8"))["package"]
     if (package["name"], package["version"]) != (CRATE_NAME, VERSION):
-        parser.error(f"expected {CRATE_NAME} {VERSION} in Cargo.toml")
+        parser.error(f"expected {CRATE_NAME} {VERSION} in {MANIFEST_NAME}")
     if not any(author.split(" <", 1)[0] == AUTHOR for author in package["authors"]):
         parser.error(f"Cargo authors must include {AUTHOR}")
     return head
