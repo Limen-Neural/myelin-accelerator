@@ -160,16 +160,12 @@ def check_consumer(consumer: Path, context: RunContext) -> None:
     context.run("consumer-cuda", ["cargo", "run", "--locked", "--features", "cuda", "--manifest-path", manifest], consumer)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--candidate-sha", required=True, help="full git SHA to prepare")
-    parser.add_argument("--output-dir", type=Path, help="new directory outside the repository")
-    args = parser.parse_args()
-    if not re.fullmatch(r"[0-9a-f]{40}", args.candidate_sha):
+def validate_candidate(parser: argparse.ArgumentParser, candidate_sha: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{40}", candidate_sha):
         parser.error("--candidate-sha must be a full lowercase 40-digit SHA")
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    if head != args.candidate_sha:
-        parser.error(f"checkout HEAD {head} differs from candidate {args.candidate_sha}")
+    if head != candidate_sha:
+        parser.error(f"checkout HEAD {head} differs from candidate {candidate_sha}")
     status = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)
     if status:
         parser.error("working tree must be clean before preparing a crate")
@@ -179,14 +175,19 @@ def main() -> int:
         parser.error(f"expected {CRATE_NAME} {VERSION} in Cargo.toml")
     if not any(author.split(" <", 1)[0] == AUTHOR for author in package["authors"]):
         parser.error(f"Cargo authors must include {AUTHOR}")
+    return head
 
-    output = (args.output_dir or Path(tempfile.mkdtemp(prefix="myelin-v0.2.0-prep-"))).resolve()
+
+def output_directory(parser: argparse.ArgumentParser, requested: Path | None) -> Path:
+    output = (requested or Path(tempfile.mkdtemp(prefix="myelin-v0.2.0-prep-"))).resolve()
     if output == ROOT or ROOT in output.parents:
         parser.error("--output-dir must be outside the repository")
-    if args.output_dir:
+    if requested:
         output.mkdir(parents=True, exist_ok=False)
-    print(f"Preparing {head} into {output}", flush=True)
+    return output
 
+
+def cuda_environment(parser: argparse.ArgumentParser) -> dict[str, str]:
     env = os.environ.copy()
     nvcc = Path(env.get("CUDA_NVCC", "/usr/local/cuda/bin/nvcc")).resolve()
     if not nvcc.is_file():
@@ -194,37 +195,58 @@ def main() -> int:
     env["CUDA_NVCC"] = str(nvcc)
     env.setdefault("CUDA_HOME", str(nvcc.parent.parent))
     env.setdefault("CUDA_LIBRARY_PATH", str(nvcc.parent.parent))
+    return env
 
-    with tempfile.TemporaryDirectory(prefix="myelin-cargo-build-") as build_dir:
-        env["CARGO_TARGET_DIR"] = str(Path(build_dir) / "target")
-        context = RunContext(env, output)
-        context.run("package-list", ["cargo", "package", "--locked", "--list"], ROOT)
-        context.run("package", ["cargo", "package", "--locked"], ROOT)
-        package_archive = Path(env["CARGO_TARGET_DIR"]) / "package" / f"{ARCHIVE_ROOT}.crate"
-        files = inspect_archive(package_archive)
-        archived_copy = output / package_archive.name
-        shutil.copyfile(package_archive, archived_copy)
-        context.run("publish-dry-run", ["cargo", "publish", "--dry-run", "--locked"], ROOT)
 
-        extracted = output / "artifact"
-        with tarfile.open(archived_copy, "r:gz") as archive:
-            archive.extractall(extracted, filter="data")
-        unpacked = extracted / ARCHIVE_ROOT
-        check_extracted_crate(unpacked, context)
-        consumer = output / "consumer"
-        check_consumer(consumer, context)
+def prepare_archive(context: RunContext) -> tuple[Path, set[str]]:
+    context.run("package-list", ["cargo", "package", "--locked", "--list"], ROOT)
+    context.run("package", ["cargo", "package", "--locked"], ROOT)
+    package_archive = Path(context.env["CARGO_TARGET_DIR"]) / "package" / f"{ARCHIVE_ROOT}.crate"
+    files = inspect_archive(package_archive)
+    archived_copy = context.output / package_archive.name
+    shutil.copyfile(package_archive, archived_copy)
+    context.run("publish-dry-run", ["cargo", "publish", "--dry-run", "--locked"], ROOT)
+    return archived_copy, files
 
+
+def check_archive_consumers(context: RunContext, archived_copy: Path) -> None:
+    extracted = context.output / "artifact"
+    with tarfile.open(archived_copy, "r:gz") as archive:
+        archive.extractall(extracted, filter="data")
+    check_extracted_crate(extracted / ARCHIVE_ROOT, context)
+    check_consumer(context.output / "consumer", context)
+
+
+def write_summary(output: Path, head: str, archived_copy: Path, files: set[str]) -> None:
+    digest = hashlib.sha256(archived_copy.read_bytes()).hexdigest()
     summary = {
         "candidate_sha": head,
         "crate_version": VERSION,
         "cargo_author": AUTHOR,
-        "archive_sha256": hashlib.sha256(archived_copy.read_bytes()).hexdigest(),
+        "archive_sha256": digest,
         "file_count": len(files),
         "files": sorted(files),
         "status": "preparation passed; no registry upload or tag performed",
     }
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    print(f"Prepared {ARCHIVE_ROOT}: {len(files)} files, sha256 {summary['archive_sha256']}")
+    print(f"Prepared {ARCHIVE_ROOT}: {len(files)} files, sha256 {digest}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--candidate-sha", required=True, help="full git SHA to prepare")
+    parser.add_argument("--output-dir", type=Path, help="new directory outside the repository")
+    args = parser.parse_args()
+    head = validate_candidate(parser, args.candidate_sha)
+    output = output_directory(parser, args.output_dir)
+    print(f"Preparing {head} into {output}", flush=True)
+    env = cuda_environment(parser)
+    with tempfile.TemporaryDirectory(prefix="myelin-cargo-build-") as build_dir:
+        env["CARGO_TARGET_DIR"] = str(Path(build_dir) / "target")
+        context = RunContext(env, output)
+        archived_copy, files = prepare_archive(context)
+        check_archive_consumers(context, archived_copy)
+    write_summary(output, head, archived_copy, files)
     return 0
 
 
