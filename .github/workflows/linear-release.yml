@@ -66,8 +66,14 @@ jobs:
                 "repos/$GITHUB_REPOSITORY/actions/workflows/linear-release.yml/runs?event=release&head_sha=$candidate_sha&status=success&per_page=100" \
                 --jq '.workflow_runs[] | .head_branch')"
               if ! grep -Fxq "$candidate" <<< "$reported_tags"; then
-                echo "::error::Stable release $candidate has no successful Linear report; rerun its workflow before $RELEASE_TAG"
-                exit 1
+                # v0.2.0 was manually reconciled after the first-release base
+                # defect in GH #60. This exception is fixed to its shipped SHA;
+                # later releases still require a successful reporting run.
+                if [[ "$candidate" != "v0.2.0" || "$candidate_sha" != "6cfb49c60fb7f95818e87d0ea0e1ce76c2360fb5" ]]; then
+                  echo "::error::Stable release $candidate has no successful Linear report; rerun its workflow before $RELEASE_TAG"
+                  exit 1
+                fi
+                echo "::notice::Using verified manual v0.2.0 Linear reconciliation (GH #60)"
               fi
               if [[ -z "$previous" ]]; then
                 previous="$candidate"
@@ -75,10 +81,9 @@ jobs:
             fi
           done < <(printf '%s\n' "$published_tags" | sort -Vr)
           if [[ -z "$previous" ]]; then
-            # The Linear base is exclusive. A local empty commit, unrelated to
-            # HEAD, makes empty..HEAD include even the repository's root commit.
-            empty_tree="$(git mktree </dev/null)"
-            previous="$(git -c user.name='Release CI' -c user.email='release-ci@users.noreply.github.com' commit-tree "$empty_tree" -m 'Empty release scan base')"
+            # The CLI requires an ancestor base. The repository root has no LIM
+            # key, so root..HEAD covers every issue-bearing shipped commit.
+            previous="$(git rev-list --max-parents=0 HEAD | tail -n 1)"
           fi
           {
             echo "version=$version"
@@ -144,6 +149,7 @@ jobs:
           version: ${{ steps.crate.outputs.version }}
           name: v${{ steps.crate.outputs.version }}
           base_ref: ${{ steps.crate.outputs.base_ref }}
+          issue_pattern: '(LIM-[0-9]+)'
           no_branch_ref_detection: true
           links: |
             crates.io=https://crates.io/crates/myelin-accelerator/${{ steps.crate.outputs.version }}

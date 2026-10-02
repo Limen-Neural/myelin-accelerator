@@ -10,22 +10,22 @@
 [![CodeScene System Mastery](https://codescene.io/projects/85266/status-badges/system-mastery)](https://codescene.io/projects/85266)
 [![Analyzed by CodeScene](https://codescene.io/images/analyzed-by-codescene-badge.svg)](https://codescene.io/projects/85266)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
-[![Release: v0.2.0 candidate](https://img.shields.io/badge/release-v0.2.0%20candidate-orange)](https://github.com/Limen-Neural/myelin-accelerator/issues/37)
+[![Crates.io](https://img.shields.io/crates/v/myelin-accelerator.svg)](https://crates.io/crates/myelin-accelerator)
 
 Rust/CUDA acceleration primitives for spiking neural networks (SNN) and neuromorphic workloads: a low-level compute layer of safe Rust wrappers around first-party CUDA kernels for spiking networks, routing, SAT search, and packed ternary GEMV/GEMM. The CUDA path targets and is validated on `sm_120` (NVIDIA Blackwell); the default build works without a CUDA toolkit or device. This is a compute layer, not a complete SNN framework or a general model-compatibility layer.
 
-**Release status:** `Cargo.toml` is at `0.2.0` as a crates.io candidate (not yet published). [Release issue #37](https://github.com/Limen-Neural/myelin-accelerator/issues/37) records qualification of an earlier commit; publication is owned by [LIM-1460](https://linear.app/rpd-34/issue/LIM-1460/release-publish-myelin-accelerator-v020-foundation). A newer publication commit requires its own qualification. See the [release preparation guide](docs/RELEASING.md). Cargo/crates.io is the supported distribution path; Docker/container images are not a supported consumer surface. The CI and GPU CI badges reflect `main`, not this checkout or an open pull request.
+**Release status:** [v0.2.0 is published on crates.io](https://crates.io/crates/myelin-accelerator/0.2.0) from [qualified commit `6cfb49c`](https://github.com/Limen-Neural/myelin-accelerator/commit/6cfb49c60fb7f95818e87d0ea0e1ce76c2360fb5), with a matching [GitHub release](https://github.com/Limen-Neural/myelin-accelerator/releases/tag/v0.2.0). See the [release guide](docs/RELEASING.md) and [qualification evidence](https://github.com/Limen-Neural/myelin-accelerator/issues/37#issuecomment-5945443818). Cargo/crates.io is the supported distribution path; Docker/container images are not a supported consumer surface. The CI and GPU CI badges reflect `main`, not this checkout or an open pull request.
 
 ## Get started
 
-After v0.2.0 publication, add the crate with:
+Add the published crate with:
 
 ```bash
 cargo add myelin-accelerator
 # For GPU launches: cargo add myelin-accelerator --features cuda
 ```
 
-Prior to publication, use a source checkout at a reviewed commit (Git dependency or Cargo `path` dependency). For a local checkout:
+For unreleased changes, use a source checkout at a reviewed commit (Git dependency or Cargo `path` dependency). For a local checkout:
 
 ```toml
 [dependencies]
