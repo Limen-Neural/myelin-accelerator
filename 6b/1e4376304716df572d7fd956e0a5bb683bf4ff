@@ -1,0 +1,21 @@
+REVIEW.md
+  s_171b203c5b7b72::t_3b528a6eabee18 243-244
+scripts/sanitize_lifecycle.sh
+  s_171b203c5b7b72::t_3b528a6eabee18 56,58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6b1e4376304716df572d7fd956e0a5bb683bf4ff",
+  "prompts": {},
+  "sessions": {
+    "s_171b203c5b7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ece1-e072-7f91-a064-453b9c302bbf",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
