@@ -69,7 +69,7 @@ jobs:
                 # v0.2.0 was manually reconciled after the first-release base
                 # defect in GH #60. This exception is fixed to its shipped SHA;
                 # later releases still require a successful reporting run.
-                if [[ "$candidate" != "v0.2.0" || "$candidate_sha" != "6cfb49c60fb7f95818e87d0ea0e1ce76c2360fb5" ]]; then
+                if [[ "$GITHUB_REPOSITORY" != "Limen-Neural/myelin-accelerator" || "$candidate" != "v0.2.0" || "$candidate_sha" != "6cfb49c60fb7f95818e87d0ea0e1ce76c2360fb5" ]]; then
                   echo "::error::Stable release $candidate has no successful Linear report; rerun its workflow before $RELEASE_TAG"
                   exit 1
                 fi
