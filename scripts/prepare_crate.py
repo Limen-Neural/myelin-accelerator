@@ -77,6 +77,13 @@ def inspect_archive(archive_path: Path) -> set[str]:
     return files
 
 
+def check_tracked_inventory(files: set[str], tracked: set[str]) -> None:
+    cargo_generated = {".cargo_vcs_info.json", "Cargo.toml.orig"}
+    unexpected = files - tracked - cargo_generated
+    if unexpected:
+        raise ValueError(f"untracked archive paths: {', '.join(sorted(unexpected))}")
+
+
 def archive_member_file(member: tarfile.TarInfo) -> str | None:
     if member.isdir() and member.name.rstrip("/") == ARCHIVE_ROOT:
         return None
@@ -213,6 +220,8 @@ def prepare_archive(context: RunContext) -> tuple[Path, set[str]]:
     context.run("package", ["cargo", "package", "--locked"], ROOT)
     package_archive = Path(context.env["CARGO_TARGET_DIR"]) / "package" / f"{ARCHIVE_ROOT}.crate"
     files = inspect_archive(package_archive)
+    tracked = set(subprocess.check_output([GIT, "ls-files", "-z"], cwd=ROOT).decode().strip("\0").split("\0"))  # nosec B603 - fixed local command
+    check_tracked_inventory(files, tracked)
     archived_copy = context.output / package_archive.name
     shutil.copyfile(package_archive, archived_copy)
     context.run("publish-dry-run", ["cargo", "publish", "--dry-run", "--locked"], ROOT)

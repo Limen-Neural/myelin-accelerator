@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from prepare_crate import REQUIRED_PATHS, inspect_archive  # noqa: E402
+from prepare_crate import REQUIRED_PATHS, check_tracked_inventory, inspect_archive  # noqa: E402
 
 
 class ArchiveBoundaryTests(unittest.TestCase):
@@ -52,6 +52,16 @@ class ArchiveBoundaryTests(unittest.TestCase):
             archive = self.archive(Path(temp), set(REQUIRED_PATHS) | {"/outside.txt"})
             with self.assertRaisesRegex(ValueError, "outside crate root"):
                 inspect_archive(archive)
+
+    def test_rejects_untracked_file_even_under_an_included_directory(self):
+        with self.assertRaisesRegex(ValueError, "src/ignored.rs"):
+            check_tracked_inventory(set(REQUIRED_PATHS) | {"src/ignored.rs"}, set(REQUIRED_PATHS))
+
+    def test_allows_cargo_generated_metadata(self):
+        check_tracked_inventory(
+            set(REQUIRED_PATHS) | {".cargo_vcs_info.json", "Cargo.toml.orig"},
+            set(REQUIRED_PATHS),
+        )
 
 
 if __name__ == "__main__":
