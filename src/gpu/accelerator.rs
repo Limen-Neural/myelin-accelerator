@@ -20,13 +20,21 @@ use tracing::warn;
 const SATSOLVER_BLOCK_SIZE: u32 = 256;
 const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
 
+/// Owns CUDA resources whose explicit teardown is implemented in `Drop`.
+///
+/// `KernelModule` and `GpuBuffer` do not retain a context. Every CUDA-owning
+/// field added here must be handled in `Drop`, while our context is current,
+/// before restoring the caller binding and releasing `_ctx`. Keep `_ctx` last
+/// as a defensive lifetime backstop; field order alone is not the teardown.
+/// If teardown cannot capture or activate the context, the process aborts:
+/// unwinding or returning would destroy resources under an unknown context.
 pub struct GpuAccelerator {
-    _ctx: Option<GpuContext>,
     modules: Option<KernelModule>,
     stream: Option<Stream>,
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
     capabilities: CapabilityReport,
+    _ctx: Option<GpuContext>,
 }
 
 struct InitFailure {
@@ -586,6 +594,10 @@ impl GpuAccelerator {
             n_clauses_usize.saturating_mul(clause_len_usize),
         )?;
 
+        let grid_x = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
+        let block = SATSOLVER_BLOCK_SIZE;
+        let partial_len = grid_x as usize;
+        self.ensure_aux_scratch(partial_len)?;
         let kernels = self.kernels()?;
         let satsolver_aux_update = kernels.get_function("satsolver_aux_update")?;
         let satsolver_best_reduce_pass2 = kernels.get_function("satsolver_best_reduce_pass2")?;
@@ -593,28 +605,8 @@ impl GpuAccelerator {
             .stream
             .as_ref()
             .ok_or_else(|| self.unavailable_error())?;
-        let grid_x = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
-        let block = SATSOLVER_BLOCK_SIZE;
-        let partial_len = grid_x as usize;
-        let mut partial_scores = self.aux_partial_scores.borrow_mut();
-        let mut partial_walkers = self.aux_partial_walkers.borrow_mut();
-        let need_partial_realloc = partial_scores
-            .as_ref()
-            .is_none_or(|b| b.len() < partial_len)
-            || partial_walkers
-                .as_ref()
-                .is_none_or(|b| b.len() < partial_len);
-        if need_partial_realloc {
-            stream.synchronize().map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "stream sync before partial realloc: {e:?}"
-                )))
-            })?;
-            let scores = GpuBuffer::<i32>::alloc(partial_len)?;
-            let walkers = GpuBuffer::<i32>::alloc(partial_len)?;
-            *partial_scores = Some(scores);
-            *partial_walkers = Some(walkers);
-        }
+        let partial_scores = self.aux_partial_scores.borrow();
+        let partial_walkers = self.aux_partial_walkers.borrow();
         let partial_scores = partial_scores.as_ref().expect("partial_scores buffer");
         let partial_walkers = partial_walkers.as_ref().expect("partial_walkers buffer");
 
@@ -699,8 +691,14 @@ impl GpuAccelerator {
     /// Async variant of [`Self::poisson_encode`]: enqueues the launch on the
     /// internal stream and returns without waiting.
     ///
-    /// The caller must call [`Self::synchronize`] before reading `spikes` on the
-    /// host or dropping/reusing either buffer.
+    /// An empty stimulus is a defined no-op on a ready accelerator: it
+    /// succeeds without launching a kernel (a zero-grid launch would fail
+    /// with `InvalidValue`) and leaves any pooled output tail untouched.
+    /// Readiness is still required, so a CPU-fallback accelerator reports
+    /// `Unavailable` here exactly as it does for non-empty inputs, keeping
+    /// the sync/async contract coherent. The caller must call
+    /// [`Self::synchronize`] before reading `spikes` on the host or
+    /// dropping/reusing either buffer.
     pub fn poisson_encode_async(
         &self,
         stimuli: &GpuBuffer<f32>,
@@ -719,6 +717,19 @@ impl GpuAccelerator {
                 "poisson_encode: element count {n} exceeds i32::MAX kernel limit"
             ))
         })?;
+
+        if n == 0 {
+            // Defined empty-input contract (GH #48): the spikes-length check
+            // above already ran, so an invalid buffer relationship still fails
+            // before this no-op return. Readiness is required so a
+            // CPU-fallback accelerator stays fail-closed (matching non-empty
+            // inputs and the sync wrapper, which must synchronize). No launch
+            // occurs and pooled tails are untouched.
+            if !self.is_ready() {
+                return Err(self.unavailable_error());
+            }
+            return Ok(());
+        }
 
         let kernels = self.kernels()?;
         let func = kernels.get_function("poisson_encode")?;
@@ -1017,6 +1028,41 @@ impl GpuAccelerator {
         Ok(())
     }
 
+    /// Allocate/grow the owned SAT scratch buffers only in our current
+    /// context, after their last stream use has completed.
+    fn ensure_aux_scratch(&self, partial_len: usize) -> GpuResult<()> {
+        self._ctx
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?
+            .require_current()?;
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
+        let mut partial_scores = self.aux_partial_scores.borrow_mut();
+        let mut partial_walkers = self.aux_partial_walkers.borrow_mut();
+        let need_partial_realloc = partial_scores
+            .as_ref()
+            .is_none_or(|b| b.len() < partial_len)
+            || partial_walkers
+                .as_ref()
+                .is_none_or(|b| b.len() < partial_len);
+        if need_partial_realloc {
+            // The current-context check protects allocation and destruction
+            // of replaced scratch buffers. Wait for their last queued use.
+            stream.synchronize().map_err(|e| {
+                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
+                    "stream sync before partial realloc: {e:?}"
+                )))
+            })?;
+            let scores = GpuBuffer::<i32>::alloc(partial_len)?;
+            let walkers = GpuBuffer::<i32>::alloc(partial_len)?;
+            *partial_scores = Some(scores);
+            *partial_walkers = Some(walkers);
+        }
+        Ok(())
+    }
+
     fn zero_output_prefix(&self, output: &mut GpuBuffer<f32>, count: usize) -> GpuResult<()> {
         let stream = self
             .stream
@@ -1044,11 +1090,48 @@ impl GpuAccelerator {
 
 impl Drop for GpuAccelerator {
     fn drop(&mut self) {
-        if self.stream.is_some()
-            && let Err(error) = self.synchronize()
+        let Some(ctx) = self._ctx.as_ref() else {
+            // CPU fallback owns no CUDA resources and makes no CUDA calls.
+            return;
+        };
+        let current_context = match CurrentContextGuard::enter(ctx) {
+            Ok(guard) => guard,
+            Err(error) => {
+                // Returning OR panicking would run field destructors under
+                // an unknown context. There is no fallible Drop API and no
+                // safe recovery here without leaking resources. Fail-stop;
+                // even a failed diagnostic write must not cause unwinding.
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "fatal: cannot establish accelerator context for teardown: {error:?}"
+                );
+                std::process::abort();
+            }
+        };
+        // Move every resource out before any fallible work or user-provided
+        // tracing callback. Reverse local declaration order also preserves
+        // teardown during unwinding: these locals drop before the guard.
+        let modules = self.modules.take();
+        let stream = self.stream.take();
+        let partial_walkers = self.aux_partial_walkers.get_mut().take();
+        let partial_scores = self.aux_partial_scores.get_mut().take();
+        if let Some(stream) = &stream
+            && let Err(error) = stream.synchronize()
         {
-            warn!(%error, "accelerator stream synchronization failed during drop");
+            warn!(
+                ?error,
+                "accelerator stream synchronization failed during drop"
+            );
         }
+        // Explicit ownership invariant: synchronize -> scratch -> stream ->
+        // modules -> caller context restoration -> final context release.
+        drop(partial_scores);
+        drop(partial_walkers);
+        drop(stream);
+        drop(modules);
+        drop(current_context);
+        drop(self._ctx.take());
     }
 }
 
@@ -1160,5 +1243,40 @@ mod tests {
         assert!(report.device_available);
         assert!(report.gpu_usable());
         assert_eq!(report.selected_backend, Backend::Cuda);
+    }
+
+    /// An empty Poisson request on a CPU-fallback accelerator stays
+    /// fail-closed on both entry points (GH #48): the async no-op requires
+    /// readiness, and the sync wrapper propagates the same `Unavailable`
+    /// instead of succeeding-then-failing at `synchronize`.
+    #[test]
+    #[ignore] // requires GPU + driver ≥ 570
+    fn empty_poisson_on_cpu_fallback_fails_closed_on_both_paths() {
+        let _gpu = GpuAccelerator::require_gpu().expect("GPU required for buffer setup");
+        let facts = CapabilityFacts {
+            cuda_built: true,
+            runtime_available: false,
+            device_available: false,
+            compute_capability: None,
+            kernels: KernelAvailability::compiled_unverified(),
+        };
+        let report = capability_report_for_failure(
+            facts,
+            FallbackReason::DriverRuntimeFailure,
+            "no device for fallback probe",
+        );
+        let acc = GpuAccelerator::cpu_fallback(report);
+        assert!(!acc.is_ready());
+
+        let stim = GpuBuffer::<f32>::alloc(0).unwrap();
+        let mut spikes = GpuBuffer::<u32>::alloc(0).unwrap();
+        match acc.poisson_encode_async(&stim, &mut spikes, 7).unwrap_err() {
+            GpuError::Unavailable { .. } => {}
+            other => panic!("expected Unavailable, got {other}"),
+        }
+        match acc.poisson_encode(&stim, &mut spikes, 7).unwrap_err() {
+            GpuError::Unavailable { .. } => {}
+            other => panic!("expected Unavailable, got {other}"),
+        }
     }
 }

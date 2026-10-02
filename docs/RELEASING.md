@@ -1,36 +1,27 @@
-# crates.io and Linear releases
+# Crate preparation and Linear release reporting
 
-The `myelin-accelerator` Linear pipeline is a **scheduled production** pipeline.
-Normal pushes and merges to `main` do not report a release. The
-[`Report published crate to Linear`](../.github/workflows/linear-release.yml)
-workflow runs when GitHub marks a release as stable, including when a published
-prerelease is promoted to stable. Metadata edits do not report a release.
+## Prepare and qualify a v0.2.0 candidate
 
-After the v0.2.0 qualification and publication steps tracked in
-[LIM-1443](https://linear.app/rpd-34/issue/LIM-1443/release-qualify-myelin-accelerator-v020-for-cratesio),
-publish a GitHub release for the `v<crate version>` tag. The tag must point to
-the **exact commit used to package and publish the crate**; check this before
-publishing the GitHub release. The existing `v0.2.0` candidate tag points to an
-older commit, so verify or correct its target as part of that qualification.
-Do not publish the GitHub release before the crate is available on crates.io.
+Publication is tracked in [LIM-1460](https://linear.app/rpd-34/issue/LIM-1460/release-publish-myelin-accelerator-v020-foundation). Its recorded qualified commit was `a1a24773a4fc457e778cfc65bb2deba8e0315935`; check the issue for the current release pin before acting. Merging later PRs does not transfer qualification to their new commit. This guide prepares a candidate; it does not upload the crate or tag a release.
 
-The workflow checks the tag against `Cargo.toml`, records the checked-out tag
-commit SHA, and waits for the matching, unyanked crates.io version. It verifies
-the downloaded crate archive against crates.io's checksum and requires its
-Cargo VCS revision to match the clean tag commit before reporting to Linear.
-It verifies that every prior stable production release was successfully
-reported to Linear, then scans commits since the most recent such tag
-(including commits before unpublished candidate and prerelease tags). For the
-first release, it scans the full history, including the repository's first
-commit. Put LIM identifiers in shipped commit subjects or link the corresponding
-pull requests to Linear issues. The official Linear action
-then syncs that version and its issues to the pipeline, links the crate,
-commit, and GitHub release, and completes the same version. Linear's pipeline
-settings generate release notes and move open issues on completion.
+The manifest has an explicit source allowlist. Cargo must include Rust and CUDA sources, the common CUDA header, build script, examples, licenses, lockfile, documentation, tests, pinned SNN fixtures, and verification scripts. Local metadata, generated PTX, and credentials do not belong in the crate. The preflight inspects the actual archive and compares its inventory with tracked files.
 
-The workflow fails if the crate is unavailable, a prior stable release has no
-successful Linear report, Linear sync produces no matching release, or completion
-fails. Check the Actions run and retry it after fixing the cause; a failed run
-must not be treated as a completed Linear release. The pipeline key is supplied
-only through the existing `LINEAR_ACCESS_KEY` Actions
-secret. Keep the release history and tag available for issue attribution.
+On a clean checkout with Python 3.11.4+, CUDA toolkit 13.2+, Compute Sanitizer (or `COMPUTE_SANITIZER` pointing to it), and an `sm_120` device, run:
+
+```bash
+python3 -B -m unittest discover -s tests -p test_release_prep.py -v
+python3 -B scripts/prepare_crate.py \
+  --candidate-sha "$(git rev-parse HEAD)"
+```
+
+The preflight prints a fresh output directory. It records Cargo's file list, creates and inspects a `.crate`, runs `cargo publish --dry-run --locked`, tests the extracted archive on CPU and GPU, runs both lifecycle suites under Compute Sanitizer, and runs separate CPU/CUDA consumers. `summary.json` records the full commit SHA, archive SHA-256, and file list; adjacent logs record each command's output. CI also uploads the archive and logs as a candidate artifact. A failure prevents a success summary.
+
+Review the archive, logs, final CI and review state on the **exact** candidate commit. Run the remaining release gate in [REVIEW.md](../REVIEW.md) §6–§7 and reconcile the pin and evidence in LIM-1460 before starting the publication transaction. Keep earlier qualification evidence attached to its original SHA.
+
+## Publish, then report to Linear
+
+The `myelin-accelerator` Linear pipeline is a scheduled production pipeline. Normal pushes and merges to `main` do not report a release. After exact-commit qualification, publish the crate to crates.io and verify its metadata and archive. Then publish a stable GitHub release for the `v<crate version>` tag pointing to the **same commit** used to package and publish the crate. The existing `v0.2.0` candidate tag points to an older commit; reconcile its target before publication. Do not publish the GitHub release before the crate is available on crates.io.
+
+The [release-reporting workflow](https://github.com/Limen-Neural/myelin-accelerator/blob/main/.github/workflows/linear-release.yml) runs when GitHub releases a stable version, including promotion from prerelease. It checks the tag against `Cargo.toml`, verifies the downloaded crate's checksum and clean Cargo VCS revision, and checks that earlier stable releases were successfully reported. It scans commits since the latest reported stable release, including commits before unpublished candidate or prerelease tags. For the first release it scans the full history. Put LIM identifiers in shipped commits or link their PRs to Linear issues.
+
+The pinned Linear action syncs that version and its shipped issues, links the crate, commit, and GitHub release, and completes the same production version. A missing crate, mismatched revision, failed prior report, or failed Linear operation fails the job. Inspect and retry that run before calling the Linear release complete. The workflow reads the existing `LINEAR_ACCESS_KEY` Actions secret only during this post-publication report.

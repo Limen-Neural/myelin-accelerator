@@ -63,6 +63,9 @@ jobs:
       - name: Cargo test
         run: cargo test --locked
 
+      - name: Crate archive boundary tests
+        run: python3 -B -m unittest discover -s tests -p test_release_prep.py -v
+
       - name: Benchmark harness tests
         run: cargo test --locked --features bench --example benchmark
 
@@ -101,7 +104,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
           apt-get install -y --no-install-recommends \
-            curl ca-certificates build-essential pkg-config libssl-dev git
+            curl ca-certificates build-essential pkg-config libssl-dev git python3
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --default-toolchain stable --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -126,7 +129,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           if [ -z "$ptx_dir" ]; then
             echo "::error::Could not find PTX output directory"
             exit 1
@@ -154,14 +157,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           ./scripts/check_ptx_entries.sh "$ptx_dir" cloud
 
       - name: Offline ptxas assemble (sm_120)
         shell: bash
         run: |
           set -euo pipefail
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
                    satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
             ptxas -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
@@ -200,6 +203,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           persist-credentials: false
+          # Qualify the PR head itself, not GitHub's synthetic PR merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
@@ -232,14 +237,38 @@ jobs:
         run: cargo test --locked --features cuda
 
       - name: Test GPU goldens (ignored)
-        run: cargo test --locked --features cuda -- --ignored --nocapture
+        run: cargo test --locked --features cuda -- --ignored --nocapture --test-threads=1
+
+      - name: Compute Sanitizer accelerator and SNN fixture memcheck
+        run: ./scripts/sanitize_lifecycle.sh
+
+      - name: Prepare crates.io candidate from exact commit
+        run: |
+          python3 -B scripts/prepare_crate.py \
+            --candidate-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --output-dir "$RUNNER_TEMP/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}"
+
+      - name: Retain crate preparation evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: myelin-v0.2.0-candidate-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/summary.json
+            ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/*.log
+            ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/*.crate
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Verify PTX output is non-stub
         shell: bash
         run: |
           set -euo pipefail
           for profile in debug release; do
-            ptx_dir="$(ls -td target/$profile/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
+            if [ "$profile" = "release" ]; then
+              ptx_dir="$(./scripts/ptx_out_dir.sh --release)"
+            else
+              ptx_dir="$(./scripts/ptx_out_dir.sh)"
+            fi
             if [ -z "$ptx_dir" ]; then
               echo "::error::Could not find PTX output directory for profile=$profile"
               exit 1
@@ -268,7 +297,11 @@ jobs:
         run: |
           set -euo pipefail
           for profile in debug release; do
-            ptx_dir="$(ls -td target/$profile/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
+            if [ "$profile" = "release" ]; then
+              ptx_dir="$(./scripts/ptx_out_dir.sh --release)"
+            else
+              ptx_dir="$(./scripts/ptx_out_dir.sh)"
+            fi
             echo "Checking kernel entry points in $profile PTX files..."
             ./scripts/check_ptx_entries.sh "$ptx_dir" "$profile"
           done
@@ -279,7 +312,7 @@ jobs:
         run: |
           set -euo pipefail
           PTXAS="$(dirname "$CUDA_NVCC")/ptxas"
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
                    satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
             "$PTXAS" -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
