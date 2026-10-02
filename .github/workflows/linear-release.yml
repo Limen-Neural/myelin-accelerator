@@ -80,9 +80,11 @@ jobs:
             empty_tree="$(git mktree </dev/null)"
             previous="$(git -c user.name='Release CI' -c user.email='release-ci@users.noreply.github.com' commit-tree "$empty_tree" -m 'Empty release scan base')"
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "base_ref=$previous" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "sha=$sha"
+            echo "base_ref=$previous"
+          } >> "$GITHUB_OUTPUT"
           echo "Reporting $RELEASE_TAG at commit $sha (after $previous)"
 
       - name: Verify the published crate and its source commit
