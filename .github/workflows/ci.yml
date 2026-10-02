@@ -246,6 +246,17 @@ jobs:
             --candidate-sha "$(git rev-parse HEAD)" \
             --output-dir "$RUNNER_TEMP/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}"
 
+      - name: Retain crate preparation evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: myelin-v0.2.0-candidate-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/summary.json
+            ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/*.log
+            ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/*.crate
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Verify PTX output is non-stub
         shell: bash
         run: |

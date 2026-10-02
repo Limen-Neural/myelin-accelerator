@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 # Copyright 2026 Raul Montoya Cardenas
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Inspect and exercise a v0.2.0 Cargo candidate; never tag or publish it."""
+"""Inspect and exercise a v0.2.0 Cargo candidate; never tag or publish it.
+
+Requires Python 3.11.4+ for tomllib and tarfile's safe extraction filter.
+"""
 
 from __future__ import annotations
+
+import sys
+
+if sys.version_info < (3, 11, 4):
+    raise SystemExit("prepare_crate.py requires Python 3.11.4 or newer")
 
 import argparse
 import hashlib
@@ -12,7 +20,6 @@ import os
 import re
 import shutil
 import subprocess  # nosec B404 - fixed local Cargo/Git commands, never a shell
-import sys
 import tarfile
 import tempfile
 import tomllib
@@ -31,6 +38,7 @@ REQUIRED_PATHS = frozenset(
         MANIFEST_NAME,
         "Cargo.lock",
         "README.md",
+        "REVIEW.md",
         "LICENSE-MIT",
         "LICENSE-APACHE",
         "build.rs",
@@ -59,6 +67,8 @@ FORBIDDEN_NAMES = {
     ".credentials",
     ".credentials_rsaparams",
     "id_rsa",
+    "id_ed25519",
+    ".pypirc",
 }
 FORBIDDEN_SUFFIXES = (".pem", ".key", ".p12", ".ptx", ".cubin")
 
@@ -121,6 +131,9 @@ def check_allowed_path(raw_path: str) -> None:
             raise ValueError(f"forbidden archive path: {raw_path}")
     forbidden_name = parts[-1] in FORBIDDEN_NAMES
     forbidden_name |= raw_path.endswith(FORBIDDEN_SUFFIXES)
+    forbidden_name |= parts[-1].startswith(".env")
+    forbidden_name |= parts[-1].startswith("id_rsa")
+    forbidden_name |= parts[-1].startswith("id_ed25519")
     if forbidden_name:
         raise ValueError(f"forbidden archive path: {raw_path}")
 

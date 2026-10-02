@@ -14,12 +14,17 @@ from prepare_crate import REQUIRED_PATHS, check_tracked_inventory, inspect_archi
 
 
 class ArchiveBoundaryTests(unittest.TestCase):
-    def archive(self, root: Path, paths: set[str]) -> Path:
+    def archive(self, root: Path, paths: set[str], symlink: str | None = None) -> Path:
         output = root / "myelin-accelerator-0.2.0.crate"
         with tarfile.open(output, "w:gz") as archive:
             for path in sorted(paths):
                 payload = b"fixture\n"
                 info = tarfile.TarInfo(f"myelin-accelerator-0.2.0/{path}")
+                if path == symlink:
+                    info.type = tarfile.SYMTYPE
+                    info.linkname = "../outside"
+                    archive.addfile(info)
+                    continue
                 info.size = len(payload)
                 archive.addfile(info, io.BytesIO(payload))
         return output
@@ -62,6 +67,18 @@ class ArchiveBoundaryTests(unittest.TestCase):
             set(REQUIRED_PATHS) | {".cargo_vcs_info.json", "Cargo.toml.orig"},
             set(REQUIRED_PATHS),
         )
+
+    def test_rejects_common_private_key_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive = self.archive(Path(temp), set(REQUIRED_PATHS) | {"src/id_ed25519"})
+            with self.assertRaisesRegex(ValueError, "id_ed25519"):
+                inspect_archive(archive)
+
+    def test_rejects_symlink_member(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive = self.archive(Path(temp), set(REQUIRED_PATHS) | {"src/linked.rs"}, "src/linked.rs")
+            with self.assertRaisesRegex(ValueError, "non-file archive member"):
+                inspect_archive(archive)
 
 
 if __name__ == "__main__":

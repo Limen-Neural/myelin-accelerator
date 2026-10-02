@@ -82,7 +82,7 @@ The ignored tests require a working CUDA device. CI also compiles and assembles 
 ```bibtex
 @software{myelin_accelerator,
   title  = {Myelin-Accelerator},
-  author = {Raul Cardenas Montoya},
+  author = {Cardenas Montoya, Raul},
   year   = {2026},
   url    = {https://github.com/Limen-Neural/myelin-accelerator}
 }

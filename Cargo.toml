@@ -11,7 +11,7 @@ categories = ["hardware-support", "artificial-intelligence", "simulation"]
 # Keep the published source boundary explicit. The CUDA build reads cu/ at
 # compile time; the packaged test and release probes read fixtures and scripts.
 include = [
-    "Cargo.toml", "Cargo.lock", "README.md", "LICENSE-*", "build.rs",
+    "Cargo.toml", "Cargo.lock", "README.md", "REVIEW.md", "LICENSE-*", "build.rs",
     "src/**", "cu/**", "examples/**", "tests/**", "scripts/**", "docs/**",
 ]
 
