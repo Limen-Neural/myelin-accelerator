@@ -85,14 +85,29 @@ def archive_relative_path(member_name: str) -> str:
     if not member_name.startswith(prefix):
         raise ValueError(f"outside crate root: {member_name}")
     raw_path = member_name[len(prefix) :]
-    parts = PurePosixPath(raw_path).parts
-    if not parts or raw_path.startswith("/") or any(part in {".", ".."} for part in raw_path.split("/")):
-        raise ValueError(f"outside crate root: {member_name}")
-    if any(part in FORBIDDEN_DIRECTORIES or part.startswith("cmake-build-") for part in parts[:-1]):
-        raise ValueError(f"forbidden archive path: {raw_path}")
-    if parts[-1] in FORBIDDEN_NAMES or raw_path.endswith(FORBIDDEN_SUFFIXES):
-        raise ValueError(f"forbidden archive path: {raw_path}")
+    check_safe_path(raw_path, member_name)
+    check_allowed_path(raw_path)
     return raw_path
+
+
+def check_safe_path(raw_path: str, member_name: str) -> None:
+    invalid = not raw_path or raw_path.startswith("/")
+    invalid |= bool({"", ".", ".."}.intersection(raw_path.split("/")))
+    if invalid:
+        raise ValueError(f"outside crate root: {member_name}")
+
+
+def check_allowed_path(raw_path: str) -> None:
+    parts = PurePosixPath(raw_path).parts
+    for part in parts[:-1]:
+        forbidden = part in FORBIDDEN_DIRECTORIES
+        forbidden |= part.startswith("cmake-build-")
+        if forbidden:
+            raise ValueError(f"forbidden archive path: {raw_path}")
+    forbidden_name = parts[-1] in FORBIDDEN_NAMES
+    forbidden_name |= raw_path.endswith(FORBIDDEN_SUFFIXES)
+    if forbidden_name:
+        raise ValueError(f"forbidden archive path: {raw_path}")
 
 
 @dataclass
