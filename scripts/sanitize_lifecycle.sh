@@ -30,29 +30,38 @@ fi
 command -v python3 >/dev/null || { echo 'ERROR: python3 is required to parse Cargo JSON.' >&2; exit 1; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-cargo test --locked --features cuda --test gpu_lifecycle --no-run \
+cargo test --locked --features cuda --test gpu_lifecycle --test snn_fixtures_gpu --no-run \
     --message-format=json-render-diagnostics > "$work/cargo.json"
-binary="$(python3 - "$work/cargo.json" <<'PY'
+python3 - "$work/cargo.json" > "$work/binaries.tsv" <<'PY'
 import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as messages:
     artifacts = [json.loads(line) for line in messages]
-executables = {
-    item["executable"] for item in artifacts
-    if item.get("reason") == "compiler-artifact"
-    and item.get("target", {}).get("name") == "gpu_lifecycle"
-    and item.get("profile", {}).get("test")
-    and item.get("executable")
-}
-if len(executables) != 1:
-    sys.exit(f"ERROR: expected one gpu_lifecycle executable, found {len(executables)}")
-print(executables.pop())
+for suite in ("gpu_lifecycle", "snn_fixtures_gpu"):
+    executables = {
+        item["executable"] for item in artifacts
+        if item.get("reason") == "compiler-artifact"
+        and item.get("target", {}).get("name") == suite
+        and item.get("profile", {}).get("test")
+        and item.get("executable")
+    }
+    if len(executables) != 1:
+        sys.exit(f"ERROR: expected one {suite} executable, found {len(executables)}")
+    print(f"{suite}\t{executables.pop()}")
 PY
-)"
-printf 'Running: %q --tool memcheck --error-exitcode 99 %q --ignored --test-threads=1 --nocapture\n' "$sanitizer" "$binary"
-"$sanitizer" --tool memcheck --error-exitcode 99 "$binary" \
-    --ignored --test-threads=1 --nocapture 2>&1 | tee "$work/sanitizer.log"
-grep -Eq '^========= ERROR SUMMARY: 0 errors$' "$work/sanitizer.log" || {
-    echo 'ERROR: Compute Sanitizer did not confirm zero errors.' >&2
-    exit 1
-}
+
+# Separate processes and logs keep each owner's context lifetime observable.
+while IFS=$'\t' read -r suite binary; do
+    log="$work/$suite.log"
+    printf 'Running %s: %q --tool memcheck --error-exitcode 99 %q --ignored --test-threads=1 --nocapture\n' "$suite" "$sanitizer" "$binary"
+    "$sanitizer" --tool memcheck --error-exitcode 99 "$binary" \
+        --ignored --test-threads=1 --nocapture 2>&1 | tee "$log"
+    grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$log" || {
+        echo "ERROR: $suite did not confirm executed, passing device tests." >&2
+        exit 1
+    }
+    grep -Eq '^========= ERROR SUMMARY: 0 errors$' "$log" || {
+        echo "ERROR: $suite did not confirm zero Compute Sanitizer errors." >&2
+        exit 1
+    }
+done < "$work/binaries.tsv"
