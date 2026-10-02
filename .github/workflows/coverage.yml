@@ -1,0 +1,78 @@
+# Copyright 2026 Raul Montoya Cardenas
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Rust coverage
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu-coverage:
+    name: CPU Rust coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout measured commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install Rust with matching LLVM tools
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+
+      # This compiles the CPU stub, not src/gpu or the CUDA device kernels.
+      # Include the benchmark harness; exclude test/fixture code from the report.
+      - name: Generate CPU and benchmark-harness coverage
+        run: |
+          mkdir -p target/coverage
+          cargo llvm-cov --locked --no-default-features --features bench \
+            --all-targets --lcov --remap-path-prefix \
+            --ignore-filename-regex '(^|/)(tests/|build\.rs$)' \
+            --output-path target/coverage/lcov.info
+
+      - name: Preserve LCOV report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cpu-rust-coverage
+          path: target/coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
+
+      # Fork and Dependabot PRs still generate an artifact, but cannot rely on
+      # write-capable OIDC credentials. Never use pull_request_target here.
+      - name: Upload informational coverage to Qlty
+        if: >-
+          github.actor != 'dependabot[bot]' &&
+          (github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository)
+        uses: qltysh/qlty-action/coverage@c9b09987143d1e4ac955f4803c7bea742102feb5 # v2
+        with:
+          oidc: true
+          files: target/coverage/lcov.info
+          format: lcov
+          name: cpu-rust
+          tag: cpu-rust
+          cli-version: 0.651.0
+          skip-errors: false

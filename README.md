@@ -65,6 +65,9 @@ cargo test --locked
 cargo build --locked --no-default-features
 ```
 
+The [Rust coverage workflow](docs/COVERAGE.md) measures the CPU/stub build and
+benchmark harness with Qlty. CUDA device validation remains a separate gate.
+
 For the CUDA path, use a CUDA 13.2+ toolkit with `nvcc` and an `sm_120` capable GPU for device execution:
 
 ```bash
