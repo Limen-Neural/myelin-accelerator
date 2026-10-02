@@ -203,6 +203,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           persist-credentials: false
+          # Qualify the PR head itself, not GitHub's synthetic PR merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
@@ -243,13 +245,13 @@ jobs:
       - name: Prepare crates.io candidate from exact commit
         run: |
           python3 -B scripts/prepare_crate.py \
-            --candidate-sha "$(git rev-parse HEAD)" \
+            --candidate-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
             --output-dir "$RUNNER_TEMP/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}"
 
       - name: Retain crate preparation evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
-          name: myelin-v0.2.0-candidate-${{ github.sha }}
+          name: myelin-v0.2.0-candidate-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/summary.json
             ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/*.log
