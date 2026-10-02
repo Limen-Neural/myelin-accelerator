@@ -66,18 +66,24 @@ def inspect_archive(archive_path: Path) -> set[str]:
     files: set[str] = set()
     with tarfile.open(archive_path, "r:gz") as archive:
         for member in archive.getmembers():
-            if member.isdir() and member.name.rstrip("/") == ARCHIVE_ROOT:
-                continue
-            raw_path = archive_relative_path(member.name)
-            if member.isdir():
-                continue
-            if not member.isfile():
-                raise ValueError(f"non-file archive member: {raw_path}")
-            files.add(raw_path)
+            path = archive_member_file(member)
+            if path is not None:
+                files.add(path)
     missing = REQUIRED_PATHS - files
     if missing:
         raise ValueError(f"missing required archive paths: {', '.join(sorted(missing))}")
     return files
+
+
+def archive_member_file(member: tarfile.TarInfo) -> str | None:
+    if member.isdir() and member.name.rstrip("/") == ARCHIVE_ROOT:
+        return None
+    path = archive_relative_path(member.name)
+    if member.isdir():
+        return None
+    if not member.isfile():
+        raise ValueError(f"non-file archive member: {path}")
+    return path
 
 
 def archive_relative_path(member_name: str) -> str:
