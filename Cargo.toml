@@ -8,7 +8,12 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/Limen-Neural/myelin-accelerator"
 keywords = ["cuda", "snn", "neuromorphic", "gpu", "spiking-network"]
 categories = ["hardware-support", "artificial-intelligence", "simulation"]
-exclude = [".codex/**"]
+# Keep the published source boundary explicit. The CUDA build reads cu/ at
+# compile time; the packaged test and release probes read fixtures and scripts.
+include = [
+    "Cargo.toml", "Cargo.lock", "README.md", "REVIEW.md", "LICENSE-*", "build.rs",
+    "src/**", "cu/**", "examples/**", "tests/**", "scripts/**", "docs/**",
+]
 
 [lib]
 name = "myelin_accelerator"

@@ -41,6 +41,10 @@ benchmark_results.comparison.json
 *.rmeta
 *.rlib
 
+# Python verification caches
+__pycache__/
+*.pyc
+
 # Local sandbox artifacts
 myelin-accelerator/
 .hermes/
