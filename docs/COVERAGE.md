@@ -26,11 +26,20 @@ Use a Rust toolchain with its matching `llvm-tools-preview` component and
 
 ```bash
 mkdir -p target/coverage
+cargo llvm-cov clean --workspace
 cargo llvm-cov --locked --no-default-features --features bench \
-  --all-targets --lcov --remap-path-prefix \
+  --all-targets --no-report --remap-path-prefix
+cargo llvm-cov report --lcov \
   --ignore-filename-regex '(^|/)(tests/|build\.rs$)' \
   --output-path target/coverage/lcov.info
+grep -Fxq 'SF:src/gpu_stub.rs' target/coverage/lcov.info
+grep -Fxq 'SF:examples/benchmark.rs' target/coverage/lcov.info
 ```
+
+Tests and export are separate because the combined command's default filter
+excludes remapped `examples/` paths. Export uses the already-remapped profiles,
+and CI checks that both the CPU stub and benchmark harness appear in LCOV.
+The explicit clean prevents profiles from earlier runs contaminating the report.
 
 CI retains `target/coverage/lcov.info` in the `cpu-rust-coverage` artifact
 for 14 days. Report generation and upload failures fail the workflow rather
