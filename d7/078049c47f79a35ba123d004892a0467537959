@@ -1,0 +1,27 @@
+scripts/sanitize_lifecycle.sh
+  s_171b203c5b7b72::t_c11a8732b22155 33,35,40-50,52-67
+.github/workflows/ci.yml
+  s_171b203c5b7b72::t_37f030609dd4dd 237
+tests/snn_fixtures_gpu.rs
+  s_171b203c5b7b72::t_37f030609dd4dd 41-43,45-46,55-56
+CLAUDE.md
+  s_171b203c5b7b72::t_37f030609dd4dd 92
+REVIEW.md
+  s_171b203c5b7b72::t_37f030609dd4dd 231,241-253
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d7078049c47f79a35ba123d004892a0467537959",
+  "prompts": {},
+  "sessions": {
+    "s_171b203c5b7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ece1-e072-7f91-a064-453b9c302bbf",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
