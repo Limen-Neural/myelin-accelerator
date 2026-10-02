@@ -53,9 +53,9 @@ PY
 # Separate processes and logs keep each owner's context lifetime observable.
 while IFS=$'\t' read -r suite binary; do
     log="$work/$suite.log"
-    printf 'Running %s: %q --tool memcheck --error-exitcode 99 %q --ignored --test-threads=1 --nocapture\n' "$suite" "$sanitizer" "$binary"
+    printf 'Running %s: %q --tool memcheck --error-exitcode 99 %q --include-ignored --test-threads=1 --nocapture\n' "$suite" "$sanitizer" "$binary"
     "$sanitizer" --tool memcheck --error-exitcode 99 "$binary" \
-        --ignored --test-threads=1 --nocapture 2>&1 | tee "$log"
+        --include-ignored --test-threads=1 --nocapture 2>&1 | tee "$log"
     grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$log" || {
         echo "ERROR: $suite did not confirm executed, passing device tests." >&2
         exit 1

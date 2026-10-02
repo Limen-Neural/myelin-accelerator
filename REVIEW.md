@@ -240,7 +240,8 @@ cargo run --example benchmark --profile bench --features bench,cuda
 
 The mandatory teardown script builds `gpu_lifecycle` and `snn_fixtures_gpu`,
 discovers each executable from Cargo JSON, and runs them in separate serial
-memcheck processes. Each suite must execute at least one passing device test,
+memcheck processes with `--include-ignored`, covering ordinary tests as well as
+the GPU-only ignored tests. Each suite must execute at least one passing test,
 have no failed or ignored tests, and report `ERROR SUMMARY: 0 errors`.
 Missing tools/executables, nonzero process exits, and missing summaries fail
 the gate. No extra context is retained to mask a destruction-order defect.
