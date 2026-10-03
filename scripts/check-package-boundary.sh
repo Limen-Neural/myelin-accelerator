@@ -15,9 +15,22 @@ if grep -Ein '(^|/)(experiments|research)(/|$)|^examples/saaq|^tests/fixtures/sa
   exit 1
 fi
 
-# Packaged source trees: allow only reusable .rs / .cu / .cuh sources.
-src_cu=$(grep -Ein '^(src|cu)/' "$tmp" || true)
-if [[ -n "$src_cu" ]] && printf '%s\n' "$src_cu" | grep -Eiv '\.(rs|cu|cuh)$'; then
-  echo 'experimental research must not be shipped in the crate archive' >&2
-  exit 1
-fi
+check_allowed_paths() {
+  local directory=$1
+  local allowed=$2
+  local paths
+
+  paths=$(grep -E "^${directory}/" "$tmp" || true)
+  if [[ -n "$paths" ]] && printf '%s\n' "$paths" | grep -Ev "$allowed"; then
+    echo 'experimental research must not be shipped in the crate archive' >&2
+    exit 1
+  fi
+}
+
+# Broad Cargo include globs are narrowed to reusable source and documentation.
+# The named SNN workload fixtures are intentional package-test inputs.
+check_allowed_paths 'src' '^src/.*\.rs$'
+check_allowed_paths 'cu' '^cu/.*\.(cu|cuh)$'
+check_allowed_paths 'examples' '^examples/.*\.rs$'
+check_allowed_paths 'tests' '^tests/.*\.(rs|py)$|^tests/fixtures/snn/README\.md$|^tests/fixtures/snn/[^/]+/fixture\.json$|^tests/fixtures/snn/spikenaut/parameters_weights\.mem$'
+check_allowed_paths 'docs' '^docs/.*\.md$'

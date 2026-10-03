@@ -13,6 +13,12 @@ printf '%s\n' \
   'cu/saaq.cu' \
   'cu/fused_routing_saaq.cu' \
   'cu/common.cuh' \
+  'examples/benchmark.rs' \
+  'tests/api_contract.rs' \
+  'tests/test_release_prep.py' \
+  'tests/fixtures/snn/README.md' \
+  'tests/fixtures/snn/spikenaut/fixture.json' \
+  'tests/fixtures/snn/spikenaut/parameters_weights.mem' \
   'docs/ARCHITECTURE.md' \
   | "$checker"
 
@@ -29,7 +35,11 @@ for forbidden_path in \
   'cu/saaq/dataset.json' \
   'cu/saaq/results.tsv' \
   'src/quantization/saaq_manifest.json' \
-  'examples/saaq_manifest.json'; do
+  'examples/saaq_manifest.json' \
+  'examples/reference_weights.bin' \
+  'tests/results.jsonl' \
+  'tests/fixtures/results.tsv' \
+  'docs/benchmark_manifest.json'; do
   if printf '%s\n' "$forbidden_path" | "$checker" >/dev/null 2>&1; then
     echo "package boundary accepted forbidden path: $forbidden_path" >&2
     exit 1
