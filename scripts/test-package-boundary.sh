@@ -40,8 +40,10 @@ for forbidden_path in \
   'src/quantization/saaq_manifest.json' \
   'examples/saaq_manifest.json' \
   'examples/reference_weights.bin' \
+  'examples/experimental.rs' \
   'tests/results.jsonl' \
   'tests/fixtures/results.tsv' \
+  'tests/fixtures/snn/unapproved/fixture.json' \
   'tests/bench_repro.rs' \
   'tests/fixtures/bench/manifest.sanitized.json' \
   'docs/benchmark_manifest.json' \

@@ -32,7 +32,7 @@ check_allowed_paths() {
 # The named SNN workload fixtures are intentional package-test inputs.
 check_allowed_paths 'src' '^src/.*\.rs$'
 check_allowed_paths 'cu' '^cu/.*\.(cu|cuh)$'
-check_allowed_paths 'examples' '^examples/.*\.rs$'
-check_allowed_paths 'tests' '^tests/.*\.(rs|py)$|^tests/fixtures/snn/README\.md$|^tests/fixtures/snn/[^/]+/fixture\.json$|^tests/fixtures/snn/spikenaut/parameters_weights\.mem$'
+check_allowed_paths 'examples' '^examples/benchmark\.rs$'
+check_allowed_paths 'tests' '^tests/.*\.(rs|py)$|^tests/fixtures/snn/README\.md$|^tests/fixtures/snn/(spikenaut|synfire_lifneuron)/fixture\.json$|^tests/fixtures/snn/spikenaut/parameters_weights\.mem$'
 check_allowed_paths 'docs' '^docs/.*\.md$'
 check_allowed_paths 'scripts' '^scripts/.*\.(sh|py)$|^scripts/ptx_entries\.txt$'
