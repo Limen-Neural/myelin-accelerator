@@ -13,7 +13,7 @@ categories = ["hardware-support", "artificial-intelligence", "simulation"]
 # The CUDA build reads cu/; package verification reads SNN fixtures and scripts.
 # Benchmark regression fixtures and their fixture-only test stay repository-only.
 include = [
-    "/Cargo.toml", "/Cargo.lock", "/README.md", "/REVIEW.md", "/LICENSE-*", "/build.rs",
+    "/Cargo.toml", "/Cargo.lock", "/README.md", "/REVIEW.md", "/LICENSE-APACHE", "/LICENSE-MIT", "/build.rs",
     "/src/**", "/cu/**", "/examples/**", "/tests/**", "/scripts/**", "/docs/**",
     "!/tests/bench_repro.rs", "!/tests/fixtures/bench/**",
 ]

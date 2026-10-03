@@ -8,6 +8,15 @@ root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 checker="$root_dir/scripts/check-package-boundary.sh"
 
 printf '%s\n' \
+  '.cargo_vcs_info.json' \
+  'Cargo.lock' \
+  'Cargo.toml' \
+  'Cargo.toml.orig' \
+  'LICENSE-APACHE' \
+  'LICENSE-MIT' \
+  'README.md' \
+  'REVIEW.md' \
+  'build.rs' \
   'src/lib.rs' \
   'src/saaq.rs' \
   'cu/saaq.cu' \
@@ -15,6 +24,18 @@ printf '%s\n' \
   'cu/common.cuh' \
   'examples/benchmark.rs' \
   'tests/api_contract.rs' \
+  'tests/capability_probe.rs' \
+  'tests/cosine_gpu.rs' \
+  'tests/gpu_buffer.rs' \
+  'tests/gpu_lifecycle.rs' \
+  'tests/kernel_hazards_gpu.rs' \
+  'tests/oracle.rs' \
+  'tests/oracle_gpu.rs' \
+  'tests/ptx_entry_manifest.rs' \
+  'tests/snn_fixtures.rs' \
+  'tests/snn_fixtures_gpu.rs' \
+  'tests/snn_support/mod.rs' \
+  'tests/ternary_gpu.rs' \
   'tests/test_release_prep.py' \
   'tests/fixtures/snn/README.md' \
   'tests/fixtures/snn/spikenaut/fixture.json' \
@@ -47,6 +68,8 @@ for forbidden_path in \
   'tests/fixtures/snn/spikenaut/weights.py' \
   'tests/saaq_experiment.py' \
   'tests/run_experiment.py' \
+  'tests/saaq_experiment.rs' \
+  'tests/run_experiment.rs' \
   'tests/bench_repro.rs' \
   'tests/fixtures/bench/manifest.sanitized.json' \
   'docs/benchmark_manifest.json' \
@@ -55,7 +78,8 @@ for forbidden_path in \
   'scripts/saaq/results.jsonl' \
   'scripts/saaq/recipe.py' \
   'scripts/saaq/run_experiment.py' \
-  'scripts/experimental_runner.py'; do
+  'scripts/experimental_runner.py' \
+  'LICENSE-results.json'; do
   if printf '%s\n' "$forbidden_path" | "$checker" >/dev/null 2>&1; then
     echo "package boundary accepted forbidden path: $forbidden_path" >&2
     exit 1
