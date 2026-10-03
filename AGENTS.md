@@ -35,6 +35,8 @@ The sanitizer script runs `gpu_lifecycle` and `snn_fixtures_gpu` serially under 
 
 Cargo/crates.io is the supported distribution path. The v0.2.0 package has an explicit `Cargo.toml` include inventory; verify the actual `.crate`, including CUDA headers, tests, fixtures, and scripts. For a clean exact commit, `docs/RELEASING.md` describes `scripts/prepare_crate.py`, extracted-crate tests, separate consumers, and the publication dry-run. The script requires Python 3.11.4+, CUDA, and Compute Sanitizer. It never uploads or tags.
 
+v0.2.0 is published from `6cfb49c60fb7f95818e87d0ea0e1ce76c2360fb5`. Later `main` commits do not change that registry artifact; future publication requires a new version and its own exact-commit qualification.
+
 Record the exact SHA and artifact hash. Merging a PR creates a new commit; earlier qualification cannot be assigned to it. Re-run the required qualification on the final candidate before changing LIM-1460's publication pin. Do not publish to crates.io, move the existing `v0.2.0` tag, or create a GitHub release as part of a preparation or reporting PR. The `linear-release.yml` workflow reports a verified stable GitHub release to Linear **after** the crate is live, using `LINEAR_ACCESS_KEY`; it is not a publishing workflow.
 
 Keep PR review, CI, and tracker status tied to the current head. When a change is reviewed or merged, distinguish passing checks from unresolved review threads and from actual registry publication.
