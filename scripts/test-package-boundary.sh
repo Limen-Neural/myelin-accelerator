@@ -44,6 +44,7 @@ for forbidden_path in \
   'tests/results.jsonl' \
   'tests/fixtures/results.tsv' \
   'tests/fixtures/snn/unapproved/fixture.json' \
+  'tests/fixtures/snn/spikenaut/weights.py' \
   'tests/bench_repro.rs' \
   'tests/fixtures/bench/manifest.sanitized.json' \
   'docs/benchmark_manifest.json' \
