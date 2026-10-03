@@ -8,9 +8,10 @@ tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 cat >"$tmp"
 
-# Ban research/experiment trees and SAAQ research layouts.
+# Ban research/experiment trees, SAAQ research layouts, and repository-only
+# benchmark regression inputs.
 # ^examples/saaq matches examples/saaq/... and examples/saaq_manifest.json.
-if grep -Ein '(^|/)(experiments|research)(/|$)|^examples/saaq|^tests/fixtures/saaq/|^docs/saaq/' "$tmp"; then
+if grep -Ein '(^|/)(experiments|research)(/|$)|^examples/saaq|^tests/fixtures/(saaq|bench)/|^tests/bench_repro\.rs$|^docs/saaq/' "$tmp"; then
   echo 'experimental research must not be shipped in the crate archive' >&2
   exit 1
 fi

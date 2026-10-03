@@ -42,6 +42,8 @@ for forbidden_path in \
   'examples/reference_weights.bin' \
   'tests/results.jsonl' \
   'tests/fixtures/results.tsv' \
+  'tests/bench_repro.rs' \
+  'tests/fixtures/bench/manifest.sanitized.json' \
   'docs/benchmark_manifest.json' \
   'scripts/saaq/results.jsonl'; do
   if printf '%s\n' "$forbidden_path" | "$checker" >/dev/null 2>&1; then
