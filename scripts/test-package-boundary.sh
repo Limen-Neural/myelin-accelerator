@@ -45,9 +45,13 @@ for forbidden_path in \
   'tests/fixtures/results.tsv' \
   'tests/fixtures/snn/unapproved/fixture.json' \
   'tests/fixtures/snn/spikenaut/weights.py' \
+  'tests/saaq_experiment.py' \
+  'tests/run_experiment.py' \
   'tests/bench_repro.rs' \
   'tests/fixtures/bench/manifest.sanitized.json' \
   'docs/benchmark_manifest.json' \
+  'docs/saaq_results.md' \
+  'docs/SAAQ-experiment.md' \
   'scripts/saaq/results.jsonl' \
   'scripts/saaq/recipe.py' \
   'scripts/saaq/run_experiment.py' \
