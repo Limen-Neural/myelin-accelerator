@@ -8,9 +8,10 @@ tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 cat >"$tmp"
 
-root_paths=$(grep -Ev '/' "$tmp" || true)
-if [[ -n "$root_paths" ]] && printf '%s\n' "$root_paths" | grep -Ev '^(\.cargo_vcs_info\.json|Cargo\.lock|Cargo\.toml|Cargo\.toml\.orig|LICENSE-APACHE|LICENSE-MIT|README\.md|REVIEW\.md|build\.rs)$'; then
-  echo 'unapproved top-level file must not be shipped in the crate archive' >&2
+unapproved_paths=$(grep -Ev '^(src|cu|examples|tests|scripts|docs)/|^(\.cargo_vcs_info\.json|Cargo\.lock|Cargo\.toml|Cargo\.toml\.orig|LICENSE-APACHE|LICENSE-MIT|README\.md|REVIEW\.md|build\.rs)$' "$tmp" || true)
+if [[ -n "$unapproved_paths" ]]; then
+  printf '%s\n' "$unapproved_paths"
+  echo 'unapproved package path must not be shipped in the crate archive' >&2
   exit 1
 fi
 

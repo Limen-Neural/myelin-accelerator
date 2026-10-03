@@ -79,7 +79,8 @@ for forbidden_path in \
   'scripts/saaq/recipe.py' \
   'scripts/saaq/run_experiment.py' \
   'scripts/experimental_runner.py' \
-  'LICENSE-results.json'; do
+  'LICENSE-results.json' \
+  'mystery/dataset.json'; do
   if printf '%s\n' "$forbidden_path" | "$checker" >/dev/null 2>&1; then
     echo "package boundary accepted forbidden path: $forbidden_path" >&2
     exit 1
