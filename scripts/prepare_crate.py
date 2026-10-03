@@ -162,16 +162,18 @@ class RunContext:
                 stdout=subprocess.PIPE,
                 stderr=log,
             )
-            assert source.stdout is not None
+            source_stdout = source.stdout
+            if source_stdout is None:
+                raise RuntimeError(f"{name} could not capture producer output")
             check = subprocess.run(  # nosec B603 - fixed repository checker
                 consumer,
                 cwd=cwd,
                 env=self.env,
-                stdin=source.stdout,
+                stdin=source_stdout,
                 stdout=log,
                 stderr=subprocess.STDOUT,
             )
-            source.stdout.close()
+            source_stdout.close()
             source_returncode = source.wait()
         returncode = check.returncode or source_returncode
         print(f"{name}: {'PASS' if returncode == 0 else 'FAIL'} ({log_path})", flush=True)

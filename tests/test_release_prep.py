@@ -90,7 +90,8 @@ class ArchiveBoundaryTests(unittest.TestCase):
                 self.pipelines: list[tuple[str, list[str], list[str], Path]] = []
 
             def run(self, _name: str, _args: list[str], _cwd: Path) -> None:
-                pass
+                # Archive creation and copying are mocked; only pipeline wiring is under test.
+                return None
 
             def run_pipeline(self, name: str, producer: list[str], consumer: list[str], cwd: Path) -> None:
                 self.pipelines.append((name, producer, consumer, cwd))
