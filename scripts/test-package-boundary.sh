@@ -48,7 +48,10 @@ for forbidden_path in \
   'tests/bench_repro.rs' \
   'tests/fixtures/bench/manifest.sanitized.json' \
   'docs/benchmark_manifest.json' \
-  'scripts/saaq/results.jsonl'; do
+  'scripts/saaq/results.jsonl' \
+  'scripts/saaq/recipe.py' \
+  'scripts/saaq/run_experiment.py' \
+  'scripts/experimental_runner.py'; do
   if printf '%s\n' "$forbidden_path" | "$checker" >/dev/null 2>&1; then
     echo "package boundary accepted forbidden path: $forbidden_path" >&2
     exit 1
