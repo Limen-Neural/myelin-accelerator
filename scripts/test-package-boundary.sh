@@ -12,6 +12,7 @@ printf '%s\n' \
   'src/saaq.rs' \
   'cu/saaq.cu' \
   'cu/fused_routing_saaq.cu' \
+  'cu/common.cuh' \
   'docs/ARCHITECTURE.md' \
   | "$checker"
 
@@ -23,8 +24,12 @@ for forbidden_path in \
   'docs/saaq/experiment.md' \
   'src/saaq/recipe.toml' \
   'src/saaq/results.json' \
+  'src/saaq/results.jsonl' \
+  'src/saaq/weights.bin' \
   'cu/saaq/dataset.json' \
-  'src/quantization/saaq_manifest.json'; do
+  'cu/saaq/results.tsv' \
+  'src/quantization/saaq_manifest.json' \
+  'examples/saaq_manifest.json'; do
   if printf '%s\n' "$forbidden_path" | "$checker" >/dev/null 2>&1; then
     echo "package boundary accepted forbidden path: $forbidden_path" >&2
     exit 1
