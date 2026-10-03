@@ -152,6 +152,35 @@ class RunContext:
             print("\n".join(log_path.read_text().splitlines()[-30:]), file=sys.stderr)
             raise RuntimeError(f"{name} failed with exit {result.returncode}")
 
+    def run_pipeline(self, name: str, producer: list[str], consumer: list[str], cwd: Path) -> None:
+        log_path = self.output / f"{name}.log"
+        with log_path.open("w", encoding="utf-8") as log:
+            source = subprocess.Popen(  # nosec B603 - fixed local Cargo command
+                producer,
+                cwd=cwd,
+                env=self.env,
+                stdout=subprocess.PIPE,
+                stderr=log,
+            )
+            source_stdout = source.stdout
+            if source_stdout is None:
+                raise RuntimeError(f"{name} could not capture producer output")
+            check = subprocess.run(  # nosec B603 - fixed repository checker
+                consumer,
+                cwd=cwd,
+                env=self.env,
+                stdin=source_stdout,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+            source_stdout.close()
+            source_returncode = source.wait()
+        returncode = check.returncode or source_returncode
+        print(f"{name}: {'PASS' if returncode == 0 else 'FAIL'} ({log_path})", flush=True)
+        if returncode:
+            print("\n".join(log_path.read_text().splitlines()[-30:]), file=sys.stderr)
+            raise RuntimeError(f"{name} failed with exit {returncode}")
+
 
 def check_extracted_crate(unpacked: Path, context: RunContext) -> None:
     manifest = str(unpacked / MANIFEST_NAME)
@@ -230,6 +259,12 @@ def cuda_environment(parser: argparse.ArgumentParser) -> dict[str, str]:
 
 def prepare_archive(context: RunContext) -> tuple[Path, set[str]]:
     context.run("package-list", ["cargo", "package", "--locked", "--list"], ROOT)
+    context.run_pipeline(
+        "package-boundary",
+        ["cargo", "package", "--locked", "--list"],
+        [str(ROOT / "scripts" / "check-package-boundary.sh")],
+        ROOT,
+    )
     context.run("package", ["cargo", "package", "--locked"], ROOT)
     package_archive = Path(context.env["CARGO_TARGET_DIR"]) / "package" / f"{ARCHIVE_ROOT}.crate"
     files = inspect_archive(package_archive)
