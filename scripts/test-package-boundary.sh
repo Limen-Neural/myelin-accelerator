@@ -20,6 +20,9 @@ printf '%s\n' \
   'tests/fixtures/snn/spikenaut/fixture.json' \
   'tests/fixtures/snn/spikenaut/parameters_weights.mem' \
   'docs/ARCHITECTURE.md' \
+  'scripts/check-package-boundary.sh' \
+  'scripts/snn_fixtures/verify_fixtures.py' \
+  'scripts/ptx_entries.txt' \
   | "$checker"
 
 for forbidden_path in \
@@ -39,7 +42,8 @@ for forbidden_path in \
   'examples/reference_weights.bin' \
   'tests/results.jsonl' \
   'tests/fixtures/results.tsv' \
-  'docs/benchmark_manifest.json'; do
+  'docs/benchmark_manifest.json' \
+  'scripts/saaq/results.jsonl'; do
   if printf '%s\n' "$forbidden_path" | "$checker" >/dev/null 2>&1; then
     echo "package boundary accepted forbidden path: $forbidden_path" >&2
     exit 1
