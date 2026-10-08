@@ -15,7 +15,10 @@ test.ptx
 .junie/
 .vscode/
 .ai/
-.cursor/
+.cursor/*
+# Cursor Cloud Agent environment: committed on purpose.
+!.cursor/environment.json
+!.cursor/install.sh
 .zed/
 
 # Generated PTX and intermediate files

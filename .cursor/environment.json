@@ -1,0 +1,4 @@
+{
+  "name": "myelin-accelerator",
+  "install": "bash .cursor/install.sh"
+}
