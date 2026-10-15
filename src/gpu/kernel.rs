@@ -49,13 +49,14 @@ static TERNARY_GEMM_FATBIN: &[u8] =
 static TERNARY_GEMM_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/ternary_gemm_sm_120.ptx"));
 
 #[cfg(not(feature = "saaq"))]
-const SPIKING_NETWORK_SYMBOLS: &[&str] = &[
+const SPIKING_KERNELS: &[&str] = &[
     "poisson_encode",
     "lif_step",
     "lif_step_weighted",
     "spike_rate",
     "reset_membrane",
-    "stdp_update",
+    "stdp_update_weights",
+    "stdp_update_traces",
     "neuro_bias_logits",
     "membrane_dv_dt_reduce_pass1",
     "routing_entropy_reduce_pass1",
@@ -63,7 +64,7 @@ const SPIKING_NETWORK_SYMBOLS: &[&str] = &[
 ];
 
 #[cfg(feature = "saaq")]
-const SPIKING_NETWORK_SYMBOLS: &[&str] = &[
+const SPIKING_KERNELS: &[&str] = &[
     "poisson_encode",
     "project_snapshot_current",
     "lif_step",
@@ -72,7 +73,8 @@ const SPIKING_NETWORK_SYMBOLS: &[&str] = &[
     "gif_step_weighted_f16",
     "spike_rate",
     "reset_membrane",
-    "stdp_update",
+    "stdp_update_weights",
+    "stdp_update_traces",
     "neuro_bias_logits",
     "membrane_dv_dt_reduce_pass1",
     "routing_entropy_reduce_pass1",
@@ -80,6 +82,21 @@ const SPIKING_NETWORK_SYMBOLS: &[&str] = &[
     "saaq_find_best_walker",
     "saaq_reduce_partials_f16",
 ];
+
+const VECTOR_SIMILARITY_KERNELS: &[&str] =
+    &["cosine_similarity_batched", "cosine_similarity_top_k"];
+
+const SATSOLVER_KERNELS: &[&str] = &[
+    "satsolver_init",
+    "satsolver_step",
+    "satsolver_aux_update",
+    "satsolver_check_solution",
+    "satsolver_extract",
+    "satsolver_best_reduce_pass1",
+    "satsolver_best_reduce_pass2",
+];
+
+const TERNARY_GEMM_KERNELS: &[&str] = &["ternary_gemv", "ternary_gemm"];
 
 /// Manages compiled fatbin/PTX modules and kernel function handles.
 pub struct KernelModule {
@@ -119,7 +136,7 @@ impl KernelModule {
             SPIKING_NETWORK_FATBIN,
             SPIKING_NETWORK_PTX,
             "spiking_network",
-            SPIKING_NETWORK_SYMBOLS,
+            SPIKING_KERNELS,
         ) {
             availability.spiking_network = Some(false);
             return Err(KernelLoadFailure {
@@ -135,7 +152,7 @@ impl KernelModule {
             VECTOR_SIMILARITY_FATBIN,
             VECTOR_SIMILARITY_PTX,
             "vector_similarity",
-            &["cosine_similarity_batched", "cosine_similarity_top_k"],
+            VECTOR_SIMILARITY_KERNELS,
         ) {
             availability.vector_similarity = Some(false);
             return Err(KernelLoadFailure {
@@ -151,15 +168,7 @@ impl KernelModule {
             SATSOLVER_FATBIN,
             SATSOLVER_PTX,
             "satsolver",
-            &[
-                "satsolver_init",
-                "satsolver_step",
-                "satsolver_aux_update",
-                "satsolver_check_solution",
-                "satsolver_extract",
-                "satsolver_best_reduce_pass1",
-                "satsolver_best_reduce_pass2",
-            ],
+            SATSOLVER_KERNELS,
         ) {
             availability.satsolver = Some(false);
             return Err(KernelLoadFailure {
@@ -175,7 +184,7 @@ impl KernelModule {
             TERNARY_GEMM_FATBIN,
             TERNARY_GEMM_PTX,
             "ternary_gemm",
-            &["ternary_gemv", "ternary_gemm"],
+            TERNARY_GEMM_KERNELS,
         ) {
             availability.ternary_gemm = Some(false);
             return Err(KernelLoadFailure {

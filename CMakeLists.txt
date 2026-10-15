@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD 17)
 # to dodge C++23 header paths.
 # Prefer /usr/local/cuda (symlink) or override: -DCUDA_NVCC=/usr/local/cuda-13.3/bin/nvcc
 set(CUDA_NVCC /usr/local/cuda/bin/nvcc CACHE FILEPATH "Path to nvcc")
-set(CUDA_ARCH sm_120)
+set(CUDA_ARCH sm_120 CACHE STRING "CUDA architecture for PTX compilation")
 set(CUDA_COMMON_FLAGS
         -ptx
         -arch=${CUDA_ARCH}

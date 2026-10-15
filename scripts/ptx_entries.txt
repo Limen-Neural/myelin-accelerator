@@ -1,0 +1,8 @@
+# Kernel entry points registered by KernelModule::load (src/gpu/kernel.rs),
+# mapped to the PTX file each module's kernels live in.
+# Checked by scripts/check_ptx_entries.sh in both CI jobs and by
+# tests/ptx_entry_manifest.rs, which fails if this drifts from kernel.rs.
+spiking_network_sm_120.ptx: poisson_encode lif_step lif_step_weighted spike_rate reset_membrane stdp_update_weights stdp_update_traces neuro_bias_logits membrane_dv_dt_reduce_pass1 routing_entropy_reduce_pass1 latent_reduce_pass2
+vector_similarity_sm_120.ptx: cosine_similarity_batched cosine_similarity_top_k
+satsolver_sm_120.ptx: satsolver_init satsolver_step satsolver_aux_update satsolver_check_solution satsolver_extract satsolver_best_reduce_pass1 satsolver_best_reduce_pass2
+ternary_gemm_sm_120.ptx: ternary_gemv ternary_gemm

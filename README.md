@@ -1,111 +1,64 @@
 # Myelin-Accelerator
 
-Blackwell-first CUDA kernels for neuromorphic inference, SAT search, and routing-heavy GPU workloads on RTX 5080-class hardware.
+[![CI](https://github.com/Limen-Neural/myelin-accelerator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Limen-Neural/myelin-accelerator/actions/workflows/ci.yml)
+[![GPU CI](https://img.shields.io/github/check-runs/Limen-Neural/myelin-accelerator/main?nameFilter=CUDA%20build%20%5Bself-hosted%5D%20%28sm_120%29&label=GPU%20CI)](https://github.com/Limen-Neural/myelin-accelerator/actions/workflows/ci.yml)
+[![CodeRabbit Reviews](https://img.shields.io/coderabbit/prs/github/Limen-Neural/myelin-accelerator?utm_source=oss&utm_medium=github&utm_campaign=Limen-Neural%2Fmyelin-accelerator&labelColor=171717&color=FF570A&label=CodeRabbit+Reviews)](https://coderabbit.ai/)
+[![Maintainability](https://qlty.sh/gh/Limen-Neural/projects/myelin-accelerator/maintainability.svg)](https://qlty.sh/gh/Limen-Neural/projects/myelin-accelerator)
+[![Code Coverage](https://qlty.sh/gh/Limen-Neural/projects/myelin-accelerator/coverage.svg)](https://qlty.sh/gh/Limen-Neural/projects/myelin-accelerator)
+[![CodeScene Average Code Health](https://codescene.io/projects/85266/status-badges/average-code-health)](https://codescene.io/projects/85266)
+[![CodeScene Hotspot Code Health](https://codescene.io/projects/85266/status-badges/hotspot-code-health)](https://codescene.io/projects/85266)
+[![CodeScene System Mastery](https://codescene.io/projects/85266/status-badges/system-mastery)](https://codescene.io/projects/85266)
+[![Analyzed by CodeScene](https://codescene.io/images/analyzed-by-codescene-badge.svg)](https://codescene.io/projects/85266)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+[![Crates.io](https://img.shields.io/crates/v/myelin-accelerator.svg)](https://crates.io/crates/myelin-accelerator)
 
-This repo is the **low-level compute layer** behind the stack: CUDA fatbin/PTX modules, Rust bindings, launch paths that keep the GPU busy instead of serializing work through one thread at a time, and (behind `--features saaq`) an experimental C-ABI `myelin_shim` for GIF/SAAQ launches.
+Rust/CUDA acceleration primitives for spiking neural networks (SNN) and neuromorphic workloads: a low-level compute layer of safe Rust wrappers around first-party CUDA kernels for spiking networks, routing, SAT search, and packed ternary GEMV/GEMM. The CUDA path targets and is validated on `sm_120` (NVIDIA Blackwell); the default build works without a CUDA toolkit or device. This is a compute layer, not a complete SNN framework or a general model-compatibility layer. An experimental GIF/SAAQ path and C-ABI `myelin_shim` are available behind `--features saaq` (pair with `cuda` for GPU launches); they are not on `default` and not part of the crates.io Tier-1 surface.
 
-**Backend scope and public API:** see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — what belongs here vs higher-level experiment/orchestration repos.
+**Release status:** [v0.2.0 is published on crates.io](https://crates.io/crates/myelin-accelerator/0.2.0) from [qualified commit `6cfb49c`](https://github.com/Limen-Neural/myelin-accelerator/commit/6cfb49c60fb7f95818e87d0ea0e1ce76c2360fb5), with a matching [GitHub release](https://github.com/Limen-Neural/myelin-accelerator/releases/tag/v0.2.0). See the [release guide](docs/RELEASING.md) and [qualification evidence](https://github.com/Limen-Neural/myelin-accelerator/issues/37#issuecomment-5945443818). Cargo/crates.io is the supported distribution path; Docker/container images are not a supported consumer surface. The CI and GPU CI badges reflect `main`, not this checkout or an open pull request.
 
-## Current State
+## Get started
 
-- `sm_120` target: the kernels are built and tuned for RTX 5080 / Blackwell.
-- `16 GB VRAM` discipline: kernel footprints are kept static and bounded; the big memory costs are in user-managed tensors, not temporary scratch.
-- `SAT path`: `atomicMin` is gone from the hot reduction path.
-- `Routing path`: `cosine_similarity_top_k` now uses warp-participating top-k reduction instead of a single-thread selection tail.
-- `Rust FFI`: kernel symbols are loaded through `src/gpu/kernel.rs`; the codebase stays ABI-consistent with the CUDA side.
-- Host **binary/ternary bitpacking** + group scales + CPU ref matmul: `src/bitpacking.rs`.
-- Scalar **CPU oracles** for public kernel paths + seeded mismatch reporting: `src/oracle.rs`.
-- Device **ternary GEMV/GEMM** (group-scaled, optional zero-skip): `cu/ternary_gemm.cu` — see [docs/TERNARY.md](docs/TERNARY.md).
-- Optional **experimental** GIF / SAAQ temporal path (`--features saaq`): `gif_step_weighted`, `gif_step_weighted_f16`, `saaq_find_best_walker`, plus `myelin_shim` C-ABI launches when also using `cuda`. Not on `default`; not part of the crates.io Tier-1 surface.
-- Fatbin (sm_120 SASS + compute_120 PTX) with PTX-JIT fallback and a consumer-installed launch-failure hook (no `sentry` dependency).
+Add the published crate with:
 
-## Module map
+```bash
+cargo add myelin-accelerator
+# For GPU launches: cargo add myelin-accelerator --features cuda
+```
 
-| Path | Role | Public? |
-|------|------|---------|
-| `src/lib.rs` | Crate root re-exports | yes |
-| `src/bitpacking.rs` | Host binary/ternary pack/unpack, scales, ref GEMV/GEMM | yes (`bitpacking`) |
-| `src/oracle.rs` | Scalar CPU oracles + seed/shape mismatch helpers | yes (`oracle`) |
-| `src/bench/` | Manifest schema, redaction, opt-in regression budgets | yes (`bench`) |
-| `src/gpu/` | CUDA context, fatbin/PTX load, buffers, launches | via re-exports when `cuda` |
-| `src/gpu_stub.rs` | CPU-safe stand-ins without toolkit | used when `cuda` off |
-| `src/gif.rs` | Experimental GIF/SAAQ constants + CPU reference | `--features saaq` (`gif`) |
-| `src/launch_hook.rs` | Launch-failure callback | yes |
-| `cu/*.cu` | Device kernels (spiking, similarity, SAT, ternary; GIF/SAAQ if `saaq`) | via fatbin/PTX + wrappers |
-| `examples/benchmark.rs` | Latency / GPU info harness + versioned manifest | feature `bench` (+ `cuda` for GPU) |
-| `build.rs` / `CMakeLists.txt` | `nvcc -ptx` sidecar + fatbin; C ABI shim if `saaq` | build-only |
-| `docs/ARCHITECTURE.md` | Ownership + API boundary | docs |
-| `docs/TERNARY.md` | Ternary encoding, scales, GOZ1 interop, kernels | docs |
-| `docs/BENCHMARKS.md` | Record / compare / refresh baselines; opt-in budgets | docs |
-
-### Features
-
-| Feature | Meaning |
-|---------|---------|
-| *(default)* | Stub GPU API; no `nvcc`; no SAAQ/GIF |
-| `cuda` | Real GPU path (`cust`, `nvtx`) |
-| `saaq` | Experimental GIF/SAAQ host + device path (opt-in; pair with `cuda` for GPU) |
-| `bench` | Benchmark example (`required-features`); serde is always available for manifest schema tests |
-
-### Public symbols (crate root)
-
-`GpuAccelerator`, `GpuContext`, `GpuBuffer`, `KernelModule`, `GpuError`, `set_launch_failure_hook`, plus capability types (`probe_capabilities`, `CapabilityReport`, `ExecutionPolicy`, `FallbackReason`, `Backend`, …) and the `bitpacking`, `oracle`, and `bench` modules. With `--features saaq`: `SnapshotChannels` and the `gif` module. Prefer these over deep `gpu::…` paths. Full list of loaded device symbols and what stays out of this repo is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## What Changed
-
-- `satsolver.cu` now reduces `(score, walker)` with warp shuffles and shared memory, then writes one result per block before a final reduction pass.
-- `vector_similarity.cu` now keeps top-k selection parallel across the warp, with register-resident candidates and block-local merge stages.
-- `.gitignore` now excludes generated PTX, build outputs, CMake artifacts, IDE files, and other local-only clutter.
-
-## Why It Matters
-
-- Better SM occupancy on Blackwell.
-- No global atomic serialization in the SAT best-score path.
-- No single-thread MoE routing bottleneck.
-- Clear boundary so consumers (SNN stacks, quant prototypes) depend on one accelerator crate instead of copying kernels.
-
-
-## Usage
+For unreleased changes, use a source checkout at a reviewed commit (Git dependency or Cargo `path` dependency). For a local checkout:
 
 ```toml
 [dependencies]
-myelin-accelerator = "0.3.0"
-# Optional GPU:
-# myelin-accelerator = { version = "0.3.0", features = ["cuda"] }
-# Experimental GIF/SAAQ (not default / not crates.io Tier-1):
-# myelin-accelerator = { version = "0.3.0", features = ["saaq"] }
-# GPU + GIF/SAAQ:
-# myelin-accelerator = { version = "0.3.0", features = ["cuda", "saaq"] }
+myelin-accelerator = { path = "../myelin-accelerator" }
+# For GPU launches, add: features = ["cuda"]
 ```
+
+Host packing works with the default feature set:
 
 ```rust
-use myelin_accelerator::{
-    probe_capabilities, Backend, GpuAccelerator, bitpacking,
-};
+use myelin_accelerator::bitpacking::{pack_ternary, unpack_ternary};
 
-let caps = probe_capabilities();
-let gpu = if caps.gpu_usable() {
-    GpuAccelerator::require_gpu().expect("probe said GPU is usable")
-} else {
-    // Caller-approved CPU fallback; `gpu.fallback()` names the reason.
-    GpuAccelerator::new()
-};
-assert_eq!(
-    gpu.selected_backend() == Backend::Cuda,
-    gpu.is_ready()
-);
-if gpu.kernels_ready() {
-    // fatbin/PTX wrappers are also available
-}
-let packed = bitpacking::pack_ternary(&[-1, 0, 1, 1]);
-let _ = packed;
+let values = [-1, 0, 1, 1];
+let packed = pack_ternary(&values);
+assert_eq!(unpack_ternary(&packed, Some(values.len())), values);
 ```
 
-See **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** for recording a run, comparing
-against a committed baseline, and refreshing that baseline as a reviewable file
-change. Ordinary CI does not enforce hardware budgets.
+`GpuAccelerator::new()` may select a CPU backend and records the fallback reason. That backend does **not** run CPU versions of GPU launch methods; those methods return `GpuError::Unavailable`. For a GPU-required application, use `GpuAccelerator::require_gpu()` and handle the error. See [architecture and capability policy](docs/ARCHITECTURE.md#capability-probe-and-fallback-policy).
 
-CPU-safe checks:
+## What is available
+
+| Area | Current interface |
+| --- | --- |
+| Host utilities | Binary and ternary packing, group scales, reference matmul in [`bitpacking`](src/bitpacking.rs); scalar test oracles in [`oracle`](src/oracle.rs). |
+| Wrapped CUDA launches | Poisson encoding, STDP, SAT result extraction and auxiliary best reduction, ternary GEMV and GEMM through `GpuAccelerator`. |
+| Loaded CUDA kernels | Additional LIF, spike statistics, routing, SAT walker, and reduction symbols are available through `KernelModule`, but do not all have high-level launch wrappers. |
+| Benchmark support | Optional `bench` example and manifest utilities; see [benchmark instructions](docs/BENCHMARKS.md). |
+
+The [architecture guide](docs/ARCHITECTURE.md#high-level-launches-today-gpuaccelerator) lists exact wrapper and device symbol coverage. [Ternary layout and kernel contracts](docs/TERNARY.md) describe the packed data format. The STDP wrapper launches its weight and trace kernels in stream order so each trace index has one writer.
+
+## Build and verify
+
+CPU-safe checks need only the Rust toolchain:
 
 ```bash
 cargo test --locked
@@ -113,22 +66,31 @@ cargo test --locked --features saaq
 cargo build --locked --no-default-features
 ```
 
+The [Rust coverage workflow](docs/COVERAGE.md) measures the CPU/stub build and
+benchmark harness with Qlty. CUDA device validation remains a separate gate.
+
+For the CUDA path, use a CUDA 13.2+ toolkit with `nvcc` and an `sm_120` capable GPU for device execution:
+
+```bash
+CUDA_NVCC=/usr/local/cuda/bin/nvcc cargo build --locked --features cuda
+CUDA_NVCC=/usr/local/cuda/bin/nvcc cargo test --locked --features cuda -- --ignored --nocapture
+```
+
+The ignored tests require a working CUDA device. CI also compiles and assembles PTX without a GPU, then runs device tests on a self-hosted GPU runner. See [REVIEW.md](REVIEW.md) §6–§7 for the full local quality gate.
+
 ## Citation
 
 ```bibtex
 @software{myelin_accelerator,
   title  = {Myelin-Accelerator},
-  author = {Raul Montoya Cardenas},
+  author = {Cardenas Montoya, Raul},
   year   = {2026},
   url    = {https://github.com/Limen-Neural/myelin-accelerator}
 }
 ```
-No formal citation required — use freely under the Apache 2.0 or MIT license. A link back to this repo is appreciated but not mandatory.
+
+A formal citation is optional.
+
 ## License
 
-Licensed under either of:
-
-- [Apache License, Version 2.0](LICENSE-APACHE)
-- [MIT License](LICENSE-MIT)
-
-at your option.
+Choose either [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT).

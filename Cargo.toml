@@ -2,10 +2,19 @@
 name = "myelin-accelerator"
 version = "0.3.0"
 edition = "2024"
-description = "CUDA spiking-network kernels + safe Rust FFI wrappers (Tier 1)"
+description = "Rust/CUDA acceleration primitives for spiking neural networks and neuromorphic workloads"
 authors = ["Raul Cardenas Montoya <montoyaraul34@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Limen-Neural/myelin-accelerator"
+keywords = ["cuda", "snn", "neuromorphic", "gpu", "spiking-network"]
+categories = ["hardware-support", "artificial-intelligence", "simulation"]
+# Anchor every pattern at the crate root. An unanchored `README.md` also
+# matches ignored agent/runner dependencies with that basename on this host.
+# The CUDA build reads cu/; package verification reads fixtures and scripts.
+include = [
+    "/Cargo.toml", "/Cargo.lock", "/README.md", "/REVIEW.md", "/LICENSE-*", "/build.rs",
+    "/src/**", "/cu/**", "/examples/**", "/tests/**", "/scripts/**", "/docs/**",
+]
 
 [lib]
 name = "myelin_accelerator"
@@ -24,7 +33,6 @@ saaq = []
 
 [dependencies]
 cust      = { version = "0.3.2", optional = true }
-anyhow    = { version = "1", features = ["backtrace"] }
 tracing   = "0.1"
 serde     = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -38,6 +46,7 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 proptest = "1"
+sha2 = "=0.11.0"
 
 [[example]]
 name = "benchmark"

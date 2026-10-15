@@ -42,20 +42,21 @@
 // Walk probability for random flip (WalkSAT noise parameter)
 #define WALKSAT_P   0.57f
 
-// Maximum unsatisfied clauses to track per walker
-#define MAX_UNSAT_TRACKED 64
-
 // ── Helper: evaluate a single clause ─────────────────────────────
+// Invalid packed literals are skipped. A clause with no satisfied valid
+// literal is unsatisfied, matching the host SAT oracle.
 __device__ __forceinline__
 int eval_clause(
     const unsigned char* __restrict__ asgn,
     const int*           __restrict__ clause,
-    int clause_len)
+    int clause_len,
+    int n_vars)
 {
-    if (clause_len <= 0) return 0;
+    if (clause_len <= 0 || n_vars <= 0) return 0;
     for (int l = 0; l < clause_len; ++l) {
         unsigned int lit = (unsigned int)clause[l];
         unsigned int var = lit >> 1;
+        if (var >= (unsigned int)n_vars) continue;
         unsigned int neg = lit & 1u;
         unsigned int val = (unsigned int)asgn[var] ^ neg;
         if (val) return 1;
@@ -126,7 +127,7 @@ void satsolver_init(
 
     int unsat = 0;
     for (int c = 0; c < n_clauses; ++c) {
-        if (!eval_clause(asgn, clauses + (long)c * clause_len, clause_len))
+        if (!eval_clause(asgn, clauses + (long)c * clause_len, clause_len, n_vars))
             ++unsat;
     }
     scores[walker] = unsat;
@@ -146,6 +147,12 @@ void satsolver_init(
 //    clauses     [n_clauses × clause_len]
 //    n_walkers, n_vars, n_clauses, clause_len
 //    seed        — per-step seed (combine with step counter at call site)
+//
+//  Unsatisfied clause sampling scans the full CNF twice: first count all
+//  unsatisfied clauses, then select the random rank. This uses O(1) scratch
+//  and does not truncate candidates above 64 clauses. Rejection sampling
+//  removes modulo bias from the 32-bit LCG draw. Invalid literals are skipped
+//  when choosing a variable; an all-invalid clause remains unsatisfied.
 // ════════════════════════════════════════════════════════════════════
 extern "C" __global__
 void satsolver_step(
@@ -163,12 +170,12 @@ void satsolver_step(
 
     unsigned int rng    = lcg_next(seed ^ ((unsigned int)walker * 2246822519u));
     unsigned char* asgn = assignment + (long)walker * n_vars;
+    unsigned int var_limit = n_vars > 0 ? (unsigned int)n_vars : 0u;
 
-    int unsat_buf[MAX_UNSAT_TRACKED];
-    int unsat_cnt = 0;
-    for (int c = 0; c < n_clauses && unsat_cnt < MAX_UNSAT_TRACKED; ++c) {
-        if (!eval_clause(asgn, clauses + (long)c * clause_len, clause_len))
-            unsat_buf[unsat_cnt++] = c;
+    unsigned int unsat_cnt = 0;
+    for (int c = 0; c < n_clauses; ++c) {
+        if (!eval_clause(asgn, clauses + (long)c * clause_len, clause_len, n_vars))
+            ++unsat_cnt;
     }
 
     if (unsat_cnt == 0) {
@@ -176,8 +183,21 @@ void satsolver_step(
         return;
     }
 
-    rng = lcg_next(rng);
-    int chosen_c = unsat_buf[(rng >> 8) % (unsigned int)unsat_cnt];
+    // Reject the incomplete low tail so every rank has the same number
+    // of 32-bit representatives (assuming uniform RNG output).
+    unsigned int threshold = (0u - unsat_cnt) % unsat_cnt;
+    do { rng = lcg_next(rng); } while (rng < threshold);
+    unsigned int rank = rng % unsat_cnt;
+    int chosen_c = -1;
+    for (int c = 0; c < n_clauses; ++c) {
+        if (!eval_clause(asgn, clauses + (long)c * clause_len, clause_len, n_vars)) {
+            if (rank == 0) {
+                chosen_c = c;
+                break;
+            }
+            --rank;
+        }
+    }
     const int* cptr = clauses + (long)chosen_c * clause_len;
 
     rng = lcg_next(rng);
@@ -186,20 +206,33 @@ void satsolver_step(
     int flip_var = -1;
 
     if (r < WALKSAT_P) {
-        rng = lcg_next(rng);
-        int lit_idx = (int)((rng >> 8) % (unsigned int)clause_len);
-        flip_var = (int)((unsigned int)cptr[lit_idx] >> 1);
+        int valid_cnt = 0;
+        for (int l = 0; l < clause_len; ++l)
+            valid_cnt += ((unsigned int)cptr[l] >> 1) < var_limit;
+        if (valid_cnt > 0) {
+            rng = lcg_next(rng);
+            int valid_rank = (int)((rng >> 8) % (unsigned int)valid_cnt);
+            for (int l = 0; l < clause_len; ++l) {
+                unsigned int var = (unsigned int)cptr[l] >> 1;
+                if (var < var_limit && valid_rank-- == 0) {
+                    flip_var = (int)var;
+                    break;
+                }
+            }
+        }
     } else {
         int best_break = n_clauses + 1;
         for (int l = 0; l < clause_len; ++l) {
-            int var = (int)((unsigned int)cptr[l] >> 1);
+            unsigned int decoded_var = (unsigned int)cptr[l] >> 1;
+            if (decoded_var >= var_limit) continue;
+            int var = (int)decoded_var;
 
             int brk = 0;
             asgn[var] ^= 1u;
             for (int c2 = 0; c2 < n_clauses; ++c2) {
-                if (!eval_clause(asgn, clauses + (long)c2 * clause_len, clause_len)) {
+                if (!eval_clause(asgn, clauses + (long)c2 * clause_len, clause_len, n_vars)) {
                     asgn[var] ^= 1u;
-                    int was_sat = eval_clause(asgn, clauses + (long)c2 * clause_len, clause_len);
+                    int was_sat = eval_clause(asgn, clauses + (long)c2 * clause_len, clause_len, n_vars);
                     asgn[var] ^= 1u;
                     brk += was_sat;
                 }
@@ -217,7 +250,7 @@ void satsolver_step(
 
     int unsat = 0;
     for (int c = 0; c < n_clauses; ++c) {
-        if (!eval_clause(asgn, clauses + (long)c * clause_len, clause_len))
+        if (!eval_clause(asgn, clauses + (long)c * clause_len, clause_len, n_vars))
             ++unsat;
     }
     scores[walker] = unsat;
@@ -262,7 +295,7 @@ void satsolver_aux_update(
         unsigned char* flags = sat_flags + (long)walker * n_clauses;
 
         for (int c = 0; c < n_clauses; ++c)
-            flags[c] = (unsigned char)eval_clause(asgn, clauses + (long)c * clause_len, clause_len);
+            flags[c] = (unsigned char)eval_clause(asgn, clauses + (long)c * clause_len, clause_len, n_vars);
 
         my_score = scores[walker];
         my_walker = walker;

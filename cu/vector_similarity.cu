@@ -16,7 +16,45 @@
 
 #define MAX_ROUTING_TOP_K 32
 #define MAX_BLOCK_WARPS   32
-#define COSINE_SENTINEL   -2.0f
+// FTZ can produce finite scores below -1; every finite score must be eligible.
+#define COSINE_SENTINEL   -INFINITY
+
+// Canonical score for both entry points. SHIP_EPS is an additive denominator
+// regularizer (1e-8f), NOT a per-vector squared-norm clamp. Zero vectors have
+// dot == 0 and score 0; positive finite norms follow this same equation all
+// the way down to the build's fast-math flush-to-zero boundary.
+__device__ __forceinline__
+float cosine_score(float dot, float norm_q, float norm_k)
+{
+    float denom = sqrtf(norm_q) * sqrtf(norm_k) + SHIP_EPS;
+    return dot / denom;
+}
+
+// Small pairs use a scalar FMA chain; larger pairs use all 32 lanes, with
+// lane 0 receiving the score. Both entry points use this same dimension-based
+// arithmetic order, independent of block size. Sharing only the denominator
+// is insufficient: different dot/norm summation orders can reverse near ties.
+__device__ __forceinline__
+float cosine_pair_score(const float* qv, const float* kv, int dim, int lane)
+{
+    float dot = 0.0f;
+    float norm_q = 0.0f;
+    float norm_k = 0.0f;
+    const bool scalar = dim <= WARP_SIZE;
+    for (int i = scalar ? 0 : lane; i < dim; i += scalar ? 1 : WARP_SIZE) {
+        float qi = qv[i];
+        float ki = kv[i];
+        dot = fmaf(qi, ki, dot);
+        norm_q = fmaf(qi, qi, norm_q);
+        norm_k = fmaf(ki, ki, norm_k);
+    }
+    if (!scalar) {
+        dot = warp_reduce_sum(dot);
+        norm_q = warp_reduce_sum(norm_q);
+        norm_k = warp_reduce_sum(norm_k);
+    }
+    return cosine_score(dot, norm_q, norm_k);
+}
 
 __device__ __forceinline__
 bool topk_better(
@@ -87,8 +125,8 @@ void warp_reduce_best(
 //  Computes the cosine similarity between every (query, key) pair:
 //    out[q * n_keys + k] = dot(Q[q], K[k]) / (|Q[q]| * |K[k]| + eps)
 //
-//  Grid: (n_keys, n_queries) blocks of (dim,) threads — one block per pair.
-//        For large dim use TILE_DIM threads and loop.
+//  Grid: (n_keys, n_queries), one block per pair. Blocks must contain
+//        32–1024 threads in full warps; the first warp computes the pair.
 //
 //  Params
 //    queries    [n_queries × dim]  — query matrix (row-major)
@@ -113,60 +151,13 @@ void cosine_similarity_batched(
     const float* qv = queries + (long)q * dim;
     const float* kv = keys    + (long)k * dim;
 
-    // Each thread accumulates a partial dot product and L2 norms
-    float dot   = 0.0f;
-    float norm_q = 0.0f;
-    float norm_k = 0.0f;
-
-    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
-        float qi = qv[i];
-        float ki = kv[i];
-        dot    = fmaf(qi, ki, dot);
-        norm_q = fmaf(qi, qi, norm_q);
-        norm_k = fmaf(ki, ki, norm_k);
-    }
-
-    // Warp-level reduction
-    dot    = warp_reduce_sum(dot);
-    norm_q = warp_reduce_sum(norm_q);
-    norm_k = warp_reduce_sum(norm_k);
-
-    // Block-level reduction via shared memory
-    __shared__ float s_dot[WARP_SIZE];
-    __shared__ float s_nq [WARP_SIZE];
-    __shared__ float s_nk [WARP_SIZE];
-
-    int lane  = threadIdx.x % WARP_SIZE;
-    int warpId = threadIdx.x / WARP_SIZE;
-    int nWarps = (blockDim.x + WARP_SIZE - 1) / WARP_SIZE;
-
-    if (lane == 0) {
-        s_dot[warpId] = dot;
-        s_nq [warpId] = norm_q;
-        s_nk [warpId] = norm_k;
-    }
-    __syncthreads();
-
-    if (threadIdx.x < nWarps) {
-        dot    = s_dot[threadIdx.x];
-        norm_q = s_nq [threadIdx.x];
-        norm_k = s_nk [threadIdx.x];
-    } else {
-        dot    = 0.0f;
-        norm_q = 0.0f;
-        norm_k = 0.0f;
-    }
-
-    if (warpId == 0) {
-        dot    = warp_reduce_sum(dot);
-        norm_q = warp_reduce_sum(norm_q);
-        norm_k = warp_reduce_sum(norm_k);
-    }
-
-    if (threadIdx.x == 0) {
-        float denom = sqrtf(norm_q) * sqrtf(norm_k) + SHIP_EPS;
-        out[(long)q * n_keys + k] = dot / denom;
-    }
+    // The first full warp computes the pair. Additional warps need not
+    // participate; there are no block barriers in this kernel.
+    if (threadIdx.x >= WARP_SIZE) return;
+    if (dim <= WARP_SIZE && threadIdx.x != 0) return;
+    float score = cosine_pair_score(qv, kv, dim, threadIdx.x);
+    if (threadIdx.x == 0)
+        out[(long)q * n_keys + k] = score;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -174,13 +165,16 @@ void cosine_similarity_batched(
 //
 //  Like cosine_similarity_batched but for each query also writes
 //  the top-K key indices (by similarity score) into `top_k_indices`.
+//  Equal scores select the lower key index first. Both entry points use
+//  cosine_pair_score with identical accumulation and normalization order.
 //
-//  Implementation: stream the similarity row once, keep each thread's
-//  local top candidates in registers, then use warp-participating k-way
-//  merges to produce the final routing experts.  This keeps shared-memory
-//  usage bounded and avoids the single-thread O(N · K) tail.
+//  Implementation: short vectors retain one key per thread; otherwise each
+//  warp computes strided keys and keeps its candidates in lane 0 registers.
+//  Both paths use cosine_pair_score, then the existing
+//  warp-participating k-way merges to produce the final top-k indices.
+//  Shared-memory usage stays bounded; no single-thread O(N · K) tail.
 //
-//  Shared memory: static only (~8.3 KB), no dynamic allocation needed.
+//  Shared memory: static only (8 KiB), no dynamic allocation needed.
 //  The host should pass 0 for the dynamic shared-memory bytes parameter.
 //
 //  Params
@@ -221,31 +215,9 @@ void cosine_similarity_top_k(
     int warp_id = threadIdx.x / WARP_SIZE;
     int n_warps = (blockDim.x + WARP_SIZE - 1) / WARP_SIZE;
 
-    __shared__ float s_query_norm[MAX_BLOCK_WARPS];
-    __shared__ float s_inv_query_norm;
     __shared__ float s_warp_scores[MAX_BLOCK_WARPS][MAX_ROUTING_TOP_K];
     __shared__ int s_warp_indices[MAX_BLOCK_WARPS][MAX_ROUTING_TOP_K];
 
-    float q_norm = 0.0f;
-    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
-        float qi = qv[i];
-        q_norm = fmaf(qi, qi, q_norm);
-    }
-    q_norm = warp_reduce_sum(q_norm);
-
-    if (lane == 0)
-        s_query_norm[warp_id] = q_norm;
-    __syncthreads();
-
-    if (warp_id == 0) {
-        float block_q_norm = (lane < n_warps) ? s_query_norm[lane] : 0.0f;
-        block_q_norm = warp_reduce_sum(block_q_norm);
-        if (lane == 0)
-            s_inv_query_norm = 1.0f / sqrtf(fmaxf(block_q_norm, SHIP_EPS));
-    }
-    __syncthreads();
-
-    float inv_query_norm = s_inv_query_norm;
     float local_scores[MAX_ROUTING_TOP_K];
     int local_indices[MAX_ROUTING_TOP_K];
 
@@ -255,21 +227,16 @@ void cosine_similarity_top_k(
         local_indices[i] = INT_MAX;
     }
 
-    for (int k = threadIdx.x; k < n_keys; k += blockDim.x) {
+    const bool scalar = dim <= WARP_SIZE;
+    int first_key = scalar ? threadIdx.x : warp_id;
+    int key_stride = scalar ? blockDim.x : n_warps;
+    for (int k = first_key; k < n_keys; k += key_stride) {
         const float* kv = keys + (long)k * dim;
-        float dot = 0.0f;
-        float norm_k = 0.0f;
-
-        for (int i = 0; i < dim; ++i) {
-            float qi = qv[i];
-            float ki = kv[i];
-            dot = fmaf(qi, ki, dot);
-            norm_k = fmaf(ki, ki, norm_k);
+        float similarity = cosine_pair_score(qv, kv, dim, lane);
+        if (scalar || lane == 0) {
+            similarities[(long)q * n_keys + k] = similarity;
+            topk_insert(similarity, k, local_scores, local_indices, actual_k);
         }
-
-        float similarity = dot * inv_query_norm / sqrtf(fmaxf(norm_k, SHIP_EPS));
-        similarities[(long)q * n_keys + k] = similarity;
-        topk_insert(similarity, k, local_scores, local_indices, actual_k);
     }
 
     int local_cursor = 0;

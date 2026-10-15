@@ -50,19 +50,43 @@ pub struct GpuBuffer<T> {
     data: Vec<T>,
 }
 impl<T: Default + Clone> GpuBuffer<T> {
+    /// Allocate a buffer of `len` elements, initialised to `T::default()`.
+    ///
+    /// The buffer is readable immediately: [`Self::to_vec`] after `alloc`
+    /// returns `len` copies of `T::default()` without any prior upload.
+    /// `alloc(0)` succeeds and yields an empty, readable buffer. This mirrors
+    /// the CUDA backend's initialisation contract so callers behave identically
+    /// on either path.
+    ///
+    /// Oversized requests fail with [`GpuError::MemoryError`] instead of
+    /// panicking: the byte size is checked with the same
+    /// `size_of::<T>() * len` arithmetic and `isize::MAX` ceiling as the CUDA
+    /// backend, and the backing `Vec` is reserved fallibly (GH #48).
     pub fn alloc(len: usize) -> GpuResult<Self> {
-        Ok(Self {
-            data: vec![T::default(); len],
-        })
+        crate::error::checked_alloc_bytes::<T>(len)?;
+        let mut data: Vec<T> = Vec::new();
+        data.try_reserve_exact(len)
+            .map_err(|e| GpuError::MemoryError(format!("alloc({len}): reserve failed: {e:?}")))?;
+        data.resize(len, T::default());
+        Ok(Self { data })
     }
+    /// Allocate a buffer holding a copy of `data`. `from_slice(&[])` yields an
+    /// empty buffer.
     pub fn from_slice(data: &[T]) -> GpuResult<Self> {
         Ok(Self {
             data: data.to_vec(),
         })
     }
+    /// Copy the buffer's current contents into a fresh `Vec<T>`.
     pub fn to_vec(&self) -> GpuResult<Vec<T>> {
         Ok(self.data.clone())
     }
+    /// Upload from a host slice, replacing the buffer's contents.
+    ///
+    /// `data.len()` must equal [`Self::len`]; a mismatch returns
+    /// [`GpuError::MemoryError`] before mutating anything, leaving the existing
+    /// contents intact. Empty-to-empty uploads succeed as a no-op. The error
+    /// payload matches the CUDA backend exactly.
     pub fn upload(&mut self, data: &[T]) -> GpuResult<()> {
         if data.len() != self.data.len() {
             return Err(GpuError::MemoryError(format!(
@@ -174,6 +198,34 @@ impl GpuAccelerator {
     }
 
     pub fn kernels(&self) -> GpuResult<&KernelModule> {
+        Err(self.unavailable_error())
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn stdp_update(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+        _: f32,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn stdp_update_async(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+        _: f32,
+    ) -> GpuResult<()> {
         Err(self.unavailable_error())
     }
     pub fn satsolver_extract(
@@ -523,6 +575,59 @@ mod tests {
         assert!(data.iter().all(|&v| v == 0.0f32));
     }
 
+    /// Oversized requests return `MemoryError` instead of panicking (GH #48),
+    /// mirroring the CUDA backend. All cases fail checked arithmetic before
+    /// any physical allocation.
+    #[test]
+    fn buffer_alloc_overflow_returns_memory_error() {
+        // u64: `8 * len` overflows `usize` / exceeds the `isize::MAX` ceiling.
+        for len in [usize::MAX, isize::MAX as usize] {
+            assert_alloc_overflow::<u64>(len);
+        }
+        // u8: one byte per element, so `usize::MAX` / past-ceiling byte counts.
+        for len in [usize::MAX, isize::MAX as usize + 1] {
+            assert_alloc_overflow::<u8>(len);
+        }
+        // Wide element type: overflow with a smaller element count.
+        assert_alloc_overflow::<Wide512>(usize::MAX);
+    }
+
+    /// Assert an oversized `alloc` fails with the overflow `MemoryError`.
+    fn assert_alloc_overflow<T: Default + Clone>(len: usize) {
+        match GpuBuffer::<T>::alloc(len) {
+            Err(GpuError::MemoryError(msg)) => {
+                assert!(msg.contains("size overflow"), "msg: {msg}")
+            }
+            Err(other) => panic!("expected MemoryError, got {other}"),
+            Ok(_) => panic!("oversized alloc unexpectedly succeeded"),
+        }
+    }
+
+    /// 4 KiB element used to probe overflow with a wide element size.
+    #[derive(Clone)]
+    struct Wide512 {
+        _payload: [u64; 512],
+    }
+
+    impl Default for Wide512 {
+        fn default() -> Self {
+            Self {
+                _payload: [0u64; 512],
+            }
+        }
+    }
+
+    /// Zero-sized types allocate without bytes; zero and ordinary lengths work.
+    #[test]
+    fn buffer_alloc_zero_sized_type() {
+        let empty = GpuBuffer::<()>::alloc(0).unwrap();
+        assert_eq!(empty.len(), 0);
+        assert!(empty.to_vec().unwrap().is_empty());
+        let buf = GpuBuffer::<()>::alloc(8).unwrap();
+        assert_eq!(buf.len(), 8);
+        assert_eq!(buf.to_vec().unwrap(), vec![(); 8]);
+    }
+
     #[test]
     fn buffer_from_slice_roundtrip() {
         let input = vec![1i32, 2, 3, 4, 5];
@@ -558,6 +663,97 @@ mod tests {
             }
             other => panic!("expected MemoryError, got: {other}"),
         }
+    }
+
+    // ── LIM-1302 buffer-contract regression (CPU stub) ──────────────────────
+
+    /// Assert `err` is the length-mismatch `MemoryError` naming both lengths.
+    fn assert_length_mismatch(err: GpuError, buffer_len: usize, input_len: usize) {
+        match err {
+            GpuError::MemoryError(msg) => {
+                assert!(msg.contains("length mismatch"), "msg: {msg}");
+                assert!(
+                    msg.contains(&format!("buffer has {buffer_len} elements")),
+                    "msg: {msg}"
+                );
+                assert!(
+                    msg.contains(&format!("input has {input_len}")),
+                    "msg: {msg}"
+                );
+            }
+            other => panic!("expected MemoryError, got {other}"),
+        }
+    }
+
+    /// Allocation lengths 0, 1, and representative boundary sizes all read back
+    /// as `T::default()` immediately after `alloc`, with no prior upload.
+    #[test]
+    fn buffer_alloc_boundary_lengths_read_back_default() {
+        for len in [0usize, 1, 2, 15, 16, 17, 256, 257, 4096] {
+            let buf = GpuBuffer::<i32>::alloc(len).unwrap();
+            assert_eq!(buf.len(), len, "len {len}");
+            assert_eq!(buf.is_empty(), len == 0, "is_empty at len {len}");
+            assert_eq!(
+                buf.to_vec().unwrap(),
+                vec![0i32; len],
+                "readback at len {len}"
+            );
+        }
+    }
+
+    /// `from_slice` then `to_vec` round-trips exact values across boundary sizes.
+    #[test]
+    fn buffer_from_slice_to_vec_roundtrip_boundaries() {
+        for len in [0usize, 1, 16, 17, 128, 257] {
+            let input: Vec<u32> = (0..len as u32)
+                .map(|i| i.wrapping_mul(2_654_435_761))
+                .collect();
+            let buf = GpuBuffer::from_slice(&input).unwrap();
+            assert_eq!(buf.to_vec().unwrap(), input, "roundtrip at len {len}");
+        }
+    }
+
+    /// An equal-length upload replaces every element.
+    #[test]
+    fn buffer_upload_equal_length_replaces_all() {
+        let mut buf = GpuBuffer::from_slice(&[9i32, 9, 9, 9]).unwrap();
+        buf.upload(&[1, 2, 3, 4]).unwrap();
+        assert_eq!(buf.to_vec().unwrap(), vec![1, 2, 3, 4]);
+    }
+
+    /// A too-short upload is rejected and leaves existing contents unchanged;
+    /// the error payload names both the buffer and input lengths.
+    #[test]
+    fn buffer_upload_too_short_rejected_and_non_mutating() {
+        let mut buf = GpuBuffer::from_slice(&[1i32, 2, 3, 4]).unwrap();
+        assert_length_mismatch(buf.upload(&[7, 8]).unwrap_err(), 4, 2);
+        assert_eq!(buf.to_vec().unwrap(), vec![1, 2, 3, 4], "contents mutated");
+    }
+
+    /// A too-long upload is rejected and leaves existing contents unchanged.
+    #[test]
+    fn buffer_upload_too_long_rejected_and_non_mutating() {
+        let mut buf = GpuBuffer::from_slice(&[1i32, 2, 3, 4]).unwrap();
+        assert_length_mismatch(buf.upload(&[7, 8, 9, 10, 11]).unwrap_err(), 4, 5);
+        assert_eq!(buf.to_vec().unwrap(), vec![1, 2, 3, 4], "contents mutated");
+    }
+
+    /// Empty-to-empty upload succeeds as a no-op.
+    #[test]
+    fn buffer_upload_empty_into_empty_ok() {
+        let mut buf = GpuBuffer::<i32>::alloc(0).unwrap();
+        buf.upload(&[]).unwrap();
+        assert!(buf.to_vec().unwrap().is_empty());
+    }
+
+    /// Empty/nonempty length mismatches fail in both directions.
+    #[test]
+    fn buffer_upload_empty_nonempty_mismatches_fail() {
+        let mut empty = GpuBuffer::<i32>::alloc(0).unwrap();
+        assert_length_mismatch(empty.upload(&[1]).unwrap_err(), 0, 1);
+
+        let mut nonempty = GpuBuffer::<i32>::alloc(3).unwrap();
+        assert_length_mismatch(nonempty.upload(&[]).unwrap_err(), 3, 0);
     }
 
     #[test]

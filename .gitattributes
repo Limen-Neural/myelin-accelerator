@@ -5,5 +5,7 @@
 target/** linguist-vendored
 target/** linguist-generated=true
 
+# Pinned SNN fixtures are checksum-verified byte-for-byte; never convert EOLs
+tests/fixtures/snn/**/*.mem -text
 # Ensure Rust is properly detected
 *.rs linguist-language=Rust

@@ -60,8 +60,15 @@ struct TemporalState {
     saaq_partial_walkers: GpuBuffer<u32>,
 }
 
+/// Owns CUDA resources whose explicit teardown is implemented in `Drop`.
+///
+/// `KernelModule` and `GpuBuffer` do not retain a context. Every CUDA-owning
+/// field added here must be handled in `Drop`, while our context is current,
+/// before restoring the caller binding and releasing `_ctx`. Keep `_ctx` last
+/// as a defensive lifetime backstop; field order alone is not the teardown.
+/// If teardown cannot capture or activate the context, the process aborts:
+/// unwinding or returning would destroy resources under an unknown context.
 pub struct GpuAccelerator {
-    _ctx: Option<GpuContext>,
     modules: Option<KernelModule>,
     stream: Option<Stream>,
     #[cfg(feature = "saaq")]
@@ -69,12 +76,23 @@ pub struct GpuAccelerator {
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
     capabilities: CapabilityReport,
+    _ctx: Option<GpuContext>,
 }
 
 struct InitFailure {
     facts: CapabilityFacts,
     reason: FallbackReason,
     detail: String,
+}
+
+struct StdpTraceLaunch<'a> {
+    pre_spikes: &'a GpuBuffer<f32>,
+    post_spikes: &'a GpuBuffer<f32>,
+    pre_traces: &'a mut GpuBuffer<f32>,
+    post_traces: &'a mut GpuBuffer<f32>,
+    n_post: i32,
+    n_pre: i32,
+    dt_ms: f32,
 }
 
 impl GpuAccelerator {
@@ -801,6 +819,177 @@ impl GpuAccelerator {
         })
     }
 
+    /// Update STDP weights and eligibility traces in one ordered operation.
+    ///
+    /// The weight kernel reads old traces and computes the current-step trace
+    /// values locally. The trace kernel then writes each trace once. Both
+    /// launches use this accelerator's stream, so they cannot race each other.
+    /// If either launch fails, queued work is synchronized before returning;
+    /// an error can still leave weights or traces partially updated.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stdp_update(
+        &self,
+        weights: &mut GpuBuffer<f32>,
+        pre_spikes: &GpuBuffer<f32>,
+        post_spikes: &GpuBuffer<f32>,
+        pre_traces: &mut GpuBuffer<f32>,
+        post_traces: &mut GpuBuffer<f32>,
+        n_post: i32,
+        n_pre: i32,
+        dt_ms: f32,
+    ) -> GpuResult<()> {
+        let update_result = self.stdp_update_async(
+            weights,
+            pre_spikes,
+            post_spikes,
+            pre_traces,
+            post_traces,
+            n_post,
+            n_pre,
+            dt_ms,
+        );
+        let sync_result = self.synchronize();
+        update_result?;
+        sync_result
+    }
+
+    /// Enqueue both STDP kernels on the accelerator stream without waiting.
+    ///
+    /// Call [`Self::synchronize`] before reading, reusing, or dropping any
+    /// argument buffer. Concurrent launches on another stream must not touch
+    /// these weights, spikes, or traces until this operation completes.
+    /// A launch error can leave the preceding weight launch queued; synchronize
+    /// before reusing the buffers, and do not assume an atomic update.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stdp_update_async(
+        &self,
+        weights: &mut GpuBuffer<f32>,
+        pre_spikes: &GpuBuffer<f32>,
+        post_spikes: &GpuBuffer<f32>,
+        pre_traces: &mut GpuBuffer<f32>,
+        post_traces: &mut GpuBuffer<f32>,
+        n_post: i32,
+        n_pre: i32,
+        dt_ms: f32,
+    ) -> GpuResult<()> {
+        Self::validate_stdp_buffers(
+            weights,
+            pre_spikes,
+            post_spikes,
+            pre_traces,
+            post_traces,
+            n_post,
+            n_pre,
+            dt_ms,
+        )?;
+        if n_post == 0 && n_pre == 0 {
+            return Ok(());
+        }
+
+        let kernels = self.kernels()?;
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
+
+        if n_post > 0 && n_pre > 0 {
+            let update_weights = kernels.get_function("stdp_update_weights")?;
+            let blocks = ((n_post as u64) * (n_pre as u64)).div_ceil(256);
+            if blocks > i32::MAX as u64 {
+                return Err(GpuError::invalid_input(
+                    "stdp_update: weight grid exceeds CUDA grid.x limit".to_string(),
+                ));
+            }
+            let grid = blocks as u32;
+            // SAFETY: every matrix/trace/spike buffer was length-checked; the
+            // kernel bounds-checks both global indices, and the stream and
+            // buffers remain alive until the caller synchronizes.
+            unsafe {
+                launch!(update_weights<<<grid, 256u32, 0u32, stream>>>(
+                    weights.as_device_ptr(),
+                    pre_spikes.as_device_ptr(),
+                    post_spikes.as_device_ptr(),
+                    pre_traces.as_device_ptr(),
+                    post_traces.as_device_ptr(),
+                    n_post,
+                    n_pre,
+                    dt_ms
+                ))
+                .map_err(|e| {
+                    GpuError::LaunchFailed(sanitize_diagnostic(&format!(
+                        "stdp_update_weights launch: {e:?}"
+                    )))
+                })?;
+            }
+        }
+
+        self.launch_stdp_traces(StdpTraceLaunch {
+            pre_spikes,
+            post_spikes,
+            pre_traces,
+            post_traces,
+            n_post,
+            n_pre,
+            dt_ms,
+        })
+    }
+
+    fn launch_stdp_traces(&self, args: StdpTraceLaunch<'_>) -> GpuResult<()> {
+        let update_traces = self.kernels()?.get_function("stdp_update_traces")?;
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
+        let grid = Self::ceil_div_u32(args.n_post.max(args.n_pre) as u32, 256);
+        // SAFETY: each global thread owns at most one index of each trace
+        // buffer. The accelerator stream orders this after the weight update.
+        unsafe {
+            launch!(update_traces<<<grid, 256u32, 0u32, stream>>>(
+                args.pre_spikes.as_device_ptr(),
+                args.post_spikes.as_device_ptr(),
+                args.pre_traces.as_device_ptr(),
+                args.post_traces.as_device_ptr(),
+                args.n_post,
+                args.n_pre,
+                args.dt_ms
+            ))
+            .map_err(|e| {
+                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
+                    "stdp_update_traces launch: {e:?}"
+                )))
+            })?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_stdp_buffers(
+        weights: &GpuBuffer<f32>,
+        pre_spikes: &GpuBuffer<f32>,
+        post_spikes: &GpuBuffer<f32>,
+        pre_traces: &GpuBuffer<f32>,
+        post_traces: &GpuBuffer<f32>,
+        n_post: i32,
+        n_pre: i32,
+        dt_ms: f32,
+    ) -> GpuResult<()> {
+        let invalid_shape = n_post < 0 || n_pre < 0;
+        let invalid_time = !dt_ms.is_finite() || dt_ms < 0.0;
+        if invalid_shape || invalid_time {
+            return Err(GpuError::invalid_input(
+                "stdp_update: n_post/n_pre and finite dt_ms must be nonnegative".to_string(),
+            ));
+        }
+        let post = n_post as usize;
+        let pre = n_pre as usize;
+        Self::expect_len("weights", weights.len(), post.saturating_mul(pre))?;
+        Self::expect_len("pre_spikes", pre_spikes.len(), pre)?;
+        Self::expect_len("post_spikes", post_spikes.len(), post)?;
+        Self::expect_len("pre_traces", pre_traces.len(), pre)?;
+        Self::expect_len("post_traces", post_traces.len(), post)?;
+        Ok(())
+    }
+
     pub fn satsolver_extract(
         &self,
         assignment: &GpuBuffer<u8>,
@@ -813,6 +1002,12 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
+    /// Async variant of [`Self::satsolver_extract`]: enqueues the launch on the
+    /// internal stream and returns without waiting.
+    ///
+    /// The caller must call [`Self::synchronize`] before reading `output` on the
+    /// host or dropping/reusing any argument buffer: `cust` frees device memory
+    /// synchronously on `Drop`, which is not ordered against a pending launch.
     pub fn satsolver_extract_async(
         &self,
         assignment: &GpuBuffer<u8>,
@@ -854,6 +1049,25 @@ impl GpuAccelerator {
         let grid = Self::ceil_div_u32(n_vars as u32, SATSOLVER_BLOCK_SIZE);
         let block = SATSOLVER_BLOCK_SIZE;
 
+        // SAFETY: launching the `satsolver_extract` kernel.
+        // - ABI: the CUDA entry (cu/satsolver.cu) is
+        //   `(const u8* assignment, const i32* best_walker, u8* output, i32 n_vars, i32 n_walkers)`.
+        //   Arguments below match that order and type: `assignment`/`best_walker` are read-only
+        //   device pointers, `output` is the write target, and the two trailing scalars are `i32`
+        //   (`n_vars` is re-narrowed from the validated `usize`; `n_walkers` is the original `i32`).
+        // - Bounds: `n_vars >= 1` and `n_walkers > 0` are validated above; `assignment` has
+        //   `>= n_walkers*n_vars` elements, `best_walker >= 1`, and `output >= n_vars` (checked via
+        //   `expect_len`). The kernel guards `var >= n_vars` and clamps an out-of-range walker index
+        //   to 0, so every `assignment[bw*n_vars + var]` read and `output[var]` write is in bounds.
+        // - Launch dims: `grid = ceil_div(n_vars, block)` covers all `n_vars` output threads;
+        //   dynamic shared memory is 0 (the kernel declares none).
+        // - Lifetime/aliasing: `assignment`, `best_walker`, `output` are borrowed for this call and
+        //   `output` is uniquely `&mut`, so there is no host aliasing; the buffers are owned by the
+        //   caller and outlive the borrow. Completion is forced by the `synchronize()` in the
+        //   synchronous `satsolver_extract` wrapper before the buffers can be freed or reused; the
+        //   async form documents that the caller must synchronize before dropping them.
+        // - Context/module/stream: `self._ctx`, `self.modules`, and `self.stream` are all `Some`
+        //   here (readiness is required to reach a launch) and live as long as `self`.
         unsafe {
             launch!(satsolver_extract<<<grid, block, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
                 assignment.as_device_ptr(),
@@ -904,6 +1118,11 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
+    /// Async variant of [`Self::satsolver_aux_reduce_best`]: enqueues both
+    /// reduction launches on the internal stream and returns without waiting.
+    ///
+    /// The caller must call [`Self::synchronize`] before reading `best_score` /
+    /// `best_walker` on the host or dropping/reusing any argument buffer.
     // 11 parameters mirror the satsolver_aux_update CUDA kernel ABI;
     // grouping them would require a context struct on every call site
     // without simplifying the launch. Allow the clippy lint.
@@ -966,6 +1185,10 @@ impl GpuAccelerator {
             n_clauses_usize.saturating_mul(clause_len_usize),
         )?;
 
+        let grid_x = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
+        let block = SATSOLVER_BLOCK_SIZE;
+        let partial_len = grid_x as usize;
+        self.ensure_aux_scratch(partial_len)?;
         let kernels = self.kernels()?;
         let satsolver_aux_update = kernels.get_function("satsolver_aux_update")?;
         let satsolver_best_reduce_pass2 = kernels.get_function("satsolver_best_reduce_pass2")?;
@@ -973,31 +1196,43 @@ impl GpuAccelerator {
             .stream
             .as_ref()
             .ok_or_else(|| self.unavailable_error())?;
-        let grid_x = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
-        let block = SATSOLVER_BLOCK_SIZE;
-        let partial_len = grid_x as usize;
-        let mut partial_scores = self.aux_partial_scores.borrow_mut();
-        let mut partial_walkers = self.aux_partial_walkers.borrow_mut();
-        let need_partial_realloc = partial_scores
-            .as_ref()
-            .is_none_or(|b| b.len() < partial_len)
-            || partial_walkers
-                .as_ref()
-                .is_none_or(|b| b.len() < partial_len);
-        if need_partial_realloc {
-            stream.synchronize().map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "stream sync before partial realloc: {e:?}"
-                )))
-            })?;
-            let scores = GpuBuffer::<i32>::alloc(partial_len)?;
-            let walkers = GpuBuffer::<i32>::alloc(partial_len)?;
-            *partial_scores = Some(scores);
-            *partial_walkers = Some(walkers);
-        }
+        let partial_scores = self.aux_partial_scores.borrow();
+        let partial_walkers = self.aux_partial_walkers.borrow();
         let partial_scores = partial_scores.as_ref().expect("partial_scores buffer");
         let partial_walkers = partial_walkers.as_ref().expect("partial_walkers buffer");
 
+        // SAFETY: two stream-ordered launches implementing the block-partial + final reduction.
+        //
+        // `satsolver_aux_update`:
+        // - ABI: the CUDA entry is `(const u8* assignment, u8* sat_flags, const i32* scores,
+        //   i32* best_score, i32* best_walker, const i32* clauses, i32 n_walkers, i32 n_vars,
+        //   i32 n_clauses, i32 clause_len)`. This kernel emits ONE (score, walker) pair per block,
+        //   so the wrapper deliberately passes the `partial_scores`/`partial_walkers` scratch
+        //   buffers into the kernel's `best_score`/`best_walker` parameter slots (both `i32*`,
+        //   matching order and type); the true `best_score`/`best_walker` are reduced by pass2.
+        // - Bounds: `n_walkers > 0` and `n_vars,n_clauses,clause_len >= 0` are validated; each input
+        //   buffer is length-checked via `expect_len` (`assignment >= n_walkers*n_vars`,
+        //   `sat_flags >= n_walkers*n_clauses`, `scores >= n_walkers`, `clauses >= n_clauses*clause_len`).
+        //   `partial_scores`/`partial_walkers` are (re)allocated above to hold `>= grid_x` elements,
+        //   and the kernel writes exactly one pair per block (`gridDim.x == grid_x`), so every write
+        //   `partial_*[blockIdx.x]` is in bounds. The kernel guards `walker >= n_walkers`.
+        // - Launch dims: `grid_x = ceil_div(n_walkers, block)`, `block = 256`; shared memory is 0
+        //   (the kernel uses a fixed `__shared__ int[32]`, not dynamic shared memory).
+        //
+        // `satsolver_best_reduce_pass2`:
+        // - ABI: `(const i32* partial_scores, const i32* partial_walkers, i32* best_score,
+        //   i32* best_walker, i32 n_partials)`; arguments match. `partial_len as i32` is the exact
+        //   number of partials produced by the previous launch (`grid_x`, which fits u32/i32 here).
+        // - Bounds: reads `partial_*[0..n_partials]` (in bounds by the alloc above) and writes the
+        //   single-element `best_score`/`best_walker` (each `expect_len(.., 1)`-checked). Launched
+        //   with one block as the kernel documents (`__launch_bounds__(256)`).
+        //
+        // Ordering/lifetime: both launches use `self.stream`, so pass2 observes pass1's writes
+        // without an intervening host sync. All buffers are borrowed for the call (`sat_flags`,
+        // `best_score`, `best_walker` uniquely `&mut`; no host aliasing) and the scratch buffers are
+        // owned by `self`. The synchronous `satsolver_aux_reduce_best` wrapper calls `synchronize()`
+        // before returning; the async form documents the caller must synchronize before freeing or
+        // reusing any argument. Context/module/stream are `Some` and live as long as `self`.
         unsafe {
             launch!(satsolver_aux_update<<<grid_x, block, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
                 assignment.as_device_ptr(),
@@ -1044,6 +1279,17 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
+    /// Async variant of [`Self::poisson_encode`]: enqueues the launch on the
+    /// internal stream and returns without waiting.
+    ///
+    /// An empty stimulus is a defined no-op on a ready accelerator: it
+    /// succeeds without launching a kernel (a zero-grid launch would fail
+    /// with `InvalidValue`) and leaves any pooled output tail untouched.
+    /// Readiness is still required, so a CPU-fallback accelerator reports
+    /// `Unavailable` here exactly as it does for non-empty inputs, keeping
+    /// the sync/async contract coherent. The caller must call
+    /// [`Self::synchronize`] before reading `spikes` on the host or
+    /// dropping/reusing either buffer.
     pub fn poisson_encode_async(
         &self,
         stimuli: &GpuBuffer<f32>,
@@ -1052,6 +1298,29 @@ impl GpuAccelerator {
     ) -> GpuResult<()> {
         let n = stimuli.len();
         Self::expect_len("spikes", spikes.len(), n)?;
+
+        // The CUDA kernel takes the element count as `int`. Reject `n > i32::MAX`
+        // before the cast: `n as i32` would otherwise wrap negative and the
+        // kernel's `tid >= n` guard would make every thread skip, silently
+        // producing no output. `n as u32` for the grid is safe once `n` fits i32.
+        let n_i32 = i32::try_from(n).map_err(|_| {
+            GpuError::invalid_input(format!(
+                "poisson_encode: element count {n} exceeds i32::MAX kernel limit"
+            ))
+        })?;
+
+        if n == 0 {
+            // Defined empty-input contract (GH #48): the spikes-length check
+            // above already ran, so an invalid buffer relationship still fails
+            // before this no-op return. Readiness is required so a
+            // CPU-fallback accelerator stays fail-closed (matching non-empty
+            // inputs and the sync wrapper, which must synchronize). No launch
+            // occurs and pooled tails are untouched.
+            if !self.is_ready() {
+                return Err(self.unavailable_error());
+            }
+            return Ok(());
+        }
 
         let kernels = self.kernels()?;
         let func = kernels.get_function("poisson_encode")?;
@@ -1063,11 +1332,26 @@ impl GpuAccelerator {
         let block = 256;
         let grid = Self::ceil_div_u32(n as u32, block);
 
+        // SAFETY: launching the `poisson_encode` kernel.
+        // - ABI: the CUDA entry (cu/spiking_network.cu) is
+        //   `(const float* stimuli, unsigned int* spikes, int n, unsigned int seed)`. Arguments match:
+        //   `stimuli` is a read-only f32 device pointer, `spikes` is the u32 write target, `n_i32`
+        //   is the element count, and `seed` is the u32 RNG seed.
+        // - Bounds: `spikes.len() == stimuli.len() == n` is enforced above via `expect_len`, and
+        //   `n` is checked to fit `i32` via `i32::try_from` (so `n_i32 >= 0` and the grid cast
+        //   `n as u32` cannot wrap). The kernel guards `tid >= n`, so every `stimuli[tid]` read and
+        //   `spikes[tid]` write is in bounds.
+        // - Launch dims: `grid = ceil_div(n, 256)` covers all `n` threads; 0 dynamic shared memory
+        //   (the kernel declares none).
+        // - Lifetime/aliasing: `stimuli` is shared `&`, `spikes` is unique `&mut` (no host aliasing);
+        //   both are caller-owned and outlive the borrow. The synchronous `poisson_encode` wrapper
+        //   synchronizes before returning; the async form requires the caller to synchronize before
+        //   freeing/reusing the buffers. Context/module/stream are `Some` for as long as `self`.
         unsafe {
             launch!(func<<<grid, block, 0, stream>>>(
                 stimuli.as_device_ptr(),
                 spikes.as_device_ptr(),
-                n as i32,
+                n_i32,
                 seed,
             ))
             .map_err(|e| {
@@ -1101,7 +1385,11 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
-    /// Async variant of [`Self::ternary_gemv`].
+    /// Async variant of [`Self::ternary_gemv`]. All output writes are enqueued
+    /// on the accelerator stream. When `m > 0`, the empty-K path waits for
+    /// stream completion before returning. Calls with `m == 0` return
+    /// immediately; other paths require [`Self::synchronize`] before reading
+    /// or dropping any argument buffer.
     #[allow(clippy::too_many_arguments)]
     pub fn ternary_gemv_async(
         &self,
@@ -1135,7 +1423,7 @@ impl GpuAccelerator {
         }
         if k == 0 {
             // Device memset — no host-sized staging buffer; preserve pooled tail.
-            y.zero_prefix(m_u)?;
+            self.zero_output_prefix(y, m_u)?;
             return Ok(());
         }
 
@@ -1162,6 +1450,21 @@ impl GpuAccelerator {
         let skip = if skip_zeros { 1i32 } else { 0i32 };
 
         range_push!("ternary_gemv");
+        // SAFETY: launching the `ternary_gemv` kernel.
+        // - ABI: the CUDA entry (cu/ternary_gemm.cu) is `(const u32* packed_w, const f32* scales,
+        //   const f32* x, f32* y, i32 M, i32 K, i32 group_size, i32 skip_zeros)`. Arguments match in
+        //   order and type: three read-only device pointers, the `y` write target, then the four
+        //   `i32` scalars (`skip` is `0`/`1`).
+        // - Bounds: `m,k >= 0` and `group_size > 0` are validated. The `m == 0` and `k == 0` cases
+        //   returned earlier, so here `m,k >= 1`. Buffer lengths are checked via `expect_len`:
+        //   `y >= m`, `packed_w >= m*ceil(k/TERNARY_VALUES_PER_WORD)`, `scales >= m*ceil(k/group)`,
+        //   `x >= k`. These are exactly the strides the kernel indexes (one output row per thread,
+        //   `words_per_row` words and `n_groups` scales per row), so all accesses are in bounds.
+        // - Launch dims: `grid = ceil_div(m, 256)` covers all `m` output rows; 0 dynamic shared memory.
+        // - Lifetime/aliasing: `packed_w`/`scales`/`x` are shared `&`, `y` is unique `&mut` (no host
+        //   aliasing); all are caller-owned and outlive the borrow. The synchronous `ternary_gemv`
+        //   wrapper synchronizes before returning; the async form requires the caller to synchronize
+        //   before freeing/reusing the buffers. Context/module/stream are `Some` for as long as `self`.
         let launch_result = unsafe {
             launch!(func<<<grid, block, 0, stream>>>(
                 packed_w.as_device_ptr(),
@@ -1202,7 +1505,11 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
-    /// Async variant of [`Self::ternary_gemm`].
+    /// Async variant of [`Self::ternary_gemm`]. All output writes are enqueued
+    /// on the accelerator stream. When `m > 0 && n > 0`, the empty-K path
+    /// waits for stream completion before returning. Calls with `m == 0 ||
+    /// n == 0` return immediately; other paths require [`Self::synchronize`]
+    /// before reading or dropping any argument buffer.
     #[allow(clippy::too_many_arguments)]
     pub fn ternary_gemm_async(
         &self,
@@ -1238,7 +1545,7 @@ impl GpuAccelerator {
         }
         if k == 0 {
             // Device memset — no host-sized staging buffer; preserve pooled tail.
-            c.zero_prefix(m_u.saturating_mul(n_u))?;
+            self.zero_output_prefix(c, m_u.saturating_mul(n_u))?;
             return Ok(());
         }
 
@@ -1274,6 +1581,23 @@ impl GpuAccelerator {
         let skip = if skip_zeros { 1i32 } else { 0i32 };
 
         range_push!("ternary_gemm");
+        // SAFETY: launching the `ternary_gemm` kernel.
+        // - ABI: the CUDA entry (cu/ternary_gemm.cu) is `(const u32* packed_w, const f32* scales,
+        //   const f32* b, f32* c, i32 M, i32 K, i32 N, i32 group_size, i32 skip_zeros)`. Arguments
+        //   match in order and type: three read-only device pointers, the `c` write target, then the
+        //   five `i32` scalars (`skip` is `0`/`1`).
+        // - Bounds: `m,k,n >= 0` and `group_size > 0` are validated. The `m == 0 || n == 0` and
+        //   `k == 0` cases returned earlier, so here `m,k,n >= 1`. Buffer lengths are checked via
+        //   `expect_len`: `c >= m*n`, `packed_w >= m*ceil(k/TERNARY_VALUES_PER_WORD)`,
+        //   `scales >= m*ceil(k/group)`, `b >= k*n`. The kernel maps one flattened `M*N` output
+        //   element per thread and indexes those same strides, so all accesses are in bounds.
+        // - Launch dims: `grid = ceil_div(M*N, 256)` computed in u64 and rejected above if it would
+        //   exceed `u32::MAX`, so the 1-D grid covers every output element without overflow;
+        //   0 dynamic shared memory.
+        // - Lifetime/aliasing: `packed_w`/`scales`/`b` are shared `&`, `c` is unique `&mut` (no host
+        //   aliasing); all are caller-owned and outlive the borrow. The synchronous `ternary_gemm`
+        //   wrapper synchronizes before returning; the async form requires the caller to synchronize
+        //   before freeing/reusing the buffers. Context/module/stream are `Some` for as long as `self`.
         let launch_result = unsafe {
             launch!(func<<<grid, block, 0, stream>>>(
                 packed_w.as_device_ptr(),
@@ -1293,6 +1617,52 @@ impl GpuAccelerator {
         })?;
 
         Ok(())
+    }
+
+    /// Allocate/grow the owned SAT scratch buffers only in our current
+    /// context, after their last stream use has completed.
+    fn ensure_aux_scratch(&self, partial_len: usize) -> GpuResult<()> {
+        self._ctx
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?
+            .require_current()?;
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
+        let mut partial_scores = self.aux_partial_scores.borrow_mut();
+        let mut partial_walkers = self.aux_partial_walkers.borrow_mut();
+        let need_partial_realloc = partial_scores
+            .as_ref()
+            .is_none_or(|b| b.len() < partial_len)
+            || partial_walkers
+                .as_ref()
+                .is_none_or(|b| b.len() < partial_len);
+        if need_partial_realloc {
+            // The current-context check protects allocation and destruction
+            // of replaced scratch buffers. Wait for their last queued use.
+            stream.synchronize().map_err(|e| {
+                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
+                    "stream sync before partial realloc: {e:?}"
+                )))
+            })?;
+            let scores = GpuBuffer::<i32>::alloc(partial_len)?;
+            let walkers = GpuBuffer::<i32>::alloc(partial_len)?;
+            *partial_scores = Some(scores);
+            *partial_walkers = Some(walkers);
+        }
+        Ok(())
+    }
+
+    fn zero_output_prefix(&self, output: &mut GpuBuffer<f32>, count: usize) -> GpuResult<()> {
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?;
+        // SAFETY: output and stream remain alive until the synchronization
+        // below completes; all accelerator work uses this same stream.
+        unsafe { output.zero_prefix_on(count, stream) }?;
+        self.synchronize()
     }
 
     fn expect_len(name: &str, actual: usize, minimum: usize) -> GpuResult<()> {
@@ -1322,7 +1692,48 @@ impl GpuAccelerator {
 
 impl Drop for GpuAccelerator {
     fn drop(&mut self) {
-        let _ = self.synchronize();
+        let Some(ctx) = self._ctx.as_ref() else {
+            // CPU fallback owns no CUDA resources and makes no CUDA calls.
+            return;
+        };
+        let current_context = match CurrentContextGuard::enter(ctx) {
+            Ok(guard) => guard,
+            Err(error) => {
+                // Returning OR panicking would run field destructors under
+                // an unknown context. There is no fallible Drop API and no
+                // safe recovery here without leaking resources. Fail-stop;
+                // even a failed diagnostic write must not cause unwinding.
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "fatal: cannot establish accelerator context for teardown: {error:?}"
+                );
+                std::process::abort();
+            }
+        };
+        // Move every resource out before any fallible work or user-provided
+        // tracing callback. Reverse local declaration order also preserves
+        // teardown during unwinding: these locals drop before the guard.
+        let modules = self.modules.take();
+        let stream = self.stream.take();
+        let partial_walkers = self.aux_partial_walkers.get_mut().take();
+        let partial_scores = self.aux_partial_scores.get_mut().take();
+        if let Some(stream) = &stream
+            && let Err(error) = stream.synchronize()
+        {
+            warn!(
+                ?error,
+                "accelerator stream synchronization failed during drop"
+            );
+        }
+        // Explicit ownership invariant: synchronize -> scratch -> stream ->
+        // modules -> caller context restoration -> final context release.
+        drop(partial_scores);
+        drop(partial_walkers);
+        drop(stream);
+        drop(modules);
+        drop(current_context);
+        drop(self._ctx.take());
     }
 }
 
@@ -1586,5 +1997,40 @@ mod tests {
         assert!(report.fallback.is_none());
         assert!(report.gpu_usable());
         assert!(!report.kernels.all_runtime_available());
+    }
+
+    /// An empty Poisson request on a CPU-fallback accelerator stays
+    /// fail-closed on both entry points (GH #48): the async no-op requires
+    /// readiness, and the sync wrapper propagates the same `Unavailable`
+    /// instead of succeeding-then-failing at `synchronize`.
+    #[test]
+    #[ignore] // requires GPU + driver ≥ 570
+    fn empty_poisson_on_cpu_fallback_fails_closed_on_both_paths() {
+        let _gpu = GpuAccelerator::require_gpu().expect("GPU required for buffer setup");
+        let facts = CapabilityFacts {
+            cuda_built: true,
+            runtime_available: false,
+            device_available: false,
+            compute_capability: None,
+            kernels: KernelAvailability::compiled_unverified(),
+        };
+        let report = capability_report_for_failure(
+            facts,
+            FallbackReason::DriverRuntimeFailure,
+            "no device for fallback probe",
+        );
+        let acc = GpuAccelerator::cpu_fallback(report);
+        assert!(!acc.is_ready());
+
+        let stim = GpuBuffer::<f32>::alloc(0).unwrap();
+        let mut spikes = GpuBuffer::<u32>::alloc(0).unwrap();
+        match acc.poisson_encode_async(&stim, &mut spikes, 7).unwrap_err() {
+            GpuError::Unavailable { .. } => {}
+            other => panic!("expected Unavailable, got {other}"),
+        }
+        match acc.poisson_encode(&stim, &mut spikes, 7).unwrap_err() {
+            GpuError::Unavailable { .. } => {}
+            other => panic!("expected Unavailable, got {other}"),
+        }
     }
 }

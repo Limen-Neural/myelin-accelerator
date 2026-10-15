@@ -69,6 +69,9 @@ jobs:
       - name: Cargo test (experimental saaq)
         run: cargo test --locked --features saaq
 
+      - name: Crate archive boundary tests
+        run: python3 -B -m unittest discover -s tests -p test_release_prep.py -v
+
       - name: Benchmark harness tests
         run: cargo test --locked --features bench --example benchmark
 
@@ -107,7 +110,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
           apt-get install -y --no-install-recommends \
-            curl ca-certificates build-essential pkg-config libssl-dev git
+            curl ca-certificates build-essential pkg-config libssl-dev git python3
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --default-toolchain stable --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -132,7 +135,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           if [ -z "$ptx_dir" ]; then
             echo "::error::Could not find PTX output directory"
             exit 1
@@ -168,15 +171,6 @@ jobs:
             fi
             echo "✓ $f (${size} bytes)"
           done
-          for kernel in ternary_gemv ternary_gemm; do
-            if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                "$ptx_dir/ternary_gemm_sm_120.ptx"; then
-              echo "✓ ternary_gemm PTX: $kernel"
-            else
-              echo "::error::Missing kernel entry: $kernel"
-              exit 1
-            fi
-          done
           for kernel in project_snapshot_current gif_step_weighted gif_step_weighted_f16 \
                         saaq_find_best_walker saaq_reduce_partials_f16; do
             if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
@@ -186,6 +180,13 @@ jobs:
             fi
             echo "✓ spiking_network PTX has no $kernel (saaq off)"
           done
+
+      - name: Validate PTX kernel symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
+          ./scripts/check_ptx_entries.sh "$ptx_dir" cloud
 
       - name: Build (debug, features cuda,saaq)
         shell: bash
@@ -235,7 +236,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ptx_dir="$(ls -td target/debug/build/myelin-accelerator-*/out | head -n1)"
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
                    satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
             ptxas -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
@@ -276,6 +277,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           persist-credentials: false
+          # Qualify the PR head itself, not GitHub's synthetic PR merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
@@ -317,14 +320,38 @@ jobs:
         run: cargo test --locked --features cuda,saaq
 
       - name: Test GPU goldens (ignored)
-        run: cargo test --locked --features cuda,saaq -- --ignored --nocapture
+        run: cargo test --locked --features cuda,saaq -- --ignored --nocapture --test-threads=1
+
+      - name: Compute Sanitizer accelerator and SNN fixture memcheck
+        run: ./scripts/sanitize_lifecycle.sh
+
+      - name: Prepare crates.io candidate from exact commit
+        run: |
+          python3 -B scripts/prepare_crate.py \
+            --candidate-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --output-dir "$RUNNER_TEMP/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}"
+
+      - name: Retain crate preparation evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: myelin-v0.2.0-candidate-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/summary.json
+            ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/*.log
+            ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/*.crate
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Verify PTX output is non-stub
         shell: bash
         run: |
           set -euo pipefail
           for profile in debug release; do
-            ptx_dir="$(ls -td target/$profile/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
+            if [ "$profile" = "release" ]; then
+              ptx_dir="$(./scripts/ptx_out_dir.sh --release)"
+            else
+              ptx_dir="$(./scripts/ptx_out_dir.sh)"
+            fi
             if [ -z "$ptx_dir" ]; then
               echo "::error::Could not find PTX output directory for profile=$profile"
               exit 1
@@ -366,57 +393,14 @@ jobs:
         run: |
           set -euo pipefail
           for profile in debug release; do
-            ptx_dir="$(ls -td target/$profile/build/myelin-accelerator-*/out 2>/dev/null | head -n1 || true)"
-            echo ""
+            if [ "$profile" = "release" ]; then
+              ptx_dir="$(./scripts/ptx_out_dir.sh --release)"
+            else
+              ptx_dir="$(./scripts/ptx_out_dir.sh)"
+            fi
             echo "Checking kernel entry points in $profile PTX files..."
-
-            for kernel in poisson_encode lif_step lif_step_weighted \
-                          spike_rate \
-                          reset_membrane stdp_update neuro_bias_logits \
-                          membrane_dv_dt_reduce_pass1 routing_entropy_reduce_pass1 \
-                          latent_reduce_pass2; do
-              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                  "$ptx_dir/spiking_network_sm_120.ptx"; then
-                echo "✓ $profile spiking_network: $kernel"
-              else
-                echo "::error::Missing kernel entry: $kernel in $profile spiking_network PTX"
-                exit 1
-              fi
-            done
-
-            for kernel in cosine_similarity_batched cosine_similarity_top_k; do
-              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                  "$ptx_dir/vector_similarity_sm_120.ptx"; then
-                echo "✓ $profile vector_similarity: $kernel"
-              else
-                echo "::error::Missing kernel entry: $kernel in $profile vector_similarity PTX"
-                exit 1
-              fi
-            done
-
-            for kernel in satsolver_init satsolver_step satsolver_aux_update \
-                          satsolver_check_solution satsolver_extract \
-                          satsolver_best_reduce_pass1 satsolver_best_reduce_pass2; do
-              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                  "$ptx_dir/satsolver_sm_120.ptx"; then
-                echo "✓ $profile satsolver: $kernel"
-              else
-                echo "::error::Missing kernel entry: $kernel in $profile satsolver PTX"
-                exit 1
-              fi
-            done
-
-            for kernel in ternary_gemv ternary_gemm; do
-              if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                  "$ptx_dir/ternary_gemm_sm_120.ptx"; then
-                echo "✓ $profile ternary_gemm: $kernel"
-              else
-                echo "::error::Missing kernel entry: $kernel in $profile ternary_gemm PTX"
-                exit 1
-              fi
-            done
+            ./scripts/check_ptx_entries.sh "$ptx_dir" "$profile"
           done
-          echo ""
           echo "All kernel entry points verified for both debug and release."
           ptx_dir=""
           for candidate in target/debug/build/myelin-accelerator-*/out; do
@@ -469,19 +453,7 @@ jobs:
         run: |
           set -euo pipefail
           PTXAS="$(dirname "$CUDA_NVCC")/ptxas"
-          ptx_dir=""
-          for candidate in target/debug/build/myelin-accelerator-*/out; do
-            [ -d "$candidate" ] || continue
-            ptx="$candidate/spiking_network_sm_120.ptx"
-            [ -f "$ptx" ] || continue
-            if grep -Eq '\.entry[[:space:]]+project_snapshot_current[[:space:]]*\(' "$ptx"; then
-              ptx_dir="$candidate"
-            fi
-          done
-          if [ -z "$ptx_dir" ]; then
-            echo "::error::Could not find debug PTX OUT_DIR for ptxas (missing SAAQ kernel entries)"
-            exit 1
-          fi
+          ptx_dir="$(./scripts/ptx_out_dir.sh)"
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
                    satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
             "$PTXAS" -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"

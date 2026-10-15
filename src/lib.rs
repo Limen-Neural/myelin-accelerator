@@ -1,7 +1,14 @@
 // Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// myelin-accelerator: safe Rust FFI wrappers around CUDA spiking-network kernels.
+//! Rust/CUDA acceleration primitives for spiking neural networks (SNN) and
+//! neuromorphic workloads: safe Rust wrappers around first-party CUDA kernels
+//! covering spiking-network dynamics, routing, SAT search, and packed ternary
+//! GEMV/GEMM. The `cuda` feature targets `sm_120` (NVIDIA Blackwell); the
+//! default build is CPU-only and needs no CUDA toolkit or device.
+//!
+//! This is a low-level compute layer, not a complete SNN framework or a
+//! general model-compatibility layer.
 pub mod bench;
 pub mod bitpacking;
 pub mod capability;
