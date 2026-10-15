@@ -23,22 +23,31 @@ set(CUDA_COMMON_FLAGS
         --expt-relaxed-constexpr
         -Xcompiler -fno-builtin)
 
+option(MYELIN_SAAQ "Compile experimental GIF/SAAQ kernels (-DMYELIN_SAAQ)" OFF)
+
 set(CU_SOURCES
         cu/satsolver.cu
         cu/spiking_network.cu
         cu/vector_similarity.cu
         cu/ternary_gemm.cu)
 set(CU_HEADERS
-        cu/common.cuh)
+        cu/common.cuh
+        cu/myelin_shim.h)
+set(CU_SHIM
+        cu/myelin_shim.cu)
 
 # Build each .cu → .ptx via custom command
 set(PTX_OUTPUTS "")
 foreach(cu_src ${CU_SOURCES})
     get_filename_component(cu_name ${cu_src} NAME_WE)
     set(ptx_out "${CMAKE_CURRENT_BINARY_DIR}/${cu_name}.ptx")
+    set(EXTRA_NVCC_FLAGS "")
+    if(MYELIN_SAAQ AND cu_name STREQUAL "spiking_network")
+        set(EXTRA_NVCC_FLAGS -DMYELIN_SAAQ)
+    endif()
     add_custom_command(
             OUTPUT ${ptx_out}
-            COMMAND ${CUDA_NVCC} ${CUDA_COMMON_FLAGS}
+            COMMAND ${CUDA_NVCC} ${CUDA_COMMON_FLAGS} ${EXTRA_NVCC_FLAGS}
                     -I${CMAKE_SOURCE_DIR}/cu
                     -o ${ptx_out}
                     ${CMAKE_SOURCE_DIR}/${cu_src}
@@ -63,11 +72,11 @@ endif()
 if(MYELIN_HAS_NVCC)
     add_custom_target(cuda_kernels ALL
             DEPENDS ${PTX_OUTPUTS}
-            SOURCES ${CU_SOURCES} ${CU_HEADERS})
+            SOURCES ${CU_SOURCES} ${CU_HEADERS} ${CU_SHIM})
 else()
     # Indexing-only target (no PTX deps) so CLion still sees .cu/.cuh files.
     add_custom_target(cuda_kernels
-            SOURCES ${CU_SOURCES} ${CU_HEADERS})
+            SOURCES ${CU_SOURCES} ${CU_HEADERS} ${CU_SHIM})
     message(STATUS "nvcc not found at ${CUDA_NVCC}; cuda_kernels is indexing-only (not in ALL)")
 endif()
 
@@ -85,6 +94,10 @@ add_custom_target(cargo_test
 
 add_test(NAME cargo_tests
         COMMAND cargo test --locked
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+add_test(NAME cargo_tests_saaq
+        COMMAND cargo test --locked --features saaq
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Cargo build without default features (compile check)
@@ -109,12 +122,21 @@ add_test(NAME cargo_fmt_check
 
 # Clippy without CUDA (must match CI Lint job)
 add_custom_target(cargo_clippy
-        COMMAND cargo clippy --locked --no-default-features -- -D warnings
+        COMMAND cargo clippy --locked --no-default-features --tests -- -D warnings
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Clippy (no default features)")
 
+add_custom_target(cargo_clippy_saaq
+        COMMAND cargo clippy --locked --features saaq --tests -- -D warnings
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Clippy (experimental saaq feature)")
+
 add_test(NAME cargo_clippy_no_default
-        COMMAND cargo clippy --locked --no-default-features -- -D warnings
+        COMMAND cargo clippy --locked --no-default-features --tests -- -D warnings
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+add_test(NAME cargo_clippy_saaq
+        COMMAND cargo clippy --locked --features saaq --tests -- -D warnings
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Bench example compile (covers the --features bench CI blind spot)

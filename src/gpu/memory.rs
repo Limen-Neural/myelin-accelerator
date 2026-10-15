@@ -166,3 +166,22 @@ impl GpuBuffer<f32> {
             .map_err(|e| GpuError::MemoryError(format!("zero_prefix_on: {e:?}")))
     }
 }
+
+impl GpuBuffer<u32> {
+    /// Zero the first `count` elements on device; leaves any tail untouched.
+    pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
+        if count > self.len {
+            return Err(GpuError::MemoryError(format!(
+                "zero_prefix: count {count} > device len {}",
+                self.len
+            )));
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        let mut prefix = self.inner.index(0..count);
+        prefix
+            .set_zero()
+            .map_err(|e| GpuError::MemoryError(format!("zero_prefix: {e:?}")))
+    }
+}
