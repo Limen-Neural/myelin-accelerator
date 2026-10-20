@@ -8,9 +8,10 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from prepare_crate import REQUIRED_PATHS, check_tracked_inventory, inspect_archive  # noqa: E402
+from prepare_crate import REQUIRED_PATHS, check_tracked_inventory, inspect_archive, prepare_archive  # noqa: E402
 
 
 class ArchiveBoundaryTests(unittest.TestCase):
@@ -79,6 +80,37 @@ class ArchiveBoundaryTests(unittest.TestCase):
             archive = self.archive(Path(temp), set(REQUIRED_PATHS) | {"src/linked.rs"}, "src/linked.rs")
             with self.assertRaisesRegex(ValueError, "non-file archive member"):
                 inspect_archive(archive)
+
+    def test_prepare_archive_runs_package_boundary_checker(self):
+        class Context:
+            def __init__(self, root: Path):
+                self.env = {"CARGO_TARGET_DIR": str(root / "target")}
+                self.output = root / "output"
+                self.output.mkdir()
+                self.pipelines: list[tuple[str, list[str], list[str], Path]] = []
+
+            def run(self, _name: str, _args: list[str], _cwd: Path) -> None:
+                # Archive creation and copying are mocked; only pipeline wiring is under test.
+                return None
+
+            def run_pipeline(self, name: str, producer: list[str], consumer: list[str], cwd: Path) -> None:
+                self.pipelines.append((name, producer, consumer, cwd))
+
+        with tempfile.TemporaryDirectory() as temp:
+            context = Context(Path(temp))
+            tracked = "\0".join(sorted(REQUIRED_PATHS)).encode() + b"\0"
+            with (
+                patch("prepare_crate.inspect_archive", return_value=set(REQUIRED_PATHS)),
+                patch("prepare_crate.subprocess.check_output", return_value=tracked),
+                patch("prepare_crate.shutil.copyfile"),
+            ):
+                prepare_archive(context)
+
+        self.assertEqual(len(context.pipelines), 1)
+        name, producer, consumer, _cwd = context.pipelines[0]
+        self.assertEqual(name, "package-boundary")
+        self.assertEqual(producer, ["cargo", "package", "--locked", "--list"])
+        self.assertEqual(Path(consumer[0]).name, "check-package-boundary.sh")
 
 
 if __name__ == "__main__":

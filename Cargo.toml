@@ -10,10 +10,12 @@ keywords = ["cuda", "snn", "neuromorphic", "gpu", "spiking-network"]
 categories = ["hardware-support", "artificial-intelligence", "simulation"]
 # Anchor every pattern at the crate root. An unanchored `README.md` also
 # matches ignored agent/runner dependencies with that basename on this host.
-# The CUDA build reads cu/; package verification reads fixtures and scripts.
+# The CUDA build reads cu/; package verification reads SNN fixtures and scripts.
+# Benchmark regression fixtures and their fixture-only test stay repository-only.
 include = [
-    "/Cargo.toml", "/Cargo.lock", "/README.md", "/REVIEW.md", "/LICENSE-*", "/build.rs",
+    "/Cargo.toml", "/Cargo.lock", "/README.md", "/REVIEW.md", "/LICENSE-APACHE", "/LICENSE-MIT", "/build.rs",
     "/src/**", "/cu/**", "/examples/**", "/tests/**", "/scripts/**", "/docs/**",
+    "!/tests/bench_repro.rs", "!/tests/fixtures/bench/**",
 ]
 
 [lib]
