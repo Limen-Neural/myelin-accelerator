@@ -31,9 +31,12 @@ search, and a SAT solver), targeting Blackwell / RTX 5080-class GPUs
   writes stub PTX files, no GPU/nvcc required. This is the CPU-safe path and
   is intended to work in CI and sandboxed environments without a GPU.
 - **`--features cuda`:** `src/gpu/` is compiled, `build.rs` invokes `nvcc` to
-  compile `cu/*.cu` → PTX, embedded at compile time via `include_str!`.
-  Prefer **CUDA toolkit 13.2+**; ShipOfTheseus local default is **13.3.1**
-  (`/usr/local/cuda` → `cuda-13.3`). Override with `CUDA_NVCC` /
+  compile `cu/*.cu` → PTX sidecar **and** fatbin (sm_120 SASS + compute_120 PTX),
+  plus the `myelin_shim` C-ABI object when **`--features cuda,saaq`** (linked
+  with `cudart`). Embedded at compile
+  time via `include_bytes!` / `include_str!`. Runtime load prefers fatbin SASS
+  and falls back to PTX JIT. Prefer **CUDA toolkit 13.2+**; ShipOfTheseus local
+  default is **13.3.1** (`/usr/local/cuda` → `cuda-13.3`). Override with `CUDA_NVCC` /
   `CUDA_HOME` only if you intentionally use an older tree. Runtime needs
   an `sm_120`-capable driver (≥ 570; UMD **13.x** on current Blackwell hosts).
 
@@ -43,6 +46,7 @@ Run CPU-safe checks first — these should pass without a GPU:
 
 ```bash
 cargo test --locked
+cargo test --locked --features saaq
 cargo build --locked --no-default-features
 ```
 
@@ -64,9 +68,9 @@ cmake --build cmake-build-debug --target cuda_kernels
 ctest --test-dir cmake-build-debug --output-on-failure
 ```
 
-CTest covers: `cargo_tests`, `cargo_build_no_default_features`,
-`cargo_fmt_check`, `cargo_clippy_no_default`, `cargo_build_bench_example`,
-`cuda_kernel_build`.
+CTest covers: `cargo_tests`, `cargo_tests_saaq`, `cargo_build_no_default_features`,
+`cargo_fmt_check`, `cargo_clippy_no_default`, `cargo_clippy_saaq`,
+`cargo_build_bench_example`, `cuda_kernel_build`.
 
 GPU kernel benchmarks need **both** features (not just `bench`):
 

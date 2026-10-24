@@ -21,6 +21,7 @@ test.ptx
 # Generated PTX and intermediate files
 *.ptx
 *.cubin
+*.fatbin
 
 # Nsight Systems / Nsight Compute local profiling outputs
 *.nsys-rep
