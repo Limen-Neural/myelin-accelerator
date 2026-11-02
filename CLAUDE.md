@@ -76,6 +76,8 @@ CUDA_NVCC=/usr/local/cuda/bin/nvcc \
   cargo run --example benchmark --profile bench --features bench,cuda
 ```
 
+Manifests, opt-in regression budgets, and baseline refresh: `docs/BENCHMARKS.md`.
+
 ### Local CUDA GPU quality gate (preferred over cloud)
 
 Full GPU proof is **local / self-hosted** (Blackwell + driver). Cloud runners
@@ -88,6 +90,7 @@ cargo build --locked --features cuda
 #   ptxas -arch=sm_120 -o /tmp/sn.cubin cmake-build-debug/spiking_network.ptx
 cargo test --locked --features cuda
 cargo test --locked --features cuda -- --ignored --nocapture
+./scripts/sanitize_lifecycle.sh # mandatory accelerator + SNN fixture memcheck
 cargo run --locked --example benchmark --profile bench --features bench,cuda
 ```
 

@@ -61,10 +61,6 @@ fn poisson_encode_matches_oracle_seeded_boundaries() {
     let acc = require_gpu();
     for &seed in CASE_SEEDS {
         for &n in BOUNDARY_LENS {
-            // A 0-thread launch is not a useful device comparison; CPU covers n=0.
-            if n == 0 {
-                continue;
-            }
             let mut rng = CaseRng::new(seed.wrapping_mul(0x1000_0001) ^ n as u64);
             let mut stim = vec![0.0f32; n];
             for rate in &mut stim {
@@ -82,8 +78,62 @@ fn poisson_encode_matches_oracle_seeded_boundaries() {
     }
 }
 
-// ── satsolver extract / aux reduce ──────────────────────────────────────────
+/// Empty Poisson input is a defined on-device no-op (GH #48): empty stimuli +
+/// empty output succeeds on both the sync and async paths, matching the oracle.
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn poisson_encode_empty_is_noop_on_device() {
+    let acc = require_gpu();
+    let expected = poisson_encode_oracle(&[], 7);
+    assert!(expected.is_empty());
 
+    let stim = GpuBuffer::<f32>::alloc(0).unwrap();
+    let mut spikes = GpuBuffer::<u32>::alloc(0).unwrap();
+    acc.poisson_encode(&stim, &mut spikes, 7)
+        .expect("empty poisson_encode");
+    assert!(spikes.to_vec().unwrap().is_empty());
+
+    let mut spikes_async = GpuBuffer::<u32>::alloc(0).unwrap();
+    acc.poisson_encode_async(&stim, &mut spikes_async, 7)
+        .expect("empty poisson_encode_async");
+    acc.synchronize().unwrap();
+    assert!(spikes_async.to_vec().unwrap().is_empty());
+}
+
+/// Empty Poisson input with a larger pooled output succeeds without modifying
+/// the unused tail (GH #48), on both the sync and async paths.
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn poisson_encode_empty_preserves_pooled_tail() {
+    let acc = require_gpu();
+    let stim = GpuBuffer::<f32>::alloc(0).unwrap();
+    let sentinel: Vec<u32> = vec![0xDEAD_BEEFu32, 1, 2, 3, u32::MAX];
+
+    for seed in [0u32, 7, 42] {
+        let mut spikes = GpuBuffer::from_slice(&sentinel).unwrap();
+        acc.poisson_encode(&stim, &mut spikes, seed)
+            .expect("empty poisson_encode pooled");
+        assert_exact(
+            &spikes.to_vec().unwrap(),
+            &sentinel,
+            seed as u64,
+            "n=0 pooled tail (sync)",
+        );
+
+        let mut spikes_async = GpuBuffer::from_slice(&sentinel).unwrap();
+        acc.poisson_encode_async(&stim, &mut spikes_async, seed)
+            .expect("empty poisson_encode_async pooled");
+        acc.synchronize().unwrap();
+        assert_exact(
+            &spikes_async.to_vec().unwrap(),
+            &sentinel,
+            seed as u64,
+            "n=0 pooled tail (async)",
+        );
+    }
+}
+
+// ── satsolver extract / aux reduce ──────────────────────────────────────────
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn satsolver_extract_matches_oracle_golden() {

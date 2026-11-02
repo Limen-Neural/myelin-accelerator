@@ -1,36 +1,16 @@
 // Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::fmt;
+pub use crate::capability::{
+    Backend, CapabilityFacts, CapabilityReport, ComputeCapability, ExecutionPolicy, FallbackReason,
+    FallbackRecord, KernelAvailability,
+};
+use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
+pub use crate::error::{GpuError, GpuResult};
 
-pub type GpuResult<T> = Result<T, GpuError>;
-
-#[derive(Debug)]
-pub enum GpuError {
-    NoGpu,
-    InitFailed(String),
-    ModuleLoadFailed(String),
-    KernelNotFound(String),
-    MemoryError(String),
-    LaunchFailed(String),
-    CudaError(String),
+pub(crate) fn host_facts() -> CapabilityFacts {
+    CapabilityFacts::not_built()
 }
-
-impl fmt::Display for GpuError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            GpuError::NoGpu => write!(f, "No GPU available (built without `cuda` feature)"),
-            GpuError::InitFailed(s) => write!(f, "GPU init failed: {s}"),
-            GpuError::ModuleLoadFailed(s) => write!(f, "PTX module load failed: {s}"),
-            GpuError::KernelNotFound(s) => write!(f, "Kernel not found: {s}"),
-            GpuError::MemoryError(s) => write!(f, "GPU memory error: {s}"),
-            GpuError::LaunchFailed(s) => write!(f, "Kernel launch failed: {s}"),
-            GpuError::CudaError(s) => write!(f, "CUDA error: {s}"),
-        }
-    }
-}
-
-impl std::error::Error for GpuError {}
 
 #[derive(Debug)]
 pub struct GpuContext;
@@ -40,6 +20,11 @@ impl GpuContext {
     }
     pub fn is_available() -> bool {
         false
+    }
+
+    /// Device 0 compute capability; unavailable in a CPU-only build.
+    pub fn compute_capability(&self) -> Option<ComputeCapability> {
+        None
     }
 }
 
@@ -63,19 +48,43 @@ pub struct GpuBuffer<T> {
     data: Vec<T>,
 }
 impl<T: Default + Clone> GpuBuffer<T> {
+    /// Allocate a buffer of `len` elements, initialised to `T::default()`.
+    ///
+    /// The buffer is readable immediately: [`Self::to_vec`] after `alloc`
+    /// returns `len` copies of `T::default()` without any prior upload.
+    /// `alloc(0)` succeeds and yields an empty, readable buffer. This mirrors
+    /// the CUDA backend's initialisation contract so callers behave identically
+    /// on either path.
+    ///
+    /// Oversized requests fail with [`GpuError::MemoryError`] instead of
+    /// panicking: the byte size is checked with the same
+    /// `size_of::<T>() * len` arithmetic and `isize::MAX` ceiling as the CUDA
+    /// backend, and the backing `Vec` is reserved fallibly (GH #48).
     pub fn alloc(len: usize) -> GpuResult<Self> {
-        Ok(Self {
-            data: vec![T::default(); len],
-        })
+        crate::error::checked_alloc_bytes::<T>(len)?;
+        let mut data: Vec<T> = Vec::new();
+        data.try_reserve_exact(len)
+            .map_err(|e| GpuError::MemoryError(format!("alloc({len}): reserve failed: {e:?}")))?;
+        data.resize(len, T::default());
+        Ok(Self { data })
     }
+    /// Allocate a buffer holding a copy of `data`. `from_slice(&[])` yields an
+    /// empty buffer.
     pub fn from_slice(data: &[T]) -> GpuResult<Self> {
         Ok(Self {
             data: data.to_vec(),
         })
     }
+    /// Copy the buffer's current contents into a fresh `Vec<T>`.
     pub fn to_vec(&self) -> GpuResult<Vec<T>> {
         Ok(self.data.clone())
     }
+    /// Upload from a host slice, replacing the buffer's contents.
+    ///
+    /// `data.len()` must equal [`Self::len`]; a mismatch returns
+    /// [`GpuError::MemoryError`] before mutating anything, leaving the existing
+    /// contents intact. Empty-to-empty uploads succeed as a no-op. The error
+    /// payload matches the CUDA backend exactly.
     pub fn upload(&mut self, data: &[T]) -> GpuResult<()> {
         if data.len() != self.data.len() {
             return Err(GpuError::MemoryError(format!(
@@ -112,16 +121,96 @@ impl<T: Default + Clone> GpuBuffer<T> {
     }
 }
 
-pub struct GpuAccelerator;
+pub struct GpuAccelerator {
+    capabilities: CapabilityReport,
+}
+
 impl GpuAccelerator {
+    /// Construct with [`ExecutionPolicy::PreferGpu`] (caller-approved CPU fallback).
     pub fn new() -> Self {
-        Self
+        match Self::with_policy(ExecutionPolicy::PreferGpu) {
+            Ok(acc) => acc,
+            Err(_) => unreachable!("PreferGpu construction is infallible"),
+        }
     }
+
+    /// Fail closed: never return a CPU-backend accelerator.
+    pub fn require_gpu() -> GpuResult<Self> {
+        Self::with_policy(ExecutionPolicy::RequireGpu)
+    }
+
+    /// Construct under an explicit execution policy.
+    pub fn with_policy(policy: ExecutionPolicy) -> GpuResult<Self> {
+        let mut facts = host_facts();
+        apply_failure_to_facts(&mut facts, FallbackReason::CudaFeatureNotBuilt);
+        let capabilities = evaluate_capabilities(&facts);
+        match policy {
+            ExecutionPolicy::PreferGpu => Ok(Self { capabilities }),
+            ExecutionPolicy::RequireGpu => {
+                let fb = capabilities.fallback.clone().unwrap_or_else(|| {
+                    FallbackRecord::cpu(
+                        FallbackReason::CudaFeatureNotBuilt,
+                        "GPU was required but the cuda feature is not enabled",
+                    )
+                });
+                Err(GpuError::unavailable(fb.reason, fb.detail))
+            }
+        }
+    }
+
     pub fn is_ready(&self) -> bool {
         false
     }
+
+    pub fn capabilities(&self) -> &CapabilityReport {
+        &self.capabilities
+    }
+
+    pub fn selected_backend(&self) -> Backend {
+        self.capabilities.selected_backend
+    }
+
+    pub fn fallback(&self) -> Option<&FallbackRecord> {
+        self.capabilities.fallback.as_ref()
+    }
+
+    fn unavailable_error(&self) -> GpuError {
+        match &self.capabilities.fallback {
+            Some(fb) => GpuError::unavailable(fb.reason, fb.detail.clone()),
+            None => GpuError::NoGpu,
+        }
+    }
+
     pub fn kernels(&self) -> GpuResult<&KernelModule> {
-        Err(GpuError::NoGpu)
+        Err(self.unavailable_error())
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn stdp_update(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+        _: f32,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn stdp_update_async(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: i32,
+        _: i32,
+        _: f32,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
     }
     pub fn satsolver_extract(
         &self,
@@ -131,7 +220,7 @@ impl GpuAccelerator {
         _: i32,
         _: i32,
     ) -> GpuResult<()> {
-        Err(GpuError::NoGpu)
+        Err(self.unavailable_error())
     }
     #[allow(clippy::too_many_arguments)]
     pub fn satsolver_aux_reduce_best(
@@ -147,7 +236,7 @@ impl GpuAccelerator {
         _: i32,
         _: i32,
     ) -> GpuResult<()> {
-        Err(GpuError::NoGpu)
+        Err(self.unavailable_error())
     }
     pub fn poisson_encode(
         &self,
@@ -155,7 +244,7 @@ impl GpuAccelerator {
         _: &mut GpuBuffer<u32>,
         _: u32,
     ) -> GpuResult<()> {
-        Err(GpuError::NoGpu)
+        Err(self.unavailable_error())
     }
 
     pub fn satsolver_extract_async(
@@ -166,7 +255,7 @@ impl GpuAccelerator {
         _: i32,
         _: i32,
     ) -> GpuResult<()> {
-        Err(GpuError::NoGpu)
+        Err(self.unavailable_error())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -183,7 +272,7 @@ impl GpuAccelerator {
         _: i32,
         _: i32,
     ) -> GpuResult<()> {
-        Err(GpuError::NoGpu)
+        Err(self.unavailable_error())
     }
 
     pub fn poisson_encode_async(
@@ -192,7 +281,7 @@ impl GpuAccelerator {
         _: &mut GpuBuffer<u32>,
         _: u32,
     ) -> GpuResult<()> {
-        Err(GpuError::NoGpu)
+        Err(self.unavailable_error())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -207,7 +296,7 @@ impl GpuAccelerator {
         _: i32,
         _: bool,
     ) -> GpuResult<()> {
-        Err(GpuError::NoGpu)
+        Err(self.unavailable_error())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -222,7 +311,7 @@ impl GpuAccelerator {
         _: i32,
         _: bool,
     ) -> GpuResult<()> {
-        Err(GpuError::NoGpu)
+        Err(self.unavailable_error())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -238,7 +327,7 @@ impl GpuAccelerator {
         _: i32,
         _: bool,
     ) -> GpuResult<()> {
-        Err(GpuError::NoGpu)
+        Err(self.unavailable_error())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -254,7 +343,7 @@ impl GpuAccelerator {
         _: i32,
         _: bool,
     ) -> GpuResult<()> {
-        Err(GpuError::NoGpu)
+        Err(self.unavailable_error())
     }
 
     #[cfg(feature = "saaq")]
@@ -390,7 +479,7 @@ impl GpuAccelerator {
     }
 
     pub fn synchronize(&self) -> GpuResult<()> {
-        Err(GpuError::NoGpu)
+        Err(self.unavailable_error())
     }
 }
 impl Default for GpuAccelerator {
@@ -402,6 +491,12 @@ impl Default for GpuAccelerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_api_reports_no_compute_capability() {
+        let ctx = GpuContext;
+        assert_eq!(ctx.compute_capability(), None);
+    }
 
     // ── GpuError Display ────────────────────────────────────────────────────
 
@@ -448,6 +543,27 @@ mod tests {
     fn error_display_cuda_error() {
         let err = GpuError::CudaError("illegal memory".into());
         assert_eq!(err.to_string(), "CUDA error: illegal memory");
+    }
+
+    #[test]
+    fn error_display_unavailable() {
+        let err = GpuError::unavailable(
+            FallbackReason::CudaFeatureNotBuilt,
+            "crate built without the cuda feature",
+        );
+        assert_eq!(
+            err.to_string(),
+            "GPU unavailable (cuda_feature_not_built): crate built without the cuda feature"
+        );
+    }
+
+    #[test]
+    fn error_display_invalid_input() {
+        let err = GpuError::invalid_input("n_vars must be >= 0, got -1");
+        assert_eq!(
+            err.to_string(),
+            "invalid input: n_vars must be >= 0, got -1"
+        );
     }
 
     #[test]
@@ -508,6 +624,59 @@ mod tests {
         assert!(data.iter().all(|&v| v == 0.0f32));
     }
 
+    /// Oversized requests return `MemoryError` instead of panicking (GH #48),
+    /// mirroring the CUDA backend. All cases fail checked arithmetic before
+    /// any physical allocation.
+    #[test]
+    fn buffer_alloc_overflow_returns_memory_error() {
+        // u64: `8 * len` overflows `usize` / exceeds the `isize::MAX` ceiling.
+        for len in [usize::MAX, isize::MAX as usize] {
+            assert_alloc_overflow::<u64>(len);
+        }
+        // u8: one byte per element, so `usize::MAX` / past-ceiling byte counts.
+        for len in [usize::MAX, isize::MAX as usize + 1] {
+            assert_alloc_overflow::<u8>(len);
+        }
+        // Wide element type: overflow with a smaller element count.
+        assert_alloc_overflow::<Wide512>(usize::MAX);
+    }
+
+    /// Assert an oversized `alloc` fails with the overflow `MemoryError`.
+    fn assert_alloc_overflow<T: Default + Clone>(len: usize) {
+        match GpuBuffer::<T>::alloc(len) {
+            Err(GpuError::MemoryError(msg)) => {
+                assert!(msg.contains("size overflow"), "msg: {msg}")
+            }
+            Err(other) => panic!("expected MemoryError, got {other}"),
+            Ok(_) => panic!("oversized alloc unexpectedly succeeded"),
+        }
+    }
+
+    /// 4 KiB element used to probe overflow with a wide element size.
+    #[derive(Clone)]
+    struct Wide512 {
+        _payload: [u64; 512],
+    }
+
+    impl Default for Wide512 {
+        fn default() -> Self {
+            Self {
+                _payload: [0u64; 512],
+            }
+        }
+    }
+
+    /// Zero-sized types allocate without bytes; zero and ordinary lengths work.
+    #[test]
+    fn buffer_alloc_zero_sized_type() {
+        let empty = GpuBuffer::<()>::alloc(0).unwrap();
+        assert_eq!(empty.len(), 0);
+        assert!(empty.to_vec().unwrap().is_empty());
+        let buf = GpuBuffer::<()>::alloc(8).unwrap();
+        assert_eq!(buf.len(), 8);
+        assert_eq!(buf.to_vec().unwrap(), vec![(); 8]);
+    }
+
     #[test]
     fn buffer_from_slice_roundtrip() {
         let input = vec![1i32, 2, 3, 4, 5];
@@ -545,6 +714,97 @@ mod tests {
         }
     }
 
+    // ── LIM-1302 buffer-contract regression (CPU stub) ──────────────────────
+
+    /// Assert `err` is the length-mismatch `MemoryError` naming both lengths.
+    fn assert_length_mismatch(err: GpuError, buffer_len: usize, input_len: usize) {
+        match err {
+            GpuError::MemoryError(msg) => {
+                assert!(msg.contains("length mismatch"), "msg: {msg}");
+                assert!(
+                    msg.contains(&format!("buffer has {buffer_len} elements")),
+                    "msg: {msg}"
+                );
+                assert!(
+                    msg.contains(&format!("input has {input_len}")),
+                    "msg: {msg}"
+                );
+            }
+            other => panic!("expected MemoryError, got {other}"),
+        }
+    }
+
+    /// Allocation lengths 0, 1, and representative boundary sizes all read back
+    /// as `T::default()` immediately after `alloc`, with no prior upload.
+    #[test]
+    fn buffer_alloc_boundary_lengths_read_back_default() {
+        for len in [0usize, 1, 2, 15, 16, 17, 256, 257, 4096] {
+            let buf = GpuBuffer::<i32>::alloc(len).unwrap();
+            assert_eq!(buf.len(), len, "len {len}");
+            assert_eq!(buf.is_empty(), len == 0, "is_empty at len {len}");
+            assert_eq!(
+                buf.to_vec().unwrap(),
+                vec![0i32; len],
+                "readback at len {len}"
+            );
+        }
+    }
+
+    /// `from_slice` then `to_vec` round-trips exact values across boundary sizes.
+    #[test]
+    fn buffer_from_slice_to_vec_roundtrip_boundaries() {
+        for len in [0usize, 1, 16, 17, 128, 257] {
+            let input: Vec<u32> = (0..len as u32)
+                .map(|i| i.wrapping_mul(2_654_435_761))
+                .collect();
+            let buf = GpuBuffer::from_slice(&input).unwrap();
+            assert_eq!(buf.to_vec().unwrap(), input, "roundtrip at len {len}");
+        }
+    }
+
+    /// An equal-length upload replaces every element.
+    #[test]
+    fn buffer_upload_equal_length_replaces_all() {
+        let mut buf = GpuBuffer::from_slice(&[9i32, 9, 9, 9]).unwrap();
+        buf.upload(&[1, 2, 3, 4]).unwrap();
+        assert_eq!(buf.to_vec().unwrap(), vec![1, 2, 3, 4]);
+    }
+
+    /// A too-short upload is rejected and leaves existing contents unchanged;
+    /// the error payload names both the buffer and input lengths.
+    #[test]
+    fn buffer_upload_too_short_rejected_and_non_mutating() {
+        let mut buf = GpuBuffer::from_slice(&[1i32, 2, 3, 4]).unwrap();
+        assert_length_mismatch(buf.upload(&[7, 8]).unwrap_err(), 4, 2);
+        assert_eq!(buf.to_vec().unwrap(), vec![1, 2, 3, 4], "contents mutated");
+    }
+
+    /// A too-long upload is rejected and leaves existing contents unchanged.
+    #[test]
+    fn buffer_upload_too_long_rejected_and_non_mutating() {
+        let mut buf = GpuBuffer::from_slice(&[1i32, 2, 3, 4]).unwrap();
+        assert_length_mismatch(buf.upload(&[7, 8, 9, 10, 11]).unwrap_err(), 4, 5);
+        assert_eq!(buf.to_vec().unwrap(), vec![1, 2, 3, 4], "contents mutated");
+    }
+
+    /// Empty-to-empty upload succeeds as a no-op.
+    #[test]
+    fn buffer_upload_empty_into_empty_ok() {
+        let mut buf = GpuBuffer::<i32>::alloc(0).unwrap();
+        buf.upload(&[]).unwrap();
+        assert!(buf.to_vec().unwrap().is_empty());
+    }
+
+    /// Empty/nonempty length mismatches fail in both directions.
+    #[test]
+    fn buffer_upload_empty_nonempty_mismatches_fail() {
+        let mut empty = GpuBuffer::<i32>::alloc(0).unwrap();
+        assert_length_mismatch(empty.upload(&[1]).unwrap_err(), 0, 1);
+
+        let mut nonempty = GpuBuffer::<i32>::alloc(3).unwrap();
+        assert_length_mismatch(nonempty.upload(&[]).unwrap_err(), 3, 0);
+    }
+
     #[test]
     fn buffer_zero_prefix_preserves_tail() {
         let mut buf = GpuBuffer::<f32>::from_slice(&[1.0, 2.0, 3.0, 4.0]).unwrap();
@@ -576,129 +836,162 @@ mod tests {
     fn accelerator_new() {
         let acc = GpuAccelerator::new();
         assert!(!acc.is_ready());
+        assert_eq!(acc.selected_backend(), Backend::Cpu);
+        let fb = acc.fallback().expect("CPU stub records a fallback");
+        assert_eq!(fb.reason, FallbackReason::CudaFeatureNotBuilt);
+        assert_eq!(fb.selected_backend, Backend::Cpu);
+        assert!(!fb.detail.contains("/home/"));
+        assert!(!acc.capabilities().cuda_built);
     }
 
     #[test]
     fn accelerator_default() {
-        let acc = GpuAccelerator;
+        let acc = GpuAccelerator::default();
         assert!(!acc.is_ready());
     }
 
     #[test]
-    fn accelerator_kernels_returns_no_gpu() {
-        let acc = GpuAccelerator::new();
-        assert!(matches!(acc.kernels().unwrap_err(), GpuError::NoGpu));
+    fn accelerator_require_gpu_fails_closed() {
+        let err = match GpuAccelerator::require_gpu() {
+            Err(e) => e,
+            Ok(_) => panic!("require_gpu must fail on the CPU stub"),
+        };
+        assert_eq!(
+            err.fallback_reason(),
+            Some(FallbackReason::CudaFeatureNotBuilt)
+        );
+        match err {
+            GpuError::Unavailable { reason, detail } => {
+                assert_eq!(reason, FallbackReason::CudaFeatureNotBuilt);
+                assert!(!detail.contains("/home/"));
+            }
+            other => panic!("expected Unavailable, got {other}"),
+        }
     }
 
     #[test]
-    fn accelerator_synchronize_returns_no_gpu() {
-        let acc = GpuAccelerator::new();
-        assert!(matches!(acc.synchronize().unwrap_err(), GpuError::NoGpu));
+    fn accelerator_with_policy_prefer_gpu_is_cpu() {
+        let acc = GpuAccelerator::with_policy(ExecutionPolicy::PreferGpu).unwrap();
+        assert_eq!(acc.selected_backend(), Backend::Cpu);
+        assert!(!acc.is_ready());
     }
 
     #[test]
-    fn accelerator_satsolver_extract_returns_no_gpu() {
+    fn accelerator_kernels_returns_unavailable() {
+        let acc = GpuAccelerator::new();
+        assert_unavailable_not_built(acc.kernels().unwrap_err());
+    }
+
+    #[test]
+    fn accelerator_synchronize_returns_unavailable() {
+        let acc = GpuAccelerator::new();
+        assert_unavailable_not_built(acc.synchronize().unwrap_err());
+    }
+
+    fn assert_unavailable_not_built(err: GpuError) {
+        match err {
+            GpuError::Unavailable { reason, detail } => {
+                assert_eq!(reason, FallbackReason::CudaFeatureNotBuilt);
+                assert!(!detail.contains("/home/"));
+                assert!(!detail.contains("/Users/"));
+            }
+            other => panic!("expected Unavailable(cuda_feature_not_built), got {other}"),
+        }
+    }
+
+    #[test]
+    fn accelerator_satsolver_extract_returns_unavailable() {
         let acc = GpuAccelerator::new();
         let assignment = GpuBuffer::<u8>::alloc(10).unwrap();
         let best_walker = GpuBuffer::<i32>::alloc(1).unwrap();
         let mut output = GpuBuffer::<u8>::alloc(10).unwrap();
-        assert!(matches!(
+        assert_unavailable_not_built(
             acc.satsolver_extract(&assignment, &best_walker, &mut output, 10, 1)
                 .unwrap_err(),
-            GpuError::NoGpu
-        ));
+        );
     }
 
     #[test]
-    fn accelerator_poisson_encode_returns_no_gpu() {
+    fn accelerator_poisson_encode_returns_unavailable() {
         let acc = GpuAccelerator::new();
         let stimuli = GpuBuffer::<f32>::alloc(10).unwrap();
         let mut spikes = GpuBuffer::<u32>::alloc(10).unwrap();
-        assert!(matches!(
-            acc.poisson_encode(&stimuli, &mut spikes, 42).unwrap_err(),
-            GpuError::NoGpu
-        ));
+        assert_unavailable_not_built(acc.poisson_encode(&stimuli, &mut spikes, 42).unwrap_err());
     }
 
     #[test]
-    fn accelerator_satsolver_extract_async_returns_no_gpu() {
+    fn accelerator_satsolver_extract_async_returns_unavailable() {
         let acc = GpuAccelerator::new();
         let assignment = GpuBuffer::<u8>::alloc(10).unwrap();
         let best_walker = GpuBuffer::<i32>::alloc(1).unwrap();
         let mut output = GpuBuffer::<u8>::alloc(10).unwrap();
-        assert!(matches!(
+        assert_unavailable_not_built(
             acc.satsolver_extract_async(&assignment, &best_walker, &mut output, 10, 1)
                 .unwrap_err(),
-            GpuError::NoGpu
-        ));
+        );
     }
 
     #[test]
-    fn accelerator_poisson_encode_async_returns_no_gpu() {
+    fn accelerator_poisson_encode_async_returns_unavailable() {
         let acc = GpuAccelerator::new();
         let stimuli = GpuBuffer::<f32>::alloc(10).unwrap();
         let mut spikes = GpuBuffer::<u32>::alloc(10).unwrap();
-        assert!(matches!(
+        assert_unavailable_not_built(
             acc.poisson_encode_async(&stimuli, &mut spikes, 42)
                 .unwrap_err(),
-            GpuError::NoGpu
-        ));
+        );
     }
 
     #[test]
-    fn accelerator_ternary_gemv_returns_no_gpu() {
+    fn accelerator_ternary_gemv_returns_unavailable() {
         let acc = GpuAccelerator::new();
         let w = GpuBuffer::<u32>::alloc(1).unwrap();
         let s = GpuBuffer::<f32>::alloc(1).unwrap();
         let x = GpuBuffer::<f32>::alloc(1).unwrap();
         let mut y = GpuBuffer::<f32>::alloc(1).unwrap();
-        assert!(matches!(
+        assert_unavailable_not_built(
             acc.ternary_gemv(&w, &s, &x, &mut y, 1, 1, 1, false)
                 .unwrap_err(),
-            GpuError::NoGpu
-        ));
+        );
     }
 
     #[test]
-    fn accelerator_ternary_gemm_returns_no_gpu() {
+    fn accelerator_ternary_gemm_returns_unavailable() {
         let acc = GpuAccelerator::new();
         let w = GpuBuffer::<u32>::alloc(1).unwrap();
         let s = GpuBuffer::<f32>::alloc(1).unwrap();
         let b = GpuBuffer::<f32>::alloc(1).unwrap();
         let mut c = GpuBuffer::<f32>::alloc(1).unwrap();
-        assert!(matches!(
+        assert_unavailable_not_built(
             acc.ternary_gemm(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .unwrap_err(),
-            GpuError::NoGpu
-        ));
+        );
     }
 
     #[test]
-    fn accelerator_ternary_gemv_async_returns_no_gpu() {
+    fn accelerator_ternary_gemv_async_returns_unavailable() {
         let acc = GpuAccelerator::new();
         let w = GpuBuffer::<u32>::alloc(1).unwrap();
         let s = GpuBuffer::<f32>::alloc(1).unwrap();
         let x = GpuBuffer::<f32>::alloc(1).unwrap();
         let mut y = GpuBuffer::<f32>::alloc(1).unwrap();
-        assert!(matches!(
+        assert_unavailable_not_built(
             acc.ternary_gemv_async(&w, &s, &x, &mut y, 1, 1, 1, false)
                 .unwrap_err(),
-            GpuError::NoGpu
-        ));
+        );
     }
 
     #[test]
-    fn accelerator_ternary_gemm_async_returns_no_gpu() {
+    fn accelerator_ternary_gemm_async_returns_unavailable() {
         let acc = GpuAccelerator::new();
         let w = GpuBuffer::<u32>::alloc(1).unwrap();
         let s = GpuBuffer::<f32>::alloc(1).unwrap();
         let b = GpuBuffer::<f32>::alloc(1).unwrap();
         let mut c = GpuBuffer::<f32>::alloc(1).unwrap();
-        assert!(matches!(
+        assert_unavailable_not_built(
             acc.ternary_gemm_async(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .unwrap_err(),
-            GpuError::NoGpu
-        ));
+        );
     }
 
     #[cfg(feature = "saaq")]

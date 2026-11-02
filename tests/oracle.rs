@@ -12,9 +12,10 @@ use myelin_accelerator::bitpacking::{
     pack_ternary_matrix, ternary_gemm_ref, ternary_gemv_ref, uniform_group_scales,
 };
 use myelin_accelerator::oracle::{
-    BOUNDARY_LENS, CASE_SEEDS, COSINE_ABS_TOL, COSINE_REL_TOL, CaseRng, SHIP_EPS, TERNARY_ABS_TOL,
-    TERNARY_REL_TOL, assert_exact, assert_f32, check_exact, check_f32,
-    cosine_similarity_batched_oracle, f32_close, fill_sat_scores, lcg_next, lcg_unit,
+    BOUNDARY_LENS, CASE_SEEDS, COSINE_ABS_TOL, COSINE_REL_TOL, CaseRng, LIF_DECAY,
+    LIF_REFRACT_TICKS, LIF_RESET, LIF_THRESHOLD, SHIP_EPS, TERNARY_ABS_TOL, TERNARY_REL_TOL,
+    assert_exact, assert_f32, check_exact, check_f32, cosine_similarity_batched_oracle, f32_close,
+    fill_sat_scores, lcg_next, lcg_unit, lif_step_oracle, lif_step_weighted_oracle,
     pin_poisson_boundary_stimuli, poisson_encode_oracle, satsolver_aux_reduce_best_oracle,
     satsolver_extract_oracle, ternary_gemm_oracle, ternary_gemv_oracle,
 };
@@ -643,4 +644,290 @@ fn nan_never_compares_equal() {
     assert!(f32_close(0.0, -0.0, 0.0, 0.0));
     assert!(f32_close(f32::INFINITY, f32::INFINITY, 0.0, 0.0));
     assert!(!f32_close(f32::INFINITY, f32::NEG_INFINITY, 1e9, 1.0));
+}
+
+// ── Fixed v0.2.0 LIF oracles: hand-computed traces ───────────────────────────
+//
+// Expected membrane values below are worked by hand in decimal
+// (e.g. 0.85·0.5 + 0.5 = 0.925) and compared with a 1e-6 absolute tolerance,
+// so they pin the documented dynamics rather than re-deriving them with the
+// oracle's own f32 arithmetic. Spike and refractory state are exact.
+
+const HAND_TOL: f32 = 1e-6;
+
+/// State after one tick: spikes, refract, membrane.
+#[derive(Debug)]
+struct Tick<'a> {
+    s: &'a [u32],
+    r: &'a [u32],
+    v: &'a [f32],
+}
+
+impl Tick<'_> {
+    /// Exact spikes / refract; membrane within [`HAND_TOL`] of the hand value.
+    #[track_caller]
+    fn assert_matches(&self, t: usize, expected: &Tick<'_>) {
+        let v_ok = self.v.len() == expected.v.len()
+            && self
+                .v
+                .iter()
+                .zip(expected.v)
+                .all(|(&a, &b)| f32_close(a, b, HAND_TOL, 0.0));
+        assert!(
+            self.s == expected.s && self.r == expected.r && v_ok,
+            "t={t}: got {self:?}, expected {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn lif_contract_constants_are_v0_2_0() {
+    assert_eq!(
+        (LIF_DECAY, LIF_THRESHOLD, LIF_RESET, LIF_REFRACT_TICKS),
+        (0.85, 1.0, 0.0, 2)
+    );
+}
+
+/// Constant 0.5 input: crosses threshold on the third tick, is held at reset
+/// for two refractory ticks, then integrates again from reset.
+#[test]
+fn lif_step_oracle_constant_input_trace() {
+    let mut v = [0.0f32];
+    let mut r = [0u32];
+    // (membrane after tick, refract after tick, spike)
+    let expected: [(f32, u32, u32); 8] = [
+        (0.5, 0, 0),   // 0.85·0 + 0.5
+        (0.925, 0, 0), // 0.85·0.5 + 0.5
+        (0.0, 2, 1),   // 0.85·0.925 + 0.5 = 1.28625 ≥ 1 → spike, reset
+        (0.0, 1, 0),   // refractory
+        (0.0, 0, 0),   // refractory
+        (0.5, 0, 0),   // integration resumes from reset
+        (0.925, 0, 0),
+        (0.0, 2, 1),
+    ];
+    for (t, &(ev, er, es)) in expected.iter().enumerate() {
+        let s = lif_step_oracle(&mut v, &[0.5], &mut r);
+        let exp = Tick {
+            s: &[es],
+            r: &[er],
+            v: &[ev],
+        };
+        Tick {
+            s: &s,
+            r: &r,
+            v: &v,
+        }
+        .assert_matches(t, &exp);
+    }
+}
+
+#[test]
+fn lif_step_oracle_exact_threshold_spikes_and_just_below_does_not() {
+    let mut v = [0.0f32, 0.0];
+    let mut r = [0u32, 0];
+    let below = f32::from_bits(1.0f32.to_bits() - 1); // 0.99999994
+    let s = lif_step_oracle(&mut v, &[1.0, below], &mut r);
+    // v == threshold must spike; one ulp below must not (and is kept exactly).
+    assert_eq!((s, r, v), (vec![1, 0], [2, 0], [0.0, below]));
+}
+
+#[test]
+fn lif_step_oracle_ignores_input_while_refractory() {
+    let mut v = [0.0f32];
+    let mut r = [0u32];
+    // Tick 0 spikes. Huge (and negative) inputs during the refractory period
+    // must not integrate, spike, or leave residue in the membrane. The first
+    // post-refractory tick integrates only the new input from reset.
+    let trace: [(f32, Tick<'_>); 4] = [
+        (
+            1.5,
+            Tick {
+                s: &[1],
+                r: &[2],
+                v: &[0.0],
+            },
+        ),
+        (
+            100.0,
+            Tick {
+                s: &[0],
+                r: &[1],
+                v: &[0.0],
+            },
+        ),
+        (
+            -100.0,
+            Tick {
+                s: &[0],
+                r: &[0],
+                v: &[0.0],
+            },
+        ),
+        (
+            0.25,
+            Tick {
+                s: &[0],
+                r: &[0],
+                v: &[0.25],
+            },
+        ),
+    ];
+    for (t, (input, exp)) in trace.iter().enumerate() {
+        let s = lif_step_oracle(&mut v, &[*input], &mut r);
+        Tick {
+            s: &s,
+            r: &r,
+            v: &v,
+        }
+        .assert_matches(t, exp);
+    }
+}
+
+#[test]
+fn lif_step_oracle_negative_current_decays_below_zero() {
+    let mut v = [0.0f32];
+    let mut r = [0u32];
+    for (t, ev) in [-0.3f32, -0.555, -0.77175].into_iter().enumerate() {
+        let s = lif_step_oracle(&mut v, &[-0.3], &mut r);
+        let exp = Tick {
+            s: &[0],
+            r: &[0],
+            v: &[ev],
+        };
+        Tick {
+            s: &s,
+            r: &r,
+            v: &v,
+        }
+        .assert_matches(t, &exp);
+    }
+}
+
+/// Four neurons with distinct constant currents over eight ticks.
+#[test]
+fn lif_step_oracle_multi_neuron_trace() {
+    let current = [0.0f32, 0.5, 1.0, -0.3];
+    let mut v = [0.0f32; 4];
+    let mut r = [0u32; 4];
+    let spikes_expected: [[u32; 4]; 8] = [
+        [0, 0, 1, 0],
+        [0, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+        [0, 0, 1, 0],
+        [0, 1, 0, 0],
+    ];
+    let refract_expected: [[u32; 4]; 8] = [
+        [0, 0, 2, 0],
+        [0, 0, 1, 0],
+        [0, 2, 0, 0],
+        [0, 1, 2, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 0],
+        [0, 0, 2, 0],
+        [0, 2, 1, 0],
+    ];
+    for t in 0..8 {
+        let s = lif_step_oracle(&mut v, &current, &mut r);
+        // Silent neuron 0 and saturating neuron 2 always end at reset.
+        assert_eq!(
+            (s.as_slice(), r, v[0], v[2]),
+            (&spikes_expected[t][..], refract_expected[t], 0.0, 0.0),
+            "t={t}"
+        );
+    }
+}
+
+#[test]
+fn lif_step_weighted_oracle_accumulates_row_major_dot_product() {
+    // 2 neurons × 3 inputs, row-major [neuron][input].
+    let w = [0.25f32, 0.5, -0.125, 1.0, 0.0, 0.5];
+    let mut v = [0.0f32; 2];
+    let mut r = [0u32; 2];
+    let trace: [([f32; 3], Tick<'_>); 3] = [
+        // I0 = 0.25 + 0.5 - 0.125 = 0.625; I1 = 1.0 + 0.5 = 1.5 → spike.
+        (
+            [1.0, 1.0, 1.0],
+            Tick {
+                s: &[0, 1],
+                r: &[0, 2],
+                v: &[0.625, 0.0],
+            },
+        ),
+        // I0 = 0.25 - 0.125 = 0.125; v0 = 0.85·0.625 + 0.125 = 0.65625.
+        // Neuron 1 is refractory: input ignored.
+        (
+            [1.0, 0.0, 1.0],
+            Tick {
+                s: &[0, 0],
+                r: &[0, 1],
+                v: &[0.65625, 0.0],
+            },
+        ),
+        // Graded inputs are plain multipliers: I0 = 0.25·2 = 0.5;
+        // v0 = 0.85·0.65625 + 0.5 = 1.0578125 → spike.
+        (
+            [2.0, 0.0, 0.0],
+            Tick {
+                s: &[1, 0],
+                r: &[2, 0],
+                v: &[0.0, 0.0],
+            },
+        ),
+    ];
+    for (t, (x, exp)) in trace.iter().enumerate() {
+        let s = lif_step_weighted_oracle(&mut v, &w, x, &mut r, 3);
+        Tick {
+            s: &s,
+            r: &r,
+            v: &v,
+        }
+        .assert_matches(t, exp);
+    }
+}
+
+#[test]
+fn lif_step_weighted_oracle_accumulates_in_input_index_order() {
+    // Sequential f32 accumulation: 1e8 + 1 rounds back to 1e8 (ulp = 8), so
+    // the in-order sum is 0. A reordered sum (1e8 - 1e8) + 1 would give 1.0
+    // and spike, so this pins the documented index order.
+    let w = [1.0e8f32, 1.0, -1.0e8];
+    let mut v = [0.0f32];
+    let mut r = [0u32];
+    let s = lif_step_weighted_oracle(&mut v, &w, &[1.0, 1.0, 1.0], &mut r, 3);
+    assert_eq!((s, v), (vec![0], [0.0]));
+}
+
+#[test]
+#[should_panic(expected = "n_neurons×n_inputs = 2×3 = 6")]
+fn lif_step_weighted_oracle_rejects_weight_shape() {
+    let mut v = [0.0f32; 2];
+    let mut r = [0u32; 2];
+    let _ = lif_step_weighted_oracle(&mut v, &[0.0; 5], &[0.0; 3], &mut r, 3);
+}
+
+#[test]
+#[should_panic(expected = "input_spikes has 2 elements but n_inputs=3")]
+fn lif_step_weighted_oracle_rejects_input_len() {
+    let mut v = [0.0f32; 2];
+    let mut r = [0u32; 2];
+    let _ = lif_step_weighted_oracle(&mut v, &[0.0; 6], &[0.0; 2], &mut r, 3);
+}
+
+#[test]
+#[should_panic(expected = "refract has 1 elements but membrane has n_neurons=2")]
+fn lif_step_oracle_rejects_refract_len() {
+    let mut v = [0.0f32; 2];
+    let mut r = [0u32; 1];
+    let _ = lif_step_oracle(&mut v, &[0.0; 2], &mut r);
+}
+
+#[test]
+#[should_panic(expected = "i_ext has 3 elements but membrane has n_neurons=2")]
+fn lif_step_oracle_rejects_current_len() {
+    let mut v = [0.0f32; 2];
+    let mut r = [0u32; 2];
+    let _ = lif_step_oracle(&mut v, &[0.0; 3], &mut r);
 }

@@ -11,6 +11,16 @@ use myelin_accelerator::bitpacking::{
 };
 use myelin_accelerator::{GpuAccelerator, GpuBuffer};
 
+fn ready_accelerator() -> GpuAccelerator {
+    GpuAccelerator::require_gpu().unwrap_or_else(|err| {
+        panic!(
+            "GPU required for ternary goldens: reason={} detail={}",
+            err.fallback_reason().map(|r| r.code()).unwrap_or("unknown"),
+            err
+        )
+    })
+}
+
 fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
     a.iter()
         .zip(b.iter())
@@ -43,8 +53,7 @@ fn varying_group_scales(m: usize, k: usize, group_size: usize) -> Vec<f32> {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemv_matches_host_ref() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready(), "GPU not ready for ternary_gemv golden");
+    let acc = ready_accelerator();
 
     let m = 64usize;
     let k = 256usize;
@@ -83,8 +92,7 @@ fn ternary_gemv_matches_host_ref() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemv_skip_zeros_matches_host_ref() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready(), "GPU not ready");
+    let acc = ready_accelerator();
 
     let m = 32usize;
     let k = 128usize;
@@ -119,8 +127,7 @@ fn ternary_gemv_skip_zeros_matches_host_ref() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemm_matches_host_ref() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready(), "GPU not ready for ternary_gemm golden");
+    let acc = ready_accelerator();
 
     let m = 16usize;
     let k = 64usize;
@@ -161,8 +168,7 @@ fn ternary_gemm_matches_host_ref() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemm_skip_zeros_matches_host_ref() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready(), "GPU not ready");
+    let acc = ready_accelerator();
 
     let m = 12usize;
     let k = 48usize;
@@ -199,8 +205,7 @@ fn ternary_gemm_skip_zeros_matches_host_ref() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_kernels_registered_in_module() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready());
+    let acc = ready_accelerator();
     let k = acc.kernels().expect("kernels");
     assert!(k.get_function("ternary_gemv").is_ok());
     assert!(k.get_function("ternary_gemm").is_ok());
@@ -209,8 +214,7 @@ fn ternary_kernels_registered_in_module() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemv_nonuniform_scales_and_k_not_multiple_of_16() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready(), "GPU not ready");
+    let acc = ready_accelerator();
 
     // K=20 is not a multiple of 16 → row-padded packing differs from flat pack.
     let m = 8usize;
@@ -261,8 +265,7 @@ fn ternary_gemv_nonuniform_scales_and_k_not_multiple_of_16() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemm_nonuniform_scales_and_k_not_multiple_of_16() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready(), "GPU not ready");
+    let acc = ready_accelerator();
 
     let m = 6usize;
     let k = 20usize;
@@ -301,8 +304,7 @@ fn ternary_gemm_nonuniform_scales_and_k_not_multiple_of_16() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemv_empty_k_zeros_output() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready());
+    let acc = ready_accelerator();
 
     let m = 4usize;
     let packed = GpuBuffer::<u32>::alloc(0).unwrap();
@@ -323,9 +325,62 @@ fn ternary_gemv_empty_k_zeros_output() {
 
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
+fn ternary_gemv_async_empty_k_follows_overlapping_launch() {
+    let acc = ready_accelerator();
+    let m = 4096usize;
+    let k = 256usize;
+    let packed_data = pack_ternary_matrix(&vec![1i8; m * k], m, k);
+    let packed = GpuBuffer::from_slice(&packed_data).unwrap();
+    let scales = GpuBuffer::from_slice(&vec![1.0f32; m]).unwrap();
+    let x = GpuBuffer::from_slice(&vec![1.0f32; k]).unwrap();
+    let empty = GpuBuffer::<f32>::alloc(0).unwrap();
+    let empty_words = GpuBuffer::<u32>::alloc(0).unwrap();
+    let mut y = GpuBuffer::from_slice(&vec![7.0f32; m + 2]).unwrap();
+
+    acc.ternary_gemv_async(
+        &packed, &scales, &x, &mut y, m as i32, k as i32, k as i32, false,
+    )
+    .expect("overlapping nonempty GEMV");
+    acc.ternary_gemv_async(&empty_words, &empty, &empty, &mut y, m as i32, 0, 1, false)
+        .expect("empty-K GEMV");
+
+    // Empty-K returns only after its stream work completes, so host readback
+    // is safe without a separate synchronize call.
+    let got = y.to_vec().unwrap();
+    assert!(
+        got[..m].iter().all(|&value| value == 0.0),
+        "stale prefix after sync"
+    );
+    assert_eq!(&got[m..], &[7.0, 7.0]);
+    acc.synchronize().expect("stream remains healthy");
+
+    // Reverse the order on disjoint outputs: synchronize() must also observe
+    // an empty-K memset queued before a later accelerator-stream launch.
+    y.upload(&vec![7.0f32; m + 2]).unwrap();
+    let mut other = GpuBuffer::<f32>::alloc(m).unwrap();
+    acc.ternary_gemv_async(&empty_words, &empty, &empty, &mut y, m as i32, 0, 1, false)
+        .expect("empty-K GEMV before overlap");
+    acc.ternary_gemv_async(
+        &packed, &scales, &x, &mut other, m as i32, k as i32, k as i32, false,
+    )
+    .expect("overlapping nonempty GEMV after zeroing");
+    acc.synchronize().expect("zeroing and overlap completed");
+    let got = y.to_vec().unwrap();
+    assert!(got[..m].iter().all(|&value| value == 0.0));
+    assert_eq!(&got[m..], &[7.0, 7.0]);
+    assert!(
+        other
+            .to_vec()
+            .unwrap()
+            .iter()
+            .all(|&value| value == k as f32)
+    );
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemv_empty_k_preserves_pooled_tail() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready());
+    let acc = ready_accelerator();
 
     let m = 4usize;
     let packed = GpuBuffer::<u32>::alloc(0).unwrap();
@@ -353,8 +408,7 @@ fn ternary_gemv_empty_k_preserves_pooled_tail() {
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
 fn ternary_gemm_empty_k_preserves_pooled_tail() {
-    let acc = GpuAccelerator::new();
-    assert!(acc.is_ready());
+    let acc = ready_accelerator();
 
     let m = 3usize;
     let n = 2usize;
@@ -379,4 +433,46 @@ fn ternary_gemm_empty_k_preserves_pooled_tail() {
         &got[..logical]
     );
     assert_eq!(&got[logical..], &[42.0, 43.0]);
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn ternary_gemm_async_empty_k_follows_overlapping_launch() {
+    let acc = ready_accelerator();
+    let m = 128usize;
+    let k = 256usize;
+    let n = 32usize;
+    let packed_data = pack_ternary_matrix(&vec![1i8; m * k], m, k);
+    let packed = GpuBuffer::from_slice(&packed_data).unwrap();
+    let scales = GpuBuffer::from_slice(&vec![1.0f32; m]).unwrap();
+    let b = GpuBuffer::from_slice(&vec![1.0f32; k * n]).unwrap();
+    let empty = GpuBuffer::<f32>::alloc(0).unwrap();
+    let empty_words = GpuBuffer::<u32>::alloc(0).unwrap();
+    let mut c = GpuBuffer::from_slice(&vec![9.0f32; m * n + 2]).unwrap();
+
+    acc.ternary_gemm_async(
+        &packed, &scales, &b, &mut c, m as i32, k as i32, n as i32, k as i32, false,
+    )
+    .expect("overlapping nonempty GEMM");
+    acc.ternary_gemm_async(
+        &empty_words,
+        &empty,
+        &empty,
+        &mut c,
+        m as i32,
+        0,
+        n as i32,
+        1,
+        false,
+    )
+    .expect("empty-K GEMM");
+
+    // Empty-K returns only after its stream work completes.
+    let got = c.to_vec().unwrap();
+    assert!(
+        got[..m * n].iter().all(|&value| value == 0.0),
+        "stale prefix after sync"
+    );
+    assert_eq!(&got[m * n..], &[9.0, 9.0]);
+    acc.synchronize().expect("stream remains healthy");
 }

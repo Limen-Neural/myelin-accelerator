@@ -25,12 +25,12 @@ local quality/benchmark harness. Not a research orchestrator.
 | CUDA kernels | `cu/*.cu`, shared headers (`cu/common.cuh`), `sm_120`-tuned reductions |
 | PTX build path | `build.rs` (`nvcc -ptx`), CMake `cuda_kernels` target, embedded PTX |
 | Safe GPU FFI | `GpuContext`, `KernelModule`, `GpuBuffer`, launch wrappers |
-| Feature gates | `cuda` (cust + nvtx), `saaq` (experimental fused routing / SAAQ), `bench` (serde JSON/CSV harness) |
+| Feature gates | `cuda` (cust + nvtx), `bench` (example harness flag); manifest schema lives in `src/bench` |
 | CPU-safe stub | `src/gpu_stub.rs` when `cuda` is off (CI / sandboxes) |
 | Host packing utilities | Binary / ternary bitpacking (`src/bitpacking.rs`) — host-side layout helpers that match future device kernels |
 | CPU oracles | Scalar reference implementations (`src/oracle.rs`) for differential tests against public kernel wrappers |
 | Launch / stream helpers | Default streams, aux buffers for multi-pass reductions |
-| Local QA | CTest matrix, GPU `#[ignore]` tests, `examples/benchmark.rs` |
+| Local QA | CTest matrix, GPU `#[ignore]` tests, `examples/benchmark.rs`, `docs/BENCHMARKS.md` |
 | Kernel-level telemetry primitives | On-device reduce passes (entropy, membrane stats) that stay generic |
 
 **Rule of thumb:** if another project would copy a `.cu` file or re-implement
@@ -52,6 +52,21 @@ local quality/benchmark harness. Not a research orchestrator.
 
 **Rule of thumb:** if the change is “run experiment X on dataset Y and log
 business metrics,” it is **not** a myelin feature.
+
+### Experimental SAAQ publication boundary
+
+SAAQ recipes, datasets, run manifests, result tables, and other experimental
+research are not crate material. Keep them in a dedicated experiment repository
+or under an excluded `experiments/saaq/` or `research/` path; never add them to
+`src/`, `cu/`, or the public documentation shipped in the Cargo archive.
+
+Cargo's broad include globs are narrowed by a CI package-list checker that
+permits reusable source, the public benchmark example, named test fixtures, and
+public documentation. CI tests the checker against forbidden SAAQ paths and
+inspects the actual package file list, so non-source data under `src/` or `cu/`
+fails the check. This makes the boundary apply to a future `cargo publish`, not
+just to repository organization. A generic reusable GPU primitive requires its
+own scope decision; it does not make the surrounding SAAQ experiment publishable.
 
 ---
 
@@ -81,12 +96,13 @@ myelin-accelerator/
 │   ├── spiking_network.cu       # Poisson, LIF, STDP, reduce passes
 │   ├── vector_similarity.cu     # Cosine batched + top-k routing
 │   ├── satsolver.cu             # Parallel SAT walkers + reduces
-│   ├── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
-│   └── fused_routing_saaq.cu   # Fused softmax + entropy + SAAQ (`saaq` / MYELIN_SAAQ)
+│   └── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
 ├── src/
 │   ├── lib.rs                   # Crate root; public re-exports
+│   ├── bench/                   # Manifest schema, redaction, regression budgets
+│   ├── capability.rs            # Probe types, decision table, sanitizer
+│   ├── error.rs                 # GpuError / GpuResult (CUDA + stub)
 │   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
-│   ├── fused.rs                # Host fused routing / SAAQ (`feature = "saaq"`)
 │   ├── oracle.rs                # Scalar CPU oracles + seeded compare helpers
 │   ├── gpu_stub.rs              # CPU-safe stand-ins (no cuda feature)
 │   └── gpu/                     # Real CUDA path (feature = "cuda")
@@ -97,22 +113,24 @@ myelin-accelerator/
 │       ├── error.rs             # GpuError / GpuResult
 │       └── accelerator.rs       # High-level launch wrappers
 ├── examples/benchmark.rs        # Optional bench harness (feature = "bench")
+├── tests/fixtures/bench/        # Sanitized manifest + classification fixtures
+├── tests/fixtures/snn/          # Pinned SNN model fixtures (workload-only, v0.2.0)
 ├── build.rs                     # nvcc → PTX into OUT_DIR
 ├── CMakeLists.txt               # CLion/CTest quality gate (nvcc -ptx)
 └── docs/
     ├── ARCHITECTURE.md          # This file
-    ├── TERNARY.md               # Ternary encoding, scales, GOZ1, kernels
-    └── FUSED_ROUTING_SAAQ.md    # Fused routing / SAAQ kernels + traffic model
+    ├── BENCHMARKS.md            # Manifests, compare, baseline refresh
+    ├── SNN_COMPATIBILITY.md     # External SNN fixtures vs fixed v0.2.0 LIF
+    └── TERNARY.md               # Ternary encoding, scales, GOZ1, kernels
 ```
 
 ### Cargo features
 
 | Feature | Effect |
 |---------|--------|
-| *(default empty)* | Stub GPU API; no `nvcc` required; **no** fused SAAQ public surface |
+| *(default empty)* | Stub GPU API; no `nvcc` required |
 | `cuda` | Real `src/gpu/*`, `cust`, optional `nvtx` profiling ranges |
-| `saaq` | Experimental fused routing / SAAQ host module and (with `cuda`) SAAQ + fused device kernels. **Not** on `default`. |
-| `bench` | Serde deps for `examples/benchmark` (pair with `cuda` for GPU) |
+| `bench` | Example `required-features` flag so existing `--features bench` commands stay valid |
 
 ---
 
@@ -129,14 +147,12 @@ Re-exported from `src/lib.rs` (names available with or without `cuda` via stub):
 | `GpuBuffer` | Device buffer helper |
 | `KernelModule` | Loaded PTX modules + `get_function` |
 | `GpuError` | Error type re-exported at the crate root |
+| `probe_capabilities` / `CapabilityReport` | Typed pre-launch probe (build, runtime, device, CC, kernels, backend) |
+| `ExecutionPolicy` | `PreferGpu` (recorded CPU fallback) or `RequireGpu` (fail closed) |
+| `FallbackReason` / `FallbackRecord` | Stable reason codes + selected implementation |
 | `bitpacking` module | Host packing APIs (`pack_ternary`, `pack_binary`, …) |
 | `oracle` module | Named CPU oracles + seed/shape mismatch reporting |
-
-With **`--features saaq`** (experimental; not crates.io default):
-
-| Symbol | Role |
-|--------|------|
-| `fused` module | Host fused routing / SAAQ reference + VRAM traffic model |
+| `bench` module | Manifest schema, redaction, median/MAD stats, opt-in regression budgets |
 
 `GpuResult<T>` (`type` alias for `Result<T, GpuError>`) is **not** re-exported
 from the crate root today. Use `Result<_, myelin_accelerator::GpuError>` at the
@@ -145,20 +161,41 @@ boundary, or `myelin_accelerator::gpu::GpuResult` if you want the alias (via the
 `use myelin_accelerator::{GpuAccelerator, GpuError, …}` over deep paths into
 internal files.
 
+### Capability probe and fallback policy
+
+Call `probe_capabilities()` (or `evaluate_capabilities` with mocked
+`CapabilityFacts`) for a typed snapshot: build-time CUDA support, driver
+runtime, device presence, compute capability, kernel-family availability, and
+the selected backend. The production probe constructs an accelerator and
+JIT-loads every required PTX family before reporting CUDA as usable.
+Diagnostics are sanitized (no absolute user paths or secret assignments) and
+reason codes are stable snake_case tokens.
+
+`GpuAccelerator` construction uses one policy:
+
+| Policy | API | If GPU is unusable |
+|--------|-----|--------------------|
+| Prefer GPU (caller-approved fallback) | `GpuAccelerator::new()` / `with_policy(PreferGpu)` | CPU backend + `FallbackRecord` |
+| Require GPU (fail closed) | `require_gpu()` / `with_policy(RequireGpu)` | `GpuError::Unavailable { reason, detail }` — never CPU |
+
+`GpuAccelerator::new()` remains infallible and may select CPU; it no longer
+fails silently: `fallback()` always explains a CPU selection. Launch wrappers
+on a CPU instance return `Unavailable` with the same reason rather than
+executing reduced kernels without a record.
+
 ### High-level launches today (`GpuAccelerator`)
 
 These are the **ergonomic** wrappers currently implemented:
 
-- Lifecycle: `new`, `is_ready`, `kernels`, `synchronize`
+- Lifecycle: `new` (PreferGpu), `require_gpu` / `with_policy`, `is_ready`, `capabilities`, `selected_backend`, `fallback`, `kernels`, `synchronize`
 - SAT: `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
 - Spiking: `poisson_encode` / `_async`
+- Plasticity: `stdp_update` / `_async` (weight and trace kernels in stream order)
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
 
-With **`--features saaq`**:
-
-- Routing / SAAQ: `routing_softmax` / `_async`, `routing_entropy_reduce` / `_async`, `saaq_select` / `_async`, `saaq_select_fused` / `_async`, `routing_saaq_fused` / `_async` (see [FUSED_ROUTING_SAAQ.md](FUSED_ROUTING_SAAQ.md))
-
-Scalar CPU oracles for the wrappers above, plus `cosine_similarity_batched` (loaded, not yet wrapped), live in `src/oracle.rs`.
+Scalar CPU oracles for the Poisson and ternary wrappers, plus
+`cosine_similarity_batched`, `lif_step`, and `lif_step_weighted` (loaded, not
+yet wrapped), live in `src/oracle.rs`.
 
 Additional kernels may be **loaded** in `KernelModule` and still lack a
 dedicated `GpuAccelerator` method. Advanced callers can use
@@ -170,12 +207,91 @@ consumers share.
 
 | PTX module | Symbols |
 |------------|---------|
-| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `spike_rate`, `reset_membrane`, `stdp_update`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` |
-| `spiking_network` (`saaq`) | plus `saaq_find_best_walker`, `saaq_reduce_partials_f16` |
-| `fused_routing_saaq` (`saaq`) | `routing_softmax`, `saaq_select_fused`, `routing_saaq_fused_pass1`, `fused_telemetry_reduce_pass2` |
+| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `spike_rate`, `reset_membrane`, `stdp_update_weights`, `stdp_update_traces`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` |
 | `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` |
 | `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass1`, `satsolver_best_reduce_pass2` |
 | `ternary_gemm` | `ternary_gemv`, `ternary_gemm` |
+
+`lif_step` and `lif_step_weighted` have raw-symbol differential coverage:
+`tests/snn_fixtures_gpu.rs` compares membrane, refractory state, and spikes
+bit-exactly against `oracle::lif_step_oracle` /
+`oracle::lif_step_weighted_oracle` every timestep. It runs on pinned
+Spikenaut-shaped (16×16) and Synfire/NIR-shaped (1×1) workloads.
+They still have **no stable `GpuAccelerator` wrapper in v0.2.0**, and their
+LIF dynamics are fixed (decay 0.85, threshold 1.0, reset 0.0, 2 refractory
+ticks). The fixtures are workload-only, not model-parity claims. See
+[SNN_COMPATIBILITY.md](SNN_COMPATIBILITY.md). Exact external-model
+interoperability is GH #43 / LIM-1461 (v0.3.0).
+
+The old raw `stdp_update` symbol is retired. Direct CUDA callers must launch
+`stdp_update_weights` followed by `stdp_update_traces` on the same stream; the
+`GpuAccelerator::stdp_update` method performs both launches and synchronization.
+The weights kernel reads the previous traces and incorporates the current spikes
+locally. The trace kernel then advances each pre/post trace with one global
+writer per index. Different streams must not overlap these operations on the
+same buffers.
+
+The weight kernel uses a flattened 1-D grid; raw callers should cover
+`n_post * n_pre` threads. The trace kernel should cover `max(n_post, n_pre)`.
+
+### Cosine normalization and selection (v0.2.0)
+
+Both raw cosine entry points use the same device helper and equation:
+
+```text
+nq = sum(q[i] * q[i]); nk = sum(k[i] * k[i]); dot = sum(q[i] * k[i])
+score(q, k) = dot / (sqrt(nq) * sqrt(nk) + SHIP_EPS)
+SHIP_EPS = 1e-8f
+```
+
+The epsilon is an **additive denominator regularizer**, not a clamp on
+either squared norm. This preserves the batched kernel and CPU oracle's
+contract. A zero query, zero key, or two zero vectors yield zero. Small
+positive finite norms follow the same equation, so identical tiny vectors
+need not score one: `[1e-4, 0, 0]` against itself scores approximately 0.5.
+The CUDA build uses fast math (including flush-to-zero): subnormal products,
+accumulations, and results can become zero. If a squared norm underflows but
+the dot product survives, the denominator is epsilon and the score is
+`dot / SHIP_EPS`; there is no extra zero-norm branch. Non-finite inputs and
+overflowing accumulations are outside this finite-score contract.
+
+`cosine_similarity_top_k` writes the full row-major `n_queries × n_keys`
+score matrix plus row-major `n_queries × top_k` indices. Selection orders
+scores descending, breaking equal-score ties by **lower key index** (including
+numeric equality of signed zeros). Up to `min(top_k, n_keys, 32)` indices
+are selected; remaining index slots are `-1`. `top_k <= 0` returns without
+writing either output. No launch ABI or output layout changed in GH #47.
+Use one-dimensional blocks of 32–1024 threads in multiples of 32, zero
+dynamic shared memory, batched grid `(n_keys, n_queries)`, and top-k grid
+`(n_queries)`. Both remain raw symbols without a `GpuAccelerator` wrapper.
+
+Both kernels compute each pair with the same **dimension-dependent FMA
+accumulation order**, followed by the shared normalization helper: a scalar
+chain for dimensions up to 32, otherwise a fixed 32-lane accumulation and
+warp reduction tree. This is required for ranking correctness: merely sharing the denominator leaves
+rounding-order differences that can reverse dense near ties. Batched uses the
+first thread (small vectors) or first warp (larger vectors) of each pair's
+block. Top-k distributes small keys across threads and larger keys across
+warps, with each owning thread/lane zero feeding the existing selection/merge
+logic. The small-vector path avoids a measured slowdown from assigning a
+whole warp to very short vectors. This changes batched summation order from its former block-wide reduction,
+while preserving the normalization equation and raw launch ABI. Scores are
+independent of the number of full warps launched.
+
+`tests/cosine_gpu.rs` compares **every score bit-exactly** between kernels,
+then compares all selected indices **exactly** against sorting the actual
+batched output. No score or ranking tolerance is used for this contract.
+Sparse adjacent tiny keys and dense perturbed keys exercise near ties;
+repeated ties span warps and successive keys per warp. Dense signed fixtures
+also compare against the existing independent CPU oracle using its unchanged
+`1e-5` absolute/relative tolerance (different scalar accumulation and no FTZ).
+
+Selection uses negative infinity as its empty-candidate sentinel. With FTZ,
+a squared norm can vanish while a dot product survives, so even finite scores
+can fall below -1 (for example, `q=[1e-20,0,0]`, `k=[-1e18,0,0]` scores near
+-1e6). Every finite score must remain selectable; a -2 sentinel would discard
+such keys. This preserves the existing epsilon equation rather than adding
+an inconsistent per-kernel clamp.
 
 ### Internal (not a stability promise)
 
@@ -190,7 +306,7 @@ consumers share.
 
 | Path | Purpose |
 |------|---------|
-| CPU CI | `cargo test --locked`, `cargo test --features saaq`, `cargo build --no-default-features` |
+| CPU CI | `cargo test --locked`, `cargo build --no-default-features` |
 | GPU local / self-hosted | `cargo test --features cuda -- --ignored`, benchmark example |
 | CLion | CMake CXX-only + `nvcc -ptx` custom target — **not** CMake native `CUDA` language |
 
@@ -226,7 +342,7 @@ When proposing a feature, answer:
 Tracked elsewhere but **in-boundary** if they stay low-level:
 
 - Packed ternary device kernels `ternary_gemv` / `ternary_gemm` (GH #9 / [LIM-890](https://linear.app/rpd-34/issue/LIM-890)) — host + device live in `src/bitpacking.rs`, `cu/ternary_gemm.cu`, `docs/TERNARY.md`
-- Fused routing / SAAQ kernels (GH #14 / [LIM-891](https://linear.app/rpd-34/issue/LIM-891)) — `cu/fused_routing_saaq.cu`, `src/fused.rs`, [docs/FUSED_ROUTING_SAAQ.md](FUSED_ROUTING_SAAQ.md), behind `--features saaq`
+- Fused routing / SAAQ kernels (GH #14 / [LIM-891](https://linear.app/rpd-34/issue/LIM-891)) — only generic device code + benches
 - More `GpuAccelerator` wrappers for already-loaded symbols
 - Wider public surface for bitpacking + device kernel parity docs
 
