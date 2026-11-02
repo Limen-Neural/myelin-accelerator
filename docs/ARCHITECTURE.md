@@ -96,13 +96,15 @@ myelin-accelerator/
 │   ├── spiking_network.cu       # Poisson, LIF, STDP, reduce passes
 │   ├── vector_similarity.cu     # Cosine batched + top-k routing
 │   ├── satsolver.cu             # Parallel SAT walkers + reduces
-│   └── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
+│   ├── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
+│   └── routing_selection.cu     # Routing softmax/top-k, adjusted argmax, fused path
 ├── src/
 │   ├── lib.rs                   # Crate root; public re-exports
 │   ├── bench/                   # Manifest schema, redaction, regression budgets
 │   ├── capability.rs            # Probe types, decision table, sanitizer
 │   ├── error.rs                 # GpuError / GpuResult (CUDA + stub)
 │   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
+│   ├── routing.rs               # Routing contract, CPU reference, analytical model
 │   ├── oracle.rs                # Scalar CPU oracles + seeded compare helpers
 │   ├── gpu_stub.rs              # CPU-safe stand-ins (no cuda feature)
 │   └── gpu/                     # Real CUDA path (feature = "cuda")
@@ -192,6 +194,7 @@ These are the **ergonomic** wrappers currently implemented:
 - Spiking: `poisson_encode` / `_async`
 - Plasticity: `stdp_update` / `_async` (weight and trace kernels in stream order)
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
+- Routing and selection: `routing_softmax`, `routing_top_k`, `routing_entropy_reduce`, `adjusted_argmax`, `adjusted_argmax_single_block`, `fused_routing_select`, each with `_async` (see [ROUTING.md](ROUTING.md))
 
 Scalar CPU oracles for the Poisson and ternary wrappers, plus
 `cosine_similarity_batched`, `lif_step`, and `lif_step_weighted` (loaded, not
@@ -211,6 +214,7 @@ consumers share.
 | `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` |
 | `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass1`, `satsolver_best_reduce_pass2` |
 | `ternary_gemm` | `ternary_gemv`, `ternary_gemm` |
+| `routing_selection` | `routing_softmax`, `routing_top_k`, `adjusted_argmax_pass1`, `indexed_argmax_reduce_pass2`, `adjusted_argmax_single_block`, `fused_routing_pass1`, `fused_routing_pass2` |
 
 `lif_step` and `lif_step_weighted` have raw-symbol differential coverage:
 `tests/snn_fixtures_gpu.rs` compares membrane, refractory state, and spikes
@@ -330,7 +334,7 @@ When proposing a feature, answer:
 | Proposal | Decision |
 |----------|----------|
 | Packed ternary GEMV/GEMM on `sm_120` | **Here** (GH #9) — after encoding + correctness tests |
-| Fuse routing + SAAQ selection reduce | **Here only as reusable kernel** (GH #14); experiment loops elsewhere |
+| Fused routing, entropy, top-k, and adjusted-score selection | **Here** as a generic kernel (GH #14); consumer equations and experiment loops elsewhere |
 | “Run SAAQ recipe on GOZ1 artifacts” | **Not here** |
 | Add `cosine_similarity_top_k` wrapper method | **Here** — public API growth |
 | Train LIF network with backprop | **Not here** |
@@ -342,7 +346,7 @@ When proposing a feature, answer:
 Tracked elsewhere but **in-boundary** if they stay low-level:
 
 - Packed ternary device kernels `ternary_gemv` / `ternary_gemm` (GH #9 / [LIM-890](https://linear.app/rpd-34/issue/LIM-890)) — host + device live in `src/bitpacking.rs`, `cu/ternary_gemm.cu`, `docs/TERNARY.md`
-- Fused routing / SAAQ kernels (GH #14 / [LIM-891](https://linear.app/rpd-34/issue/LIM-891)) — only generic device code + benches
+- Routing reductions and adjusted-score selection (GH #14 / [LIM-891](https://linear.app/rpd-34/issue/LIM-891)) — `cu/routing_selection.cu` is the only selection implementation; see [ROUTING.md](ROUTING.md)
 - More `GpuAccelerator` wrappers for already-loaded symbols
 - Wider public surface for bitpacking + device kernel parity docs
 
