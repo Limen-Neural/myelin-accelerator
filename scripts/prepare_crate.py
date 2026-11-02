@@ -50,6 +50,7 @@ REQUIRED_PATHS = frozenset(
         "cu/vector_similarity.cu",
         "cu/satsolver.cu",
         "cu/ternary_gemm.cu",
+        "cu/routing_selection.cu",
         "scripts/ptx_entries.txt",
         "scripts/sanitize_lifecycle.sh",
         "examples/benchmark.rs",

@@ -32,6 +32,9 @@ static SATSOLVER_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/satsolver_s
 
 static TERNARY_GEMM_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/ternary_gemm_sm_120.ptx"));
 
+static ROUTING_SELECTION_PTX: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/routing_selection_sm_120.ptx"));
+
 const SPIKING_KERNELS: &[&str] = &[
     "poisson_encode",
     "lif_step",
@@ -60,6 +63,16 @@ const SATSOLVER_KERNELS: &[&str] = &[
 ];
 
 const TERNARY_GEMM_KERNELS: &[&str] = &["ternary_gemv", "ternary_gemm"];
+
+const ROUTING_SELECTION_KERNELS: &[&str] = &[
+    "routing_softmax",
+    "routing_top_k",
+    "adjusted_argmax_pass1",
+    "indexed_argmax_reduce_pass2",
+    "adjusted_argmax_single_block",
+    "fused_routing_pass1",
+    "fused_routing_pass2",
+];
 
 // ── KernelModule ─────────────────────────────────────────────────────────────
 
@@ -145,6 +158,20 @@ impl KernelModule {
             TERNARY_GEMM_KERNELS,
         ) {
             availability.ternary_gemm = Some(false);
+            return Err(KernelLoadFailure {
+                error,
+                availability,
+            });
+        }
+        availability.ternary_gemm = Some(true);
+        if let Err(error) = Self::load_and_map(
+            &mut modules,
+            &mut func_map,
+            ROUTING_SELECTION_PTX,
+            "routing_selection",
+            ROUTING_SELECTION_KERNELS,
+        ) {
+            availability.routing_selection = Some(false);
             return Err(KernelLoadFailure {
                 error,
                 availability,
@@ -274,5 +301,6 @@ mod tests {
         assert!(kernels.get_function("satsolver_step").is_ok());
         assert!(kernels.get_function("ternary_gemv").is_ok());
         assert!(kernels.get_function("ternary_gemm").is_ok());
+        assert!(kernels.get_function("fused_routing_pass1").is_ok());
     }
 }

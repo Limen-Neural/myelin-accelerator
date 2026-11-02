@@ -43,7 +43,6 @@ Run CPU-safe checks first — these should pass without a GPU:
 
 ```bash
 cargo test --locked
-cargo test --locked --features saaq
 cargo build --locked --no-default-features
 ```
 
@@ -65,9 +64,9 @@ cmake --build cmake-build-debug --target cuda_kernels
 ctest --test-dir cmake-build-debug --output-on-failure
 ```
 
-CTest covers: `cargo_tests`, `cargo_tests_saaq`, `cargo_build_no_default_features`,
-`cargo_fmt_check`, `cargo_clippy_no_default`, `cargo_clippy_saaq`,
-`cargo_build_bench_example`, `cuda_kernel_build`.
+CTest covers: `cargo_tests`, `cargo_build_no_default_features`,
+`cargo_fmt_check`, `cargo_clippy_no_default`, `cargo_build_bench_example`,
+`cuda_kernel_build`.
 
 GPU kernel benchmarks need **both** features (not just `bench`):
 

@@ -723,6 +723,193 @@ fn bench_gpu_kernels(config: &Config) -> Vec<Capture> {
     // Packed ternary GEMV / GEMM (group-scaled)
     results.extend(bench_ternary_gpu(&acc, config));
 
+    // Routing: fused and composable paths, single-block and two-pass selection
+    results.extend(bench_routing_gpu(&acc, config));
+
+    results
+}
+
+/// `(n_nodes, n_routes, top_k)` measured for fused and composable routing.
+#[cfg(feature = "cuda")]
+const ROUTING_BENCH_SHAPES: &[(usize, usize, usize)] = &[
+    (64, 8, 2),
+    (256, 64, 4),
+    (2048, 16, 4),
+    (1024, 128, 4),
+    (256, 4096, 8),
+    (4096, 1024, 8),
+    (65536, 16, 4),
+];
+
+/// Node counts measured for the two selection paths.
+#[cfg(feature = "cuda")]
+const SELECTION_BENCH_SIZES: &[usize] = &[
+    64, 256, 512, 1024, 2048, 4096, 8192, 16384, 65536, 262144, 1048576,
+];
+
+#[cfg(feature = "cuda")]
+fn routing_bench_values(n: usize, seed: u32, range: f32) -> Vec<f32> {
+    let mut state = seed;
+    (0..n)
+        .map(|_| {
+            state = myelin_accelerator::oracle::lcg_next(state);
+            (myelin_accelerator::oracle::lcg_unit(state) - 0.5) * range
+        })
+        .collect()
+}
+
+#[cfg(feature = "cuda")]
+fn bench_routing_gpu(acc: &myelin_accelerator::GpuAccelerator, config: &Config) -> Vec<Capture> {
+    use myelin_accelerator::GpuBuffer;
+    use myelin_accelerator::routing::{
+        FusedRoutingOutputs, RoutingParams, RoutingScoreKind, analytical,
+    };
+
+    const SCALE: f32 = 0.25;
+    let mut results = Vec::new();
+
+    for &(n_nodes, n_routes, top_k) in ROUTING_BENCH_SHAPES {
+        let params = RoutingParams {
+            n_nodes,
+            n_routes,
+            top_k,
+            score_kind: RoutingScoreKind::Logits,
+            adaptation_scale: SCALE,
+        };
+        let scores =
+            GpuBuffer::from_slice(&routing_bench_values(n_nodes * n_routes, 42, 8.0)).unwrap();
+        let state = GpuBuffer::from_slice(&routing_bench_values(n_nodes, 43, 4.0)).unwrap();
+        let adaptation = GpuBuffer::from_slice(&routing_bench_values(n_nodes, 44, 1.0)).unwrap();
+        let dims = [
+            ("n_nodes", n_nodes as i64),
+            ("n_routes", n_routes as i64),
+            ("top_k", top_k as i64),
+        ];
+
+        // Analytical figures are printed apart from the measured rows below.
+        let requested_composable = analytical::composable(n_nodes, n_routes, top_k);
+        let requested_fused = analytical::fused(n_nodes, n_routes, top_k);
+        println!(
+            "[analytical, not measured] {n_nodes}x{n_routes} k={top_k}: \
+             composable {} requested bytes / {} launches; fused {} / {}",
+            requested_composable.bytes_total(),
+            requested_composable.launches,
+            requested_fused.bytes_total(),
+            requested_fused.launches,
+        );
+
+        let mut outputs = FusedRoutingOutputs::alloc(&params, false).unwrap();
+        results.push(capture(
+            &format!("routing_fused_{n_nodes}x{n_routes}_k{top_k}"),
+            "routing-fused",
+            &dims,
+            Some(42),
+            config.warmup,
+            config.iterations,
+            || {
+                acc.fused_routing_select(&scores, &state, &adaptation, &mut outputs, &params)
+                    .unwrap();
+            },
+        ));
+
+        let mut outputs = FusedRoutingOutputs::alloc(&params, true).unwrap();
+        results.push(capture(
+            &format!("routing_fused_probabilities_{n_nodes}x{n_routes}_k{top_k}"),
+            "routing-fused-probabilities",
+            &dims,
+            Some(42),
+            config.warmup,
+            config.iterations,
+            || {
+                acc.fused_routing_select(&scores, &state, &adaptation, &mut outputs, &params)
+                    .unwrap();
+            },
+        ));
+
+        let mut probabilities = GpuBuffer::<f32>::alloc(n_nodes * n_routes).unwrap();
+        let mut top_k_indices = GpuBuffer::<i32>::alloc(n_nodes * top_k).unwrap();
+        let mut entropy_sum = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut entropy_max = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
+        let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
+        results.push(capture(
+            &format!("routing_composable_{n_nodes}x{n_routes}_k{top_k}"),
+            "routing-composable",
+            &dims,
+            Some(42),
+            config.warmup,
+            config.iterations,
+            || {
+                // Queue all six launches and wait once, like the fused path.
+                acc.routing_softmax_async(
+                    &scores,
+                    &mut probabilities,
+                    n_nodes,
+                    n_routes,
+                    params.score_kind,
+                )
+                .unwrap();
+                acc.routing_top_k_async(
+                    &scores,
+                    &mut top_k_indices,
+                    n_nodes,
+                    n_routes,
+                    top_k,
+                    params.score_kind,
+                )
+                .unwrap();
+                acc.routing_entropy_reduce_async(
+                    &probabilities,
+                    &mut entropy_sum,
+                    &mut entropy_max,
+                    n_nodes,
+                    n_routes,
+                )
+                .unwrap();
+                acc.adjusted_argmax_async(&state, &adaptation, &mut index, &mut score, SCALE)
+                    .unwrap();
+                acc.synchronize().unwrap();
+            },
+        ));
+    }
+
+    for &n in SELECTION_BENCH_SIZES {
+        let state = GpuBuffer::from_slice(&routing_bench_values(n, 45, 4.0)).unwrap();
+        let adaptation = GpuBuffer::from_slice(&routing_bench_values(n, 46, 1.0)).unwrap();
+        let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
+        let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
+        results.push(capture(
+            &format!("adjusted_argmax_two_pass_{n}"),
+            "adjusted-argmax-two-pass",
+            &[("n", n as i64)],
+            Some(45),
+            config.warmup,
+            config.iterations,
+            || {
+                acc.adjusted_argmax(&state, &adaptation, &mut index, &mut score, SCALE)
+                    .unwrap();
+            },
+        ));
+        results.push(capture(
+            &format!("adjusted_argmax_single_block_{n}"),
+            "adjusted-argmax-single-block",
+            &[("n", n as i64)],
+            Some(45),
+            config.warmup,
+            config.iterations,
+            || {
+                acc.adjusted_argmax_single_block(
+                    &state,
+                    &adaptation,
+                    &mut index,
+                    &mut score,
+                    SCALE,
+                )
+                .unwrap();
+            },
+        ));
+    }
+
     results
 }
 

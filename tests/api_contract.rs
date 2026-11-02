@@ -112,6 +112,93 @@ fn bitpacking_ternary_gemm_ref_matches_gemv_columns() {
 
 #[cfg(not(feature = "cuda"))]
 mod stub_contract {
+    #[test]
+    fn routing_wrappers_validate_then_report_unavailable() {
+        use myelin_accelerator::routing::{FusedRoutingOutputs, RoutingParams, RoutingScoreKind};
+        use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
+
+        let acc = GpuAccelerator::new();
+        let kind = RoutingScoreKind::Logits;
+        let params = RoutingParams {
+            n_nodes: 2,
+            n_routes: 2,
+            top_k: 1,
+            score_kind: kind,
+            adaptation_scale: 0.5,
+        };
+        let scores = GpuBuffer::<f32>::alloc(4).unwrap();
+        let state = GpuBuffer::<f32>::alloc(2).unwrap();
+        let short = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut probabilities = GpuBuffer::<f32>::alloc(4).unwrap();
+        let mut top_k = GpuBuffer::<i32>::alloc(2).unwrap();
+        let mut sum = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut max = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
+        let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut outputs = FusedRoutingOutputs::alloc(&params, true).unwrap();
+
+        let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
+        let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
+
+        assert!(unavailable(acc.routing_softmax(
+            &scores,
+            &mut probabilities,
+            2,
+            2,
+            kind
+        )));
+        assert!(invalid(acc.routing_softmax(
+            &short,
+            &mut probabilities,
+            2,
+            2,
+            kind
+        )));
+        assert!(unavailable(
+            acc.routing_top_k(&scores, &mut top_k, 2, 2, 1, kind)
+        ));
+        assert!(invalid(
+            acc.routing_top_k(&scores, &mut top_k, 2, 2, 9, kind)
+        ));
+        assert!(unavailable(acc.routing_entropy_reduce(
+            &probabilities,
+            &mut sum,
+            &mut max,
+            2,
+            2
+        )));
+        assert!(invalid(
+            acc.routing_entropy_reduce(&short, &mut sum, &mut max, 2, 2)
+        ));
+        assert!(unavailable(
+            acc.adjusted_argmax(&state, &state, &mut index, &mut score, 0.5)
+        ));
+        assert!(invalid(
+            acc.adjusted_argmax(&state, &short, &mut index, &mut score, 0.5)
+        ));
+        assert!(invalid(acc.adjusted_argmax_single_block(
+            &state,
+            &state,
+            &mut index,
+            &mut score,
+            f32::NAN
+        )));
+        assert!(unavailable(acc.fused_routing_select(
+            &scores,
+            &state,
+            &state,
+            &mut outputs,
+            &params
+        )));
+        assert!(invalid(acc.fused_routing_select(
+            &short,
+            &state,
+            &state,
+            &mut outputs,
+            &params
+        )));
+    }
+
     use myelin_accelerator::{
         Backend, ExecutionPolicy, FallbackReason, GpuAccelerator, GpuBuffer, GpuContext, GpuError,
         KernelModule, probe_capabilities,
@@ -268,34 +355,6 @@ mod stub_contract {
             acc.ternary_gemm(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .is_err()
         );
-
-        #[cfg(feature = "saaq")]
-        {
-            let membrane = GpuBuffer::<f32>::alloc(4).unwrap();
-            let adaptation = GpuBuffer::<f32>::alloc(4).unwrap();
-            let mut walker = GpuBuffer::<u32>::alloc(1).unwrap();
-            assert!(
-                acc.saaq_select(&membrane, &adaptation, &mut walker, 0.22)
-                    .is_err()
-            );
-            assert!(
-                acc.routing_saaq_fused(
-                    &GpuBuffer::<f32>::alloc(8).unwrap(),
-                    &membrane,
-                    &adaptation,
-                    &mut GpuBuffer::<i32>::alloc(8).unwrap(),
-                    &mut GpuBuffer::<f32>::alloc(1).unwrap(),
-                    &mut GpuBuffer::<f32>::alloc(1).unwrap(),
-                    &mut walker,
-                    2,
-                    4,
-                    2,
-                    0.22,
-                    true,
-                )
-                .is_err()
-            );
-        }
     }
 
     /// The CPU stub stays fail-closed for empty Poisson requests on both entry
@@ -364,10 +423,4 @@ mod stub_contract {
         fn check<T: std::error::Error>() {}
         check::<GpuError>();
     }
-}
-
-#[cfg(feature = "saaq")]
-#[test]
-fn fused_host_api_is_exported_with_saaq() {
-    assert!((myelin_accelerator::fused::GIF_ADAPTATION_SCALE - 0.22).abs() < 1e-6);
 }
