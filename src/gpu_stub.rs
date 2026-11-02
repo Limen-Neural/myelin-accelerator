@@ -7,6 +7,10 @@ pub use crate::capability::{
 };
 use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
 pub use crate::error::{GpuError, GpuResult};
+use crate::routing::{
+    FusedRoutingOutputs, RoutingParams, RoutingScoreKind, expect_min_len, kernel_dimension,
+    matrix_elements, validate_fused_buffers, validate_scale, validate_top_k,
+};
 
 pub(crate) fn host_facts() -> CapabilityFacts {
     CapabilityFacts::not_built()
@@ -349,6 +353,187 @@ impl GpuAccelerator {
         _: bool,
     ) -> GpuResult<()> {
         Err(self.unavailable_error())
+    }
+
+    pub fn routing_softmax(
+        &self,
+        scores: &GpuBuffer<f32>,
+        probabilities: &mut GpuBuffer<f32>,
+        n_nodes: usize,
+        n_routes: usize,
+        score_kind: RoutingScoreKind,
+    ) -> GpuResult<()> {
+        self.routing_softmax_async(scores, probabilities, n_nodes, n_routes, score_kind)
+    }
+
+    pub fn routing_softmax_async(
+        &self,
+        scores: &GpuBuffer<f32>,
+        probabilities: &mut GpuBuffer<f32>,
+        n_nodes: usize,
+        n_routes: usize,
+        _: RoutingScoreKind,
+    ) -> GpuResult<()> {
+        kernel_dimension("n_nodes", n_nodes)?;
+        kernel_dimension("n_routes", n_routes)?;
+        let elements = matrix_elements("score matrix", n_nodes, n_routes)?;
+        expect_min_len("scores", scores.len(), elements)?;
+        expect_min_len("probabilities", probabilities.len(), elements)?;
+        Err(self.unavailable_error())
+    }
+
+    pub fn routing_top_k(
+        &self,
+        scores: &GpuBuffer<f32>,
+        top_k_indices: &mut GpuBuffer<i32>,
+        n_nodes: usize,
+        n_routes: usize,
+        top_k: usize,
+        score_kind: RoutingScoreKind,
+    ) -> GpuResult<()> {
+        self.routing_top_k_async(scores, top_k_indices, n_nodes, n_routes, top_k, score_kind)
+    }
+
+    pub fn routing_top_k_async(
+        &self,
+        scores: &GpuBuffer<f32>,
+        top_k_indices: &mut GpuBuffer<i32>,
+        n_nodes: usize,
+        n_routes: usize,
+        top_k: usize,
+        _: RoutingScoreKind,
+    ) -> GpuResult<()> {
+        kernel_dimension("n_nodes", n_nodes)?;
+        kernel_dimension("n_routes", n_routes)?;
+        validate_top_k(top_k)?;
+        let score_elements = matrix_elements("score matrix", n_nodes, n_routes)?;
+        let top_k_elements = matrix_elements("top-k output", n_nodes, top_k)?;
+        expect_min_len("scores", scores.len(), score_elements)?;
+        expect_min_len("top_k_indices", top_k_indices.len(), top_k_elements)?;
+        Err(self.unavailable_error())
+    }
+
+    pub fn routing_entropy_reduce(
+        &self,
+        probabilities: &GpuBuffer<f32>,
+        entropy_sum: &mut GpuBuffer<f32>,
+        entropy_max: &mut GpuBuffer<f32>,
+        n_nodes: usize,
+        n_routes: usize,
+    ) -> GpuResult<()> {
+        self.routing_entropy_reduce_async(
+            probabilities,
+            entropy_sum,
+            entropy_max,
+            n_nodes,
+            n_routes,
+        )
+    }
+
+    pub fn routing_entropy_reduce_async(
+        &self,
+        probabilities: &GpuBuffer<f32>,
+        entropy_sum: &mut GpuBuffer<f32>,
+        entropy_max: &mut GpuBuffer<f32>,
+        n_nodes: usize,
+        n_routes: usize,
+    ) -> GpuResult<()> {
+        kernel_dimension("n_nodes", n_nodes)?;
+        kernel_dimension("n_routes", n_routes)?;
+        let elements = matrix_elements("probability matrix", n_nodes, n_routes)?;
+        expect_min_len("probabilities", probabilities.len(), elements)?;
+        expect_min_len("entropy_sum", entropy_sum.len(), 1)?;
+        expect_min_len("entropy_max", entropy_max.len(), 1)?;
+        Err(self.unavailable_error())
+    }
+
+    pub fn adjusted_argmax(
+        &self,
+        state: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        selected_index: &mut GpuBuffer<u32>,
+        selected_score: &mut GpuBuffer<f32>,
+        scale: f32,
+    ) -> GpuResult<()> {
+        self.adjusted_argmax_async(state, adaptation, selected_index, selected_score, scale)
+    }
+
+    pub fn adjusted_argmax_async(
+        &self,
+        state: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        selected_index: &mut GpuBuffer<u32>,
+        selected_score: &mut GpuBuffer<f32>,
+        scale: f32,
+    ) -> GpuResult<()> {
+        Self::validate_selection(state, adaptation, selected_index, selected_score, scale)?;
+        Err(self.unavailable_error())
+    }
+
+    pub fn adjusted_argmax_single_block(
+        &self,
+        state: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        selected_index: &mut GpuBuffer<u32>,
+        selected_score: &mut GpuBuffer<f32>,
+        scale: f32,
+    ) -> GpuResult<()> {
+        self.adjusted_argmax_async(state, adaptation, selected_index, selected_score, scale)
+    }
+
+    pub fn adjusted_argmax_single_block_async(
+        &self,
+        state: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        selected_index: &mut GpuBuffer<u32>,
+        selected_score: &mut GpuBuffer<f32>,
+        scale: f32,
+    ) -> GpuResult<()> {
+        self.adjusted_argmax_async(state, adaptation, selected_index, selected_score, scale)
+    }
+
+    pub fn fused_routing_select(
+        &self,
+        scores: &GpuBuffer<f32>,
+        state: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        outputs: &mut FusedRoutingOutputs,
+        params: &RoutingParams,
+    ) -> GpuResult<()> {
+        self.fused_routing_select_async(scores, state, adaptation, outputs, params)
+    }
+
+    pub fn fused_routing_select_async(
+        &self,
+        scores: &GpuBuffer<f32>,
+        state: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        outputs: &mut FusedRoutingOutputs,
+        params: &RoutingParams,
+    ) -> GpuResult<()> {
+        validate_fused_buffers(scores, state, adaptation, outputs, params)?;
+        Err(self.unavailable_error())
+    }
+
+    fn validate_selection(
+        state: &GpuBuffer<f32>,
+        adaptation: &GpuBuffer<f32>,
+        selected_index: &GpuBuffer<u32>,
+        selected_score: &GpuBuffer<f32>,
+        scale: f32,
+    ) -> GpuResult<()> {
+        validate_scale(scale)?;
+        if state.len() != adaptation.len() {
+            return Err(GpuError::invalid_input(format!(
+                "state length {} does not match adaptation length {}",
+                state.len(),
+                adaptation.len()
+            )));
+        }
+        expect_min_len("selected_index", selected_index.len(), 1)?;
+        expect_min_len("selected_score", selected_score.len(), 1)?;
+        kernel_dimension("state length", state.len())?;
+        Ok(())
     }
 
     pub fn synchronize(&self) -> GpuResult<()> {

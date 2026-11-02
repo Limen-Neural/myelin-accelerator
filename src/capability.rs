@@ -166,6 +166,8 @@ pub struct KernelAvailability {
     pub satsolver: Option<bool>,
     /// Ternary GEMV/GEMM family after JIT, if attempted.
     pub ternary_gemm: Option<bool>,
+    /// Routing reduction and adjusted-score selection family after JIT, if attempted.
+    pub routing_selection: Option<bool>,
 }
 
 impl KernelAvailability {
@@ -177,6 +179,7 @@ impl KernelAvailability {
             vector_similarity: None,
             satsolver: None,
             ternary_gemm: None,
+            routing_selection: None,
         }
     }
 
@@ -188,6 +191,7 @@ impl KernelAvailability {
             vector_similarity: None,
             satsolver: None,
             ternary_gemm: None,
+            routing_selection: None,
         }
     }
 
@@ -199,6 +203,7 @@ impl KernelAvailability {
             vector_similarity: Some(true),
             satsolver: Some(true),
             ternary_gemm: Some(true),
+            routing_selection: Some(true),
         }
     }
 
@@ -210,6 +215,7 @@ impl KernelAvailability {
             vector_similarity: Some(false),
             satsolver: Some(false),
             ternary_gemm: Some(false),
+            routing_selection: Some(false),
         }
     }
 
@@ -219,6 +225,7 @@ impl KernelAvailability {
             || matches!(self.vector_similarity, Some(false))
             || matches!(self.satsolver, Some(false))
             || matches!(self.ternary_gemm, Some(false))
+            || matches!(self.routing_selection, Some(false))
     }
 
     /// `true` only after all required PTX families JIT-loaded successfully.
@@ -227,6 +234,7 @@ impl KernelAvailability {
             && matches!(self.vector_similarity, Some(true))
             && matches!(self.satsolver, Some(true))
             && matches!(self.ternary_gemm, Some(true))
+            && matches!(self.routing_selection, Some(true))
     }
 }
 
