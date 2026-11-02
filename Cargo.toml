@@ -6,6 +6,8 @@ description = "Rust/CUDA acceleration primitives for spiking neural networks and
 authors = ["Raul Cardenas Montoya <montoyaraul34@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Limen-Neural/myelin-accelerator"
+homepage = "https://github.com/Limen-Neural/myelin-accelerator"
+documentation = "https://docs.rs/myelin-accelerator"
 keywords = ["cuda", "snn", "neuromorphic", "gpu", "spiking-network"]
 categories = ["hardware-support", "artificial-intelligence", "simulation"]
 # Anchor every pattern at the crate root. An unanchored `README.md` also
