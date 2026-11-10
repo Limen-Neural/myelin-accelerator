@@ -9,6 +9,10 @@ plus per-node `state` and `adaptation` values. One operation produces:
 
 The caller supplies `adaptation_scale` and decides what the inputs and results
 mean. This crate has no default dynamics and no consumer policy.
+`adjusted_argmax` is the canonical adaptation-adjusted selector. Temporal
+primitives reuse it instead of providing a separate policy-specific selector.
+
+Scope and acceptance criteria: [LIM-955](https://linear.app/rpd-34/issue/LIM-955).
 
 | Layer | Location |
 |-------|----------|
@@ -203,12 +207,29 @@ launch plus synchronize costs about 30 µs here (`poisson_encode_4096` p50:
 | 262,144 | 52.3 (50.9–57.6) | 135.5 (120.3–147.4) |
 | 1,048,576 | 50.5 (45.3–50.7) | 369.4 (366.2–371.3) |
 
+### Compute Sanitizer memcheck
+
+`./scripts/sanitize_lifecycle.sh` ran on the same RTX 5080 under WSL2 with
+driver 621.14, CUDA toolkit 13.3 (V13.3.73), and Compute Sanitizer 2026.2.1.0.
+Kernel, wrapper, and test sources were unchanged from
+`b7408445f4c5bec1ff68736987d9f1f6d5f33ba6`. Each suite ran in its own serial
+memcheck process with `--include-ignored`:
+
+| Suite | Passed | Failed | Ignored | Memcheck errors |
+|-------|--------|--------|---------|-----------------|
+| `gpu_lifecycle` | 8 | 0 | 0 | 0 |
+| `snn_fixtures_gpu` | 2 | 0 | 0 | 0 |
+| `routing_gpu` | 13 | 0 | 0 | 0 |
+
+Earlier attempts on this host failed to attach (`Failed to initialize WDDM
+debugger interface`). Attachment depends on host configuration, so re-run the
+script on each qualification host.
+
 ### Not measured
 
-Nsight Compute returned `ERR_NVGPUCTRPERM` on this host, so **occupancy, DRAM
-traffic, and cache behavior have no hardware evidence**. Compute Sanitizer could
-not attach under WSL2 without an administrator step, so `tests/routing_gpu.rs`
-has not run under memcheck on this host.
+Nsight Compute returned `ERR_NVGPUCTRPERM` on this host, including a retry with
+driver 621.14, so **occupancy, DRAM traffic, and cache behavior have no hardware
+evidence**. The occupancy figures above are estimates only.
 
 ## Findings
 
@@ -250,3 +271,7 @@ ncu --metrics sm__warps_active.avg.pct_of_peak_sustained_active \
   --kernel-name 'regex:routing|argmax' \
   cargo run --locked --example benchmark --profile bench --features bench,cuda
 ```
+
+The mandatory `./scripts/sanitize_lifecycle.sh` gate includes `routing_gpu`
+alongside the lifecycle and SNN fixture suites. Each suite must execute tests
+and report zero memcheck errors.

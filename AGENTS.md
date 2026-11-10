@@ -29,7 +29,7 @@ cargo test --locked --features cuda -- --ignored --nocapture --test-threads=1
 ./scripts/sanitize_lifecycle.sh
 ```
 
-The sanitizer script runs `gpu_lifecycle` and `snn_fixtures_gpu` serially under unsuppressed memcheck. Require executed tests and a zero-error summary for **each** suite. See `REVIEW.md` §6–§7 for the complete local gate, including PTX, CMake/CTest, benchmark, lint, rustdoc, and the full device sanitizer matrix. Keep CMake on its CXX custom `nvcc -ptx` path; do not enable CMake's native CUDA language for this host. `CLAUDE.md` has the host/tooling details.
+The sanitizer script runs `gpu_lifecycle`, `snn_fixtures_gpu`, and `routing_gpu` serially under unsuppressed memcheck. Require executed tests and a zero-error summary for **each** suite. See `REVIEW.md` §6–§7 for the complete local gate, including PTX, CMake/CTest, benchmark, lint, rustdoc, and the full device sanitizer matrix. Keep CMake on its CXX custom `nvcc -ptx` path; do not enable CMake's native CUDA language for this host. `CLAUDE.md` has the host/tooling details.
 
 ## Package and release boundary
 

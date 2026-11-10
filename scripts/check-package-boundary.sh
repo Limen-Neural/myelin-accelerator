@@ -15,10 +15,10 @@ if [[ -n "$unapproved_paths" ]]; then
   exit 1
 fi
 
-# Ban research/experiment trees, SAAQ research layouts, and repository-only
+# Ban research/experiment trees, experimental payload layouts, and repository-only
 # benchmark regression inputs.
-# These SAAQ prefixes match both subtrees and prefixed payloads.
-if grep -Ein '(^|/)(experiments|research)(/|$)|^(docs|examples|scripts)/saaq|^tests/fixtures/(saaq|bench)/|^tests/bench_repro\.rs$' "$tmp"; then
+# Experimental prefixes match both subtrees and prefixed payloads.
+if grep -Ein '(^|/)(experiments|research)(/|$)|^(docs|examples|scripts)/experimental|^tests/fixtures/(experimental|bench)/|^tests/bench_repro\.rs$' "$tmp"; then
   echo 'experimental research must not be shipped in the crate archive' >&2
   exit 1
 fi

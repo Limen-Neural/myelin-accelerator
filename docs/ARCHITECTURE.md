@@ -44,7 +44,7 @@ local quality/benchmark harness. Not a research orchestrator.
 |------|------------|
 | Model-specific prompts, chat loops, agent policies | Application / product repos |
 | Dataset download, eval harnesses, leaderboards | Experiment / MLOps repos |
-| High-level SAAQ experiment orchestration, recipes, manifests | e.g. `corinth-canal`, `magere-brug` |
+| High-level experiment orchestration, recipes, manifests | e.g. `corinth-canal`, `magere-brug` |
 | Training loops, optimizers, full SNN training frameworks | Spikenaut / plasticity / training crates |
 | Cloud infra, multi-tenant runners (except this repo’s CI workflow) | Infra docs / org runners |
 | UI, dashboards, visualization of results | Viz / notebook projects |
@@ -53,20 +53,20 @@ local quality/benchmark harness. Not a research orchestrator.
 **Rule of thumb:** if the change is “run experiment X on dataset Y and log
 business metrics,” it is **not** a myelin feature.
 
-### Experimental SAAQ publication boundary
+### Experimental publication boundary
 
-SAAQ recipes, datasets, run manifests, result tables, and other experimental
+Recipes, datasets, run manifests, result tables, and other experimental
 research are not crate material. Keep them in a dedicated experiment repository
-or under an excluded `experiments/saaq/` or `research/` path; never add them to
+or under an excluded `experiments/` or `research/` path; never add them to
 `src/`, `cu/`, or the public documentation shipped in the Cargo archive.
 
 Cargo's broad include globs are narrowed by a CI package-list checker that
 permits reusable source, the public benchmark example, named test fixtures, and
-public documentation. CI tests the checker against forbidden SAAQ paths and
+public documentation. CI tests the checker against forbidden experimental paths and
 inspects the actual package file list, so non-source data under `src/` or `cu/`
 fails the check. This makes the boundary apply to a future `cargo publish`, not
 just to repository organization. A generic reusable GPU primitive requires its
-own scope decision; it does not make the surrounding SAAQ experiment publishable.
+own scope decision; it does not make the surrounding experiment publishable.
 
 ---
 
@@ -74,10 +74,10 @@ own scope decision; it does not make the surrounding SAAQ experiment publishable
 
 | Consumer | Typical dependency |
 |----------|-------------------|
-| `corinth-canal` | Routing / SAAQ-related GPU primitives; stay out of experiment orchestration |
+| `corinth-canal` | Generic routing and adjusted-score selection; stay out of experiment orchestration |
 | SNN libraries / Spikenaut-class stacks | Poisson encode, LIF step, rate stats, STDP-style updates when exposed |
 | Telemetry / profiling experiments | Kernel launches + nvtx ranges; host only aggregates results |
-| Quantization prototypes (ternary / SAAQ) | Packed layouts + future GEMV/GEMM kernels; host packing already here |
+| Quantization prototypes (binary / ternary) | Packed layouts + future GEMV/GEMM kernels; host packing already here |
 | SAT / search research | `satsolver_*` path and aux reduce |
 | Future Metis / neuromorphic prototypes | Thin dependency on public Rust API + features |
 
@@ -335,7 +335,7 @@ When proposing a feature, answer:
 |----------|----------|
 | Packed ternary GEMV/GEMM on `sm_120` | **Here** (GH #9) — after encoding + correctness tests |
 | Fused routing, entropy, top-k, and adjusted-score selection | **Here** as a generic kernel (GH #14); consumer equations and experiment loops elsewhere |
-| “Run SAAQ recipe on GOZ1 artifacts” | **Not here** |
+| “Run an experiment recipe on model artifacts” | **Not here** |
 | Add `cosine_similarity_top_k` wrapper method | **Here** — public API growth |
 | Train LIF network with backprop | **Not here** |
 
@@ -346,7 +346,7 @@ When proposing a feature, answer:
 Tracked elsewhere but **in-boundary** if they stay low-level:
 
 - Packed ternary device kernels `ternary_gemv` / `ternary_gemm` (GH #9 / [LIM-890](https://linear.app/rpd-34/issue/LIM-890)) — host + device live in `src/bitpacking.rs`, `cu/ternary_gemm.cu`, `docs/TERNARY.md`
-- Routing reductions and adjusted-score selection (GH #14 / [LIM-891](https://linear.app/rpd-34/issue/LIM-891)) — `cu/routing_selection.cu` is the only selection implementation; see [ROUTING.md](ROUTING.md)
+- Routing reductions and adjusted-score selection (GH #14 / [LIM-955](https://linear.app/rpd-34/issue/LIM-955)) — `adjusted_argmax` in `cu/routing_selection.cu` is the canonical selection implementation; temporal primitives reuse it rather than introducing a second selector. See [ROUTING.md](ROUTING.md).
 - More `GpuAccelerator` wrappers for already-loaded symbols
 - Wider public surface for bitpacking + device kernel parity docs
 
