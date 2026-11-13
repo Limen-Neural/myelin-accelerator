@@ -36,7 +36,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
         with:
-          toolchain: stable
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Check formatting
@@ -58,7 +58,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
         with:
-          toolchain: stable
+          toolchain: 1.99.0
 
       - name: Verify crate package boundary
         shell: bash
@@ -85,6 +85,51 @@ jobs:
 
       - name: Bench example compile (CPU, no GPU)
         run: cargo build --locked --example benchmark --features bench
+
+  # ── MSRV: true minimum supported Rust (default features, no cuda) ────────
+  # Reads package.rust-version from Cargo.toml so the advertised floor is
+  # verified on every change. Dev toolchain and all other jobs stay on the
+  # pinned 1.99.0; rust-toolchain.toml would otherwise override this job, so
+  # RUSTUP_TOOLCHAIN is forced to the MSRV for every step below.
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^rust-version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
+          if [ -z "$version" ]; then
+            echo "::error::Cargo.toml has no package.rust-version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_TOOLCHAIN=$version" >> "$GITHUB_ENV"
+          echo "MSRV: $version"
+
+      - name: Install MSRV toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Verify toolchain is the MSRV
+        run: rustc --version
+
+      - name: Cargo check (all targets)
+        run: cargo check --locked --all-targets
+
+      - name: Cargo test
+        run: cargo test --locked
+
+      - name: Benchmark harness tests
+        run: cargo test --locked --features bench --example benchmark
 
   # ── CUDA PTX compile on GitHub-hosted (toolkit only, no GPU runtime) ─────
   # Proves nvcc → PTX embed for sm_120 without needing a Blackwell device.
@@ -114,7 +159,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             curl ca-certificates build-essential pkg-config libssl-dev git python3
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --default-toolchain stable --profile minimal
+            | sh -s -- -y --default-toolchain 1.99.0 --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           source "$HOME/.cargo/env"
           rustc --version
@@ -217,7 +262,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
         with:
-          toolchain: stable
+          toolchain: 1.99.0
           components: clippy
 
       - name: nvidia-smi (informational)

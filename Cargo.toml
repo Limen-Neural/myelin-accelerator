@@ -2,6 +2,12 @@
 name = "myelin-accelerator"
 version = "0.2.0"
 edition = "2024"
+# True MSRV, measured on the default (CPU) feature set: let-chains and
+# slice::as_chunks require Rust 1.88.0 (1.85.0 fails, 1.88.0 passes
+# `cargo check --locked --all-targets`). The `cuda` feature is not covered
+# by this floor: cust 0.3.2 / nvtx may require a newer rustc, so CUDA builds
+# are qualified on the pinned dev toolchain instead.
+rust-version = "1.88.0"
 description = "Rust/CUDA acceleration primitives for spiking neural networks and neuromorphic workloads"
 authors = ["Raul Cardenas Montoya <montoyaraul34@gmail.com>"]
 license = "MIT OR Apache-2.0"

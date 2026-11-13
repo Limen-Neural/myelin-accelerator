@@ -1,0 +1,7 @@
+# Dev/CI toolchain pin. This is intentionally newer than package.rust-version
+# in Cargo.toml: rust-version is the true measured MSRV (1.88.0) while local
+# development and non-MSRV CI jobs run on the current stable pin. The dedicated
+# `msrv` CI job reads Cargo.toml and verifies the crate on that version.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
