@@ -92,7 +92,7 @@ jobs:
   # pinned 1.99.0; rust-toolchain.toml would otherwise override this job, so
   # RUSTUP_TOOLCHAIN is forced to the MSRV for every step below.
   msrv:
-    name: MSRV (${{ steps.msrv.outputs.version }})
+    name: MSRV
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
