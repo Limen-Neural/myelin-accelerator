@@ -510,7 +510,7 @@ channel`, not equality:
 |-----|----------|-------|
 | True MSRV (default/CPU features) | `Cargo.toml` `package.rust-version` | `1.88.0` |
 | Dev toolchain | `rust-toolchain.toml` `channel` | `1.99.0` |
-| Non-MSRV CI jobs (`lint`, `cpu-checks`, `cuda-ptx-cloud`, `cuda-build`, `coverage`) | `.github/workflows/*.yml` `toolchain:` | `1.99.0` |
+| Non-MSRV CI jobs (`lint`, `cpu-checks`, `cuda-ptx-cloud`, `cuda-build`, `coverage`) | `.github/workflows/*.yml` `toolchain:` (`cuda-ptx-cloud` uses rustup `--default-toolchain` instead) | `1.99.0` |
 | MSRV verification | `ci.yml` `msrv` job | reads `rust-version` from `Cargo.toml` at run time |
 
 Measurement (2026-11, default features, `cargo +<ver> check --locked

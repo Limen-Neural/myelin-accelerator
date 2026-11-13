@@ -49,13 +49,13 @@ if ! command -v rustup >/dev/null 2>&1; then
     exit 1
 fi
 
-rustup toolchain install 1.98.1 \
+rustup toolchain install 1.99.0 \
     --profile minimal \
     --component rustfmt \
     --component clippy
 
-rustc +1.98.1 --version
-cargo +1.98.1 --version
+rustc +1.99.0 --version
+cargo +1.99.0 --version
 
 # ---- CUDA / Blackwell sanity ------------------------------------------------
 
@@ -70,13 +70,13 @@ fi
 
 # ---- Dependency warm-up + cheap CPU validation -----------------------------
 
-cargo +1.98.1 fetch --locked
+cargo +1.99.0 fetch --locked
 
-cargo +1.98.1 check \
+cargo +1.99.0 check \
     --locked \
     --no-default-features
 
-cargo +1.98.1 build \
+cargo +1.99.0 build \
     --locked \
     --example benchmark \
     --features bench
@@ -101,11 +101,11 @@ echo "== myelin-accelerator local environment ready =="'''
 name = "CPU Gate"
 icon = "tool"
 command = '''
-cargo +1.98.1 fmt --all -- --check &&
-cargo +1.98.1 clippy --locked --no-default-features -- -D warnings &&
-cargo +1.98.1 test --locked &&
-cargo +1.98.1 build --locked --no-default-features &&
-cargo +1.98.1 build --locked --example benchmark --features bench'''
+cargo +1.99.0 fmt --all -- --check &&
+cargo +1.99.0 clippy --locked --no-default-features -- -D warnings &&
+cargo +1.99.0 test --locked &&
+cargo +1.99.0 build --locked --no-default-features &&
+cargo +1.99.0 build --locked --example benchmark --features bench'''
 platform = "linux"
 
 [[actions]]
@@ -132,10 +132,10 @@ test -x "$CUDA_NVCC" || { echo "ERROR: nvcc not found at $CUDA_NVCC" >&2; exit 1
 # find_cuda_helper treats CUDA_LIBRARY_PATH entries as toolkit roots.
 export CUDA_LIBRARY_PATH="$CUDA_HOME${CUDA_LIBRARY_PATH:+:$CUDA_LIBRARY_PATH}"
 
-cargo +1.98.1 build --locked --features cuda &&
-cargo +1.98.1 clippy --locked --features cuda -- -D warnings &&
-cargo +1.98.1 test --locked --features cuda &&
-cargo +1.98.1 test --locked --features cuda -- --ignored --nocapture'''
+cargo +1.99.0 build --locked --features cuda &&
+cargo +1.99.0 clippy --locked --features cuda -- -D warnings &&
+cargo +1.99.0 test --locked --features cuda &&
+cargo +1.99.0 test --locked --features cuda -- --ignored --nocapture'''
 platform = "linux"
 
 [[actions]]
@@ -162,7 +162,7 @@ test -x "$CUDA_NVCC" || { echo "ERROR: nvcc not found at $CUDA_NVCC" >&2; exit 1
 # find_cuda_helper treats CUDA_LIBRARY_PATH entries as toolkit roots.
 export CUDA_LIBRARY_PATH="$CUDA_HOME${CUDA_LIBRARY_PATH:+:$CUDA_LIBRARY_PATH}"
 
-cargo +1.98.1 run --locked \
+cargo +1.99.0 run --locked \
   --example benchmark \
   --profile bench \
   --features bench,cuda \
