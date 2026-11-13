@@ -23,7 +23,8 @@ independent requirements. Model-shaped fixtures remain workload-only evidence.
 
 ## Local reproduction
 
-Use Rust 1.98.1 with its matching `llvm-tools-preview` component and
+Use Rust 1.99.0 (the pinned dev toolchain) with its matching
+`llvm-tools-preview` component and
 `cargo-llvm-cov` 0.9.1. The [coverage workflow](../.github/workflows/coverage.yml)
 is the source of truth for versions, flags, exclusions, and commands; keep this
 local reproduction in sync when changing it. Coverage pins Rust separately

@@ -58,7 +58,14 @@ The [architecture guide](docs/ARCHITECTURE.md#high-level-launches-today-gpuaccel
 
 ## Build and verify
 
-CPU-safe checks need only the Rust toolchain:
+The crate declares `rust-version = "1.88.0"` in `Cargo.toml`, measured on the
+default (CPU) feature set — let-chains and `slice::as_chunks` require 1.88.
+The `cuda` feature is not covered by that floor: `cust 0.3.2` / `nvtx` may
+need a newer rustc, so CUDA builds are qualified on the pinned dev toolchain
+(`rust-toolchain.toml`, currently 1.99.0) rather than by the crate-wide MSRV.
+A dedicated `msrv` CI job checks the crate on the Cargo.toml `rust-version`.
+
+CPU-safe checks need only the Rust toolchain (1.88.0 or newer):
 
 ```bash
 cargo test --locked
