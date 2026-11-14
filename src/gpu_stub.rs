@@ -8,8 +8,9 @@ pub use crate::capability::{
 use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
 pub use crate::error::{GpuError, GpuResult};
 use crate::routing::{
-    FusedRoutingOutputs, RoutingParams, RoutingScoreKind, expect_min_len, kernel_dimension,
-    matrix_elements, validate_fused_buffers, validate_selection_buffers, validate_top_k,
+    FusedRoutingOutputs, RoutingParams, RoutingScoreKind, validate_entropy_buffers,
+    validate_fused_buffers, validate_selection_buffers, validate_softmax_buffers,
+    validate_top_k_buffers,
 };
 
 pub(crate) fn host_facts() -> CapabilityFacts {
@@ -374,11 +375,7 @@ impl GpuAccelerator {
         n_routes: usize,
         _: RoutingScoreKind,
     ) -> GpuResult<()> {
-        kernel_dimension("n_nodes", n_nodes)?;
-        kernel_dimension("n_routes", n_routes)?;
-        let elements = matrix_elements("score matrix", n_nodes, n_routes)?;
-        expect_min_len("scores", scores.len(), elements)?;
-        expect_min_len("probabilities", probabilities.len(), elements)?;
+        validate_softmax_buffers(scores, probabilities, n_nodes, n_routes)?;
         Err(self.unavailable_error())
     }
 
@@ -403,13 +400,7 @@ impl GpuAccelerator {
         top_k: usize,
         _: RoutingScoreKind,
     ) -> GpuResult<()> {
-        kernel_dimension("n_nodes", n_nodes)?;
-        kernel_dimension("n_routes", n_routes)?;
-        validate_top_k(top_k)?;
-        let score_elements = matrix_elements("score matrix", n_nodes, n_routes)?;
-        let top_k_elements = matrix_elements("top-k output", n_nodes, top_k)?;
-        expect_min_len("scores", scores.len(), score_elements)?;
-        expect_min_len("top_k_indices", top_k_indices.len(), top_k_elements)?;
+        validate_top_k_buffers(scores, top_k_indices, n_nodes, n_routes, top_k)?;
         Err(self.unavailable_error())
     }
 
@@ -438,12 +429,7 @@ impl GpuAccelerator {
         n_nodes: usize,
         n_routes: usize,
     ) -> GpuResult<()> {
-        kernel_dimension("n_nodes", n_nodes)?;
-        kernel_dimension("n_routes", n_routes)?;
-        let elements = matrix_elements("probability matrix", n_nodes, n_routes)?;
-        expect_min_len("probabilities", probabilities.len(), elements)?;
-        expect_min_len("entropy_sum", entropy_sum.len(), 1)?;
-        expect_min_len("entropy_max", entropy_max.len(), 1)?;
+        validate_entropy_buffers(probabilities, entropy_sum, entropy_max, n_nodes, n_routes)?;
         Err(self.unavailable_error())
     }
 

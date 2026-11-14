@@ -5,8 +5,9 @@ use crate::gpu::accelerator::GpuAccelerator;
 use crate::gpu::error::GpuResult;
 use crate::gpu::memory::GpuBuffer;
 use crate::routing::{
-    FusedRoutingOutputs, ROUTING_BLOCK_SIZE, RoutingParams, RoutingScoreKind, expect_min_len,
-    kernel_dimension, matrix_elements, validate_fused_buffers, validate_top_k,
+    FusedRoutingOutputs, ROUTING_BLOCK_SIZE, RoutingParams, RoutingScoreKind,
+    validate_entropy_buffers, validate_fused_buffers, validate_softmax_buffers,
+    validate_top_k_buffers,
 };
 use cust::launch;
 
@@ -44,11 +45,8 @@ impl GpuAccelerator {
         n_routes: usize,
         score_kind: RoutingScoreKind,
     ) -> GpuResult<()> {
-        let nodes = kernel_dimension("n_nodes", n_nodes)?;
-        let routes = kernel_dimension("n_routes", n_routes)?;
-        let elements = matrix_elements("score matrix", n_nodes, n_routes)?;
-        expect_min_len("scores", scores.len(), elements)?;
-        expect_min_len("probabilities", probabilities.len(), elements)?;
+        let (nodes, routes, elements) =
+            validate_softmax_buffers(scores, probabilities, n_nodes, n_routes)?;
         let kernels = self.kernels()?;
         if elements == 0 {
             return Ok(());
@@ -100,13 +98,8 @@ impl GpuAccelerator {
         top_k: usize,
         score_kind: RoutingScoreKind,
     ) -> GpuResult<()> {
-        let nodes = kernel_dimension("n_nodes", n_nodes)?;
-        let routes = kernel_dimension("n_routes", n_routes)?;
-        validate_top_k(top_k)?;
-        let score_elements = matrix_elements("score matrix", n_nodes, n_routes)?;
-        let top_k_elements = matrix_elements("top-k output", n_nodes, top_k)?;
-        expect_min_len("scores", scores.len(), score_elements)?;
-        expect_min_len("top_k_indices", top_k_indices.len(), top_k_elements)?;
+        let (nodes, routes, _) =
+            validate_top_k_buffers(scores, top_k_indices, n_nodes, n_routes, top_k)?;
         let kernels = self.kernels()?;
         if n_nodes == 0 {
             return Ok(());
@@ -164,12 +157,10 @@ impl GpuAccelerator {
         n_nodes: usize,
         n_routes: usize,
     ) -> GpuResult<()> {
-        let nodes = kernel_dimension("n_nodes", n_nodes)?;
-        let routes = kernel_dimension("n_routes", n_routes)?;
-        let elements = matrix_elements("probability matrix", n_nodes, n_routes)?;
-        expect_min_len("probabilities", probabilities.len(), elements)?;
-        expect_min_len("entropy_sum", entropy_sum.len(), 1)?;
-        expect_min_len("entropy_max", entropy_max.len(), 1)?;
+        let matrix =
+            validate_entropy_buffers(probabilities, entropy_sum, entropy_max, n_nodes, n_routes)?;
+        let nodes = matrix.nodes;
+        let routes = matrix.routes;
         let kernels = self.kernels()?;
         if n_nodes == 0 {
             self.zero_output_prefix(entropy_sum, 1)?;
