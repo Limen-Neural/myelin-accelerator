@@ -49,6 +49,9 @@ impl GpuAccelerator {
             )));
         }
         if n_vars == 0 {
+            if !self.is_ready() {
+                return Err(self.unavailable_error());
+            }
             return Ok(());
         }
 
@@ -126,7 +129,7 @@ impl GpuAccelerator {
         n_clauses: i32,
         clause_len: i32,
     ) -> GpuResult<()> {
-        self.satsolver_aux_reduce_best_async(
+        let launch_result = self.satsolver_aux_reduce_best_async(
             assignment,
             sat_flags,
             scores,
@@ -137,8 +140,10 @@ impl GpuAccelerator {
             n_vars,
             n_clauses,
             clause_len,
-        )?;
-        self.synchronize()
+        );
+        let sync_result = self.synchronize();
+        launch_result?;
+        sync_result
     }
 
     /// Async variant of [`Self::satsolver_aux_reduce_best`]: enqueues both

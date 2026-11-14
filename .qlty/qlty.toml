@@ -5,6 +5,7 @@ name = "default"
 default = true
 
 # CUDA kernel ABI wrappers intentionally mirror many-argument device launch
-# signatures; restructuring them would change the public GPU API.
-[smells.function_parameters]
+# signatures; restructuring them would change the public GPU API. Qlty smells
+# have no path-scoped suppression, so scope the parameter threshold to Rust.
+[language.rust.smells.function_parameters]
 threshold = 11
