@@ -74,6 +74,40 @@ const ROUTING_SELECTION_KERNELS: &[&str] = &[
     "fused_routing_pass2",
 ];
 
+struct ModuleSpec {
+    ptx: &'static str,
+    name: &'static str,
+    funcs: &'static [&'static str],
+}
+
+const MODULE_SPECS: &[ModuleSpec] = &[
+    ModuleSpec {
+        ptx: SPIKING_NETWORK_PTX,
+        name: "spiking_network",
+        funcs: SPIKING_KERNELS,
+    },
+    ModuleSpec {
+        ptx: VECTOR_SIMILARITY_PTX,
+        name: "vector_similarity",
+        funcs: VECTOR_SIMILARITY_KERNELS,
+    },
+    ModuleSpec {
+        ptx: SATSOLVER_PTX,
+        name: "satsolver",
+        funcs: SATSOLVER_KERNELS,
+    },
+    ModuleSpec {
+        ptx: TERNARY_GEMM_PTX,
+        name: "ternary_gemm",
+        funcs: TERNARY_GEMM_KERNELS,
+    },
+    ModuleSpec {
+        ptx: ROUTING_SELECTION_PTX,
+        name: "routing_selection",
+        funcs: ROUTING_SELECTION_KERNELS,
+    },
+];
+
 // ── KernelModule ─────────────────────────────────────────────────────────────
 
 /// Manages compiled PTX modules and kernel function handles.
@@ -108,74 +142,17 @@ impl KernelModule {
         let mut func_map = HashMap::new();
         let mut availability = KernelAvailability::compiled_unverified();
 
-        if let Err(error) = Self::load_and_map(
-            &mut modules,
-            &mut func_map,
-            SPIKING_NETWORK_PTX,
-            "spiking_network",
-            SPIKING_KERNELS,
-        ) {
-            availability.spiking_network = Some(false);
-            return Err(KernelLoadFailure {
-                error,
-                availability,
-            });
-        }
-        availability.spiking_network = Some(true);
-        if let Err(error) = Self::load_and_map(
-            &mut modules,
-            &mut func_map,
-            VECTOR_SIMILARITY_PTX,
-            "vector_similarity",
-            VECTOR_SIMILARITY_KERNELS,
-        ) {
-            availability.vector_similarity = Some(false);
-            return Err(KernelLoadFailure {
-                error,
-                availability,
-            });
-        }
-        availability.vector_similarity = Some(true);
-        if let Err(error) = Self::load_and_map(
-            &mut modules,
-            &mut func_map,
-            SATSOLVER_PTX,
-            "satsolver",
-            SATSOLVER_KERNELS,
-        ) {
-            availability.satsolver = Some(false);
-            return Err(KernelLoadFailure {
-                error,
-                availability,
-            });
-        }
-        availability.satsolver = Some(true);
-        if let Err(error) = Self::load_and_map(
-            &mut modules,
-            &mut func_map,
-            TERNARY_GEMM_PTX,
-            "ternary_gemm",
-            TERNARY_GEMM_KERNELS,
-        ) {
-            availability.ternary_gemm = Some(false);
-            return Err(KernelLoadFailure {
-                error,
-                availability,
-            });
-        }
-        availability.ternary_gemm = Some(true);
-        if let Err(error) = Self::load_and_map(
-            &mut modules,
-            &mut func_map,
-            ROUTING_SELECTION_PTX,
-            "routing_selection",
-            ROUTING_SELECTION_KERNELS,
-        ) {
-            availability.routing_selection = Some(false);
-            return Err(KernelLoadFailure {
-                error,
-                availability,
-            });
+        for spec in MODULE_SPECS {
+            if let Err(error) =
+                Self::load_and_map(&mut modules, &mut func_map, spec.ptx, spec.name, spec.funcs)
+            {
+                set_module_availability(&mut availability, spec.name, false);
+                return Err(KernelLoadFailure {
+                    error,
+                    availability,
+                });
+            }
+            set_module_availability(&mut availability, spec.name, true);
         }
 
         Ok(Self { modules, func_map })
@@ -231,6 +208,18 @@ impl KernelModule {
             module_load_error(name, error)
         })
     }
+}
+
+fn set_module_availability(availability: &mut KernelAvailability, name: &str, available: bool) {
+    let slot = match name {
+        "spiking_network" => &mut availability.spiking_network,
+        "vector_similarity" => &mut availability.vector_similarity,
+        "satsolver" => &mut availability.satsolver,
+        "ternary_gemm" => &mut availability.ternary_gemm,
+        "routing_selection" => &mut availability.routing_selection,
+        _ => return,
+    };
+    *slot = Some(available);
 }
 
 fn function_lookup_error(name: &str, error: CudaError) -> GpuError {

@@ -113,19 +113,12 @@ fn bitpacking_ternary_gemm_ref_matches_gemv_columns() {
 #[cfg(not(feature = "cuda"))]
 mod stub_contract {
     #[test]
-    fn routing_wrappers_validate_then_report_unavailable() {
-        use myelin_accelerator::routing::{FusedRoutingOutputs, RoutingParams, RoutingScoreKind};
+    fn routing_composable_wrappers_validate_then_report_unavailable() {
+        use myelin_accelerator::routing::RoutingScoreKind;
         use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
 
         let acc = GpuAccelerator::new();
         let kind = RoutingScoreKind::Logits;
-        let params = RoutingParams {
-            n_nodes: 2,
-            n_routes: 2,
-            top_k: 1,
-            score_kind: kind,
-            adaptation_scale: 0.5,
-        };
         let scores = GpuBuffer::<f32>::alloc(4).unwrap();
         let state = GpuBuffer::<f32>::alloc(2).unwrap();
         let short = GpuBuffer::<f32>::alloc(1).unwrap();
@@ -135,7 +128,6 @@ mod stub_contract {
         let mut max = GpuBuffer::<f32>::alloc(1).unwrap();
         let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
         let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
-        let mut outputs = FusedRoutingOutputs::alloc(&params, true).unwrap();
 
         let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
         let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
@@ -183,6 +175,30 @@ mod stub_contract {
             &mut score,
             f32::NAN
         )));
+    }
+
+    #[test]
+    fn routing_fused_wrapper_validates_then_reports_unavailable() {
+        use myelin_accelerator::routing::{FusedRoutingOutputs, RoutingParams, RoutingScoreKind};
+        use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
+
+        let acc = GpuAccelerator::new();
+        let kind = RoutingScoreKind::Logits;
+        let params = RoutingParams {
+            n_nodes: 2,
+            n_routes: 2,
+            top_k: 1,
+            score_kind: kind,
+            adaptation_scale: 0.5,
+        };
+        let scores = GpuBuffer::<f32>::alloc(4).unwrap();
+        let state = GpuBuffer::<f32>::alloc(2).unwrap();
+        let short = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut outputs = FusedRoutingOutputs::alloc(&params, true).unwrap();
+
+        let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
+        let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
+
         assert!(unavailable(acc.fused_routing_select(
             &scores,
             &state,

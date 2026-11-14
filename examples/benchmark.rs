@@ -748,6 +748,9 @@ const SELECTION_BENCH_SIZES: &[usize] = &[
 ];
 
 #[cfg(feature = "cuda")]
+const ROUTING_BENCH_SCALE: f32 = 0.25;
+
+#[cfg(feature = "cuda")]
 fn routing_bench_values(n: usize, seed: u32, range: f32) -> Vec<f32> {
     let mut state = seed;
     (0..n)
@@ -760,13 +763,22 @@ fn routing_bench_values(n: usize, seed: u32, range: f32) -> Vec<f32> {
 
 #[cfg(feature = "cuda")]
 fn bench_routing_gpu(acc: &myelin_accelerator::GpuAccelerator, config: &Config) -> Vec<Capture> {
+    let mut results = Vec::new();
+    bench_routing_matrix_shapes(acc, config, &mut results);
+    bench_selection_paths(acc, config, &mut results);
+    results
+}
+
+#[cfg(feature = "cuda")]
+fn bench_routing_matrix_shapes(
+    acc: &myelin_accelerator::GpuAccelerator,
+    config: &Config,
+    results: &mut Vec<Capture>,
+) {
     use myelin_accelerator::GpuBuffer;
     use myelin_accelerator::routing::{
         FusedRoutingOutputs, RoutingParams, RoutingScoreKind, analytical,
     };
-
-    const SCALE: f32 = 0.25;
-    let mut results = Vec::new();
 
     for &(n_nodes, n_routes, top_k) in ROUTING_BENCH_SHAPES {
         let params = RoutingParams {
@@ -774,7 +786,7 @@ fn bench_routing_gpu(acc: &myelin_accelerator::GpuAccelerator, config: &Config) 
             n_routes,
             top_k,
             score_kind: RoutingScoreKind::Logits,
-            adaptation_scale: SCALE,
+            adaptation_scale: ROUTING_BENCH_SCALE,
         };
         let scores =
             GpuBuffer::from_slice(&routing_bench_values(n_nodes * n_routes, 42, 8.0)).unwrap();
@@ -790,8 +802,7 @@ fn bench_routing_gpu(acc: &myelin_accelerator::GpuAccelerator, config: &Config) 
         let requested_composable = analytical::composable(n_nodes, n_routes, top_k);
         let requested_fused = analytical::fused(n_nodes, n_routes, top_k);
         println!(
-            "[analytical, not measured] {n_nodes}x{n_routes} k={top_k}: \
-             composable {} requested bytes / {} launches; fused {} / {}",
+            "[analytical, not measured] {n_nodes}x{n_routes} k={top_k}:              composable {} requested bytes / {} launches; fused {} / {}",
             requested_composable.bytes_total(),
             requested_composable.launches,
             requested_fused.bytes_total(),
@@ -866,12 +877,27 @@ fn bench_routing_gpu(acc: &myelin_accelerator::GpuAccelerator, config: &Config) 
                     n_routes,
                 )
                 .unwrap();
-                acc.adjusted_argmax_async(&state, &adaptation, &mut index, &mut score, SCALE)
-                    .unwrap();
+                acc.adjusted_argmax_async(
+                    &state,
+                    &adaptation,
+                    &mut index,
+                    &mut score,
+                    ROUTING_BENCH_SCALE,
+                )
+                .unwrap();
                 acc.synchronize().unwrap();
             },
         ));
     }
+}
+
+#[cfg(feature = "cuda")]
+fn bench_selection_paths(
+    acc: &myelin_accelerator::GpuAccelerator,
+    config: &Config,
+    results: &mut Vec<Capture>,
+) {
+    use myelin_accelerator::GpuBuffer;
 
     for &n in SELECTION_BENCH_SIZES {
         let state = GpuBuffer::from_slice(&routing_bench_values(n, 45, 4.0)).unwrap();
@@ -886,8 +912,14 @@ fn bench_routing_gpu(acc: &myelin_accelerator::GpuAccelerator, config: &Config) 
             config.warmup,
             config.iterations,
             || {
-                acc.adjusted_argmax(&state, &adaptation, &mut index, &mut score, SCALE)
-                    .unwrap();
+                acc.adjusted_argmax(
+                    &state,
+                    &adaptation,
+                    &mut index,
+                    &mut score,
+                    ROUTING_BENCH_SCALE,
+                )
+                .unwrap();
             },
         ));
         results.push(capture(
@@ -903,14 +935,12 @@ fn bench_routing_gpu(acc: &myelin_accelerator::GpuAccelerator, config: &Config) 
                     &adaptation,
                     &mut index,
                     &mut score,
-                    SCALE,
+                    ROUTING_BENCH_SCALE,
                 )
                 .unwrap();
             },
         ));
     }
-
-    results
 }
 
 #[cfg(feature = "cuda")]

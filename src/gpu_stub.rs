@@ -9,7 +9,7 @@ use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
 pub use crate::error::{GpuError, GpuResult};
 use crate::routing::{
     FusedRoutingOutputs, RoutingParams, RoutingScoreKind, expect_min_len, kernel_dimension,
-    matrix_elements, validate_fused_buffers, validate_scale, validate_top_k,
+    matrix_elements, validate_fused_buffers, validate_selection_buffers, validate_top_k,
 };
 
 pub(crate) fn host_facts() -> CapabilityFacts {
@@ -522,17 +522,7 @@ impl GpuAccelerator {
         selected_score: &GpuBuffer<f32>,
         scale: f32,
     ) -> GpuResult<()> {
-        validate_scale(scale)?;
-        if state.len() != adaptation.len() {
-            return Err(GpuError::invalid_input(format!(
-                "state length {} does not match adaptation length {}",
-                state.len(),
-                adaptation.len()
-            )));
-        }
-        expect_min_len("selected_index", selected_index.len(), 1)?;
-        expect_min_len("selected_score", selected_score.len(), 1)?;
-        kernel_dimension("state length", state.len())?;
+        validate_selection_buffers(state, adaptation, selected_index, selected_score, scale)?;
         Ok(())
     }
 

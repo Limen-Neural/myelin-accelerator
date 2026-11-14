@@ -183,6 +183,27 @@ pub(crate) fn validate_fused_buffers(
     Ok(())
 }
 
+/// Validate adjusted-score selection buffers and return the kernel `n`.
+pub(crate) fn validate_selection_buffers(
+    state: &GpuBuffer<f32>,
+    adaptation: &GpuBuffer<f32>,
+    selected_index: &GpuBuffer<u32>,
+    selected_score: &GpuBuffer<f32>,
+    scale: f32,
+) -> GpuResult<i32> {
+    validate_scale(scale)?;
+    if state.len() != adaptation.len() {
+        return Err(GpuError::invalid_input(format!(
+            "state length {} does not match adaptation length {}",
+            state.len(),
+            adaptation.len()
+        )));
+    }
+    expect_min_len("selected_index", selected_index.len(), 1)?;
+    expect_min_len("selected_score", selected_score.len(), 1)?;
+    kernel_dimension("state length", state.len())
+}
+
 /// Result of adjusted-score selection.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AdjustedSelection {
@@ -344,28 +365,37 @@ impl LogitRowShape {
             n_pos_inf: 0,
             n_routes: scores.len(),
         };
+        shape.scan_logits(scores);
+        shape.accumulate_finite_row(scores);
+        shape
+    }
+
+    fn scan_logits(&mut self, scores: &[f32]) {
         for &x in scores {
             let x = sanitized_logit(x);
             if x == f32::INFINITY {
-                shape.n_pos_inf += 1;
+                self.n_pos_inf += 1;
             }
-            shape.max_logit = shape.max_logit.max(x);
+            self.max_logit = self.max_logit.max(x);
         }
-        if shape.is_finite_row() {
-            let mut exp_sum = 0.0f32;
-            let mut weighted = 0.0f32;
-            for &x in scores {
-                let d = sanitized_logit(x) - shape.max_logit;
-                let e = d.exp();
-                if e > 0.0 {
-                    exp_sum += e;
-                    weighted = e.mul_add(d, weighted);
-                }
+    }
+
+    fn accumulate_finite_row(&mut self, scores: &[f32]) {
+        if !self.is_finite_row() {
+            return;
+        }
+        let mut exp_sum = 0.0f32;
+        let mut weighted = 0.0f32;
+        for &x in scores {
+            let d = sanitized_logit(x) - self.max_logit;
+            let e = d.exp();
+            if e > 0.0 {
+                exp_sum += e;
+                weighted = e.mul_add(d, weighted);
             }
-            shape.exp_sum = exp_sum;
-            shape.weighted = weighted;
         }
-        shape
+        self.exp_sum = exp_sum;
+        self.weighted = weighted;
     }
 
     fn is_finite_row(&self) -> bool {

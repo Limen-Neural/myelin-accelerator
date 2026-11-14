@@ -6,8 +6,8 @@
 //! `KernelModule::load` in `src/gpu/kernel.rs`. Runs on the CPU-safe path.
 //!
 //! The expected module set is derived from kernel.rs itself — every
-//! `load_and_map(<PTX static>, "mod", <KERNELS const>)` call — so registering
-//! a new module without adding it to the manifest fails this test.
+//! `MODULE_SPECS` entry (`ptx`, `name`, `funcs`) — so registering a new module
+//! without adding it to the manifest fails this test.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -51,36 +51,29 @@ fn ptx_statics(source: &str) -> BTreeMap<String, String> {
     map
 }
 
-/// Find every `load_and_map(..., <PTX static>, "<mod>", <KERNELS const>)` call
-/// in `load_inner` and return (ptx file, kernels const) pairs.
+/// Read `MODULE_SPECS` entries and return (ptx file, kernels const) pairs.
 fn registered_modules(source: &str, ptx_files: &BTreeMap<String, String>) -> Vec<(String, String)> {
+    let marker = "const MODULE_SPECS";
+    let decl = source
+        .find(marker)
+        .unwrap_or_else(|| panic!("{marker} not found in kernel.rs"));
+    let eq = source[decl..].find('=').expect("malformed MODULE_SPECS") + decl;
+    let body_start = source[eq..].find('[').expect("missing MODULE_SPECS array") + eq + 1;
+    let body_end = source[body_start..]
+        .find(']')
+        .expect("unterminated MODULE_SPECS")
+        + body_start;
+    let body = &source[body_start..body_end];
+
     let mut out = Vec::new();
-    let mut rest = source;
-    while let Some(idx) = rest.find("load_and_map(") {
-        // Skip the `fn load_and_map(` definition.
-        let before = &rest[..idx];
-        if before.ends_with("fn ") {
-            rest = &rest[idx + 1..];
-            continue;
+    let mut ptx = None;
+    for tok in identifiers(body) {
+        if ptx.is_none() && ptx_files.contains_key(tok) {
+            ptx = Some(tok.to_string());
+        } else if tok.ends_with("_KERNELS") {
+            let ptx = ptx.take().expect("MODULE_SPECS entry without PTX static");
+            out.push((ptx_files[&ptx].clone(), tok.to_string()));
         }
-        let call = &rest[idx + "load_and_map(".len()..];
-        let window = &call[..call.len().min(500)];
-        let mut ptx = None;
-        let mut kernels = None;
-        for tok in identifiers(window) {
-            if ptx.is_none() && ptx_files.contains_key(tok) {
-                ptx = Some(tok.to_string());
-            } else if tok.ends_with("_KERNELS") {
-                kernels = Some(tok.to_string());
-                break;
-            }
-        }
-        let (ptx, kernels) = (
-            ptx.expect("load_and_map call without PTX static"),
-            kernels.unwrap_or_else(|| panic!("load_and_map call without *_KERNELS const")),
-        );
-        out.push((ptx_files[&ptx].clone(), kernels));
-        rest = &call[1..];
     }
     out
 }

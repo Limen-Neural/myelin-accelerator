@@ -1448,17 +1448,13 @@ impl GpuAccelerator {
         selected_score: &GpuBuffer<f32>,
         scale: f32,
     ) -> GpuResult<i32> {
-        validate_scale(scale)?;
-        if state.len() != adaptation.len() {
-            return Err(GpuError::invalid_input(format!(
-                "state length {} does not match adaptation length {}",
-                state.len(),
-                adaptation.len()
-            )));
-        }
-        expect_min_len("selected_index", selected_index.len(), 1)?;
-        expect_min_len("selected_score", selected_score.len(), 1)?;
-        kernel_dimension("state length", state.len())
+        crate::routing::validate_selection_buffers(
+            state,
+            adaptation,
+            selected_index,
+            selected_score,
+            scale,
+        )
     }
 
     /// Blocks covering `n_nodes`. Dimensions were checked against `i32::MAX`.
