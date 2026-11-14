@@ -89,37 +89,19 @@ pub fn launch_gif_step_weighted_f16(launch: GifF16Launch<'_>) -> GpuResult<()> {
         let gpu_error = GpuError::LaunchFailed(format!(
             "myelin_launch_gif_step_weighted_f16 failed with CUDA runtime error code {code}"
         ));
-        report_c_abi_failure(
-            "gif_step_weighted_f16",
-            grid_x,
-            block_x,
-            shared_bytes,
-            Some(n_neurons as usize),
-            &gpu_error,
-        );
+        report_launch_failure(LaunchFailure {
+            kernel_name: "gif_step_weighted_f16".to_string(),
+            launch_type: LaunchType::CAbiShim,
+            grid: (grid_x, 1, 1),
+            block: (block_x, 1, 1),
+            shared_mem: shared_bytes,
+            neuron_count: Some(n_neurons as usize),
+            error: gpu_error.to_string(),
+            jit_error_log: None,
+            jit_info_log: None,
+        });
         Err(gpu_error)
     }
-}
-
-fn report_c_abi_failure(
-    kernel_name: &str,
-    grid_x: u32,
-    block_x: u32,
-    shared_mem: u32,
-    neuron_count: Option<usize>,
-    error: &GpuError,
-) {
-    report_launch_failure(LaunchFailure {
-        kernel_name: kernel_name.to_string(),
-        launch_type: LaunchType::CAbiShim,
-        grid: (grid_x, 1, 1),
-        block: (block_x, 1, 1),
-        shared_mem,
-        neuron_count,
-        error: error.to_string(),
-        jit_error_log: None,
-        jit_info_log: None,
-    });
 }
 
 fn device_ptr_to_void<T: DeviceCopy>(ptr: DevicePointer<T>) -> *mut c_void {

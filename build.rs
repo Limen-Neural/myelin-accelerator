@@ -599,35 +599,37 @@ fn dedupe_existing_paths(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 fn libcudart_search_dir(nvcc: &Path) -> Option<PathBuf> {
-    let names: &[&str] = if cfg!(windows) {
+    libcudart_names().iter().find_map(|name| {
+        nvcc_print_file_name(nvcc, name).and_then(|printed| search_dir_from_printed(&printed))
+    })
+}
+
+fn libcudart_names() -> &'static [&'static str] {
+    if cfg!(windows) {
         &["cudart.lib", "libcudart.lib"]
     } else {
         &["libcudart.so", "libcudart.so.13", "libcudart.so.12"]
-    };
-    for name in names {
-        let out = match Command::new(nvcc)
-            .arg(format!("--print-file-name={name}"))
-            .output()
-        {
-            Ok(out) => out,
-            Err(_) => continue,
-        };
-        if !out.status.success() {
-            continue;
-        }
-        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if printed.is_empty() || printed == *name {
-            continue;
-        }
-        let path = PathBuf::from(printed);
-        if path.is_file() {
-            return path.parent().map(Path::to_path_buf);
-        }
-        if path.is_dir() {
-            return Some(path);
-        }
     }
-    None
+}
+
+fn nvcc_print_file_name(nvcc: &Path, name: &str) -> Option<String> {
+    let out = Command::new(nvcc)
+        .arg(format!("--print-file-name={name}"))
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!printed.is_empty() && printed != name).then_some(printed)
+}
+
+fn search_dir_from_printed(printed: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(printed);
+    if path.is_file() {
+        return path.parent().map(Path::to_path_buf);
+    }
+    path.is_dir().then_some(path)
 }
 
 fn emit_stub_ptx(out_dir: &Path) {
