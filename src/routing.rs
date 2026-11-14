@@ -846,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_ties_ineligible_and_empty() {
+    fn selection_resolves_ties_and_ineligible_scores() {
         let pick = |s: &[f32], a: &[f32], scale| adjusted_argmax(s, a, scale).unwrap();
         assert_eq!(pick(&[3.0, 1.0, 3.0], &[0.0; 3], 0.5).index, Some(0));
         assert_eq!(
@@ -855,7 +855,11 @@ mod tests {
         );
         assert_eq!(pick(&[2.0, 2.0], &[0.0, 10.0], 0.5).index, Some(0));
         assert_eq!(pick(&[-1e32, -1e31, -1e32], &[0.0; 3], 0.0).index, Some(1));
+    }
 
+    #[test]
+    fn selection_handles_empty_and_no_eligible_node() {
+        let pick = |s: &[f32], a: &[f32], scale| adjusted_argmax(s, a, scale).unwrap();
         let none = pick(&[f32::NAN, f32::NEG_INFINITY], &[0.0; 2], 1.0);
         assert_eq!(none.index, None);
         assert_eq!(none.score, f32::NEG_INFINITY);
@@ -940,20 +944,25 @@ mod tests {
     }
 
     #[test]
-    fn traffic_counts_each_buffer_access() {
-        use analytical::{composable, fused};
+    fn traffic_counts_composable_path() {
+        use analytical::composable;
         // 256 nodes, 4096 routes, k=8: M = 4 MiB, one block.
         let m = 4_194_304u64;
         let c = composable(256, 4096, 8);
         assert_eq!(c.bytes_read, 5 * m + 2048 + 16);
         assert_eq!(c.bytes_written, m + 8192 + 16 + 16);
         assert_eq!(c.launches, 6);
+        assert_eq!(composable(0, 16, 4).bytes_total(), 0);
+    }
+
+    #[test]
+    fn traffic_counts_fused_path() {
+        use analytical::fused;
+        let m = 4_194_304u64;
         let f = fused(256, 4096, 8);
         assert_eq!(f.bytes_read, 2 * m + 2048 + 16);
         assert_eq!(f.bytes_written, 8192 + 16 + 16);
         assert_eq!(f.launches, 2);
-
-        assert_eq!(composable(0, 16, 4).bytes_total(), 0);
         assert_eq!(fused(0, 16, 4).launches, 0);
     }
 }
