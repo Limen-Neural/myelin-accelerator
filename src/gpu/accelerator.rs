@@ -406,6 +406,30 @@ impl GpuAccelerator {
             .map_err(|e| GpuError::MemoryError(format!("input_spikes upload failed: {e}")))
     }
 
+    fn temporal_state_for_synapse(&mut self) -> GpuResult<&mut TemporalState> {
+        if !self.has_context() {
+            return Err(GpuError::NoGpu);
+        }
+        self.temporal_state
+            .as_mut()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))
+    }
+
+    fn validate_synapse_weights(
+        state: &TemporalState,
+        weights_len: usize,
+        label: &str,
+    ) -> GpuResult<usize> {
+        let expected = state.neuron_count * state.n_inputs;
+        if weights_len != expected {
+            return Err(GpuError::MemoryError(format!(
+                "{label} length mismatch: expected {} ({}x{}), got {}",
+                expected, state.neuron_count, state.n_inputs, weights_len
+            )));
+        }
+        Ok(expected)
+    }
+
     /// Load an f32 synapse matrix, always uploading the supplied contents.
     pub fn load_synapse_weights(&mut self, weights: &[f32]) -> GpuResult<()> {
         self.load_synapse_weights_impl(None, weights)
@@ -427,23 +451,8 @@ impl GpuAccelerator {
         signature: Option<&str>,
         weights: &[f32],
     ) -> GpuResult<()> {
-        if !self.has_context() {
-            return Err(GpuError::NoGpu);
-        }
-        let state = self
-            .temporal_state
-            .as_mut()
-            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
-        let expected = state.neuron_count * state.n_inputs;
-        if weights.len() != expected {
-            return Err(GpuError::MemoryError(format!(
-                "weights length mismatch: expected {} ({}x{}), got {}",
-                expected,
-                state.neuron_count,
-                state.n_inputs,
-                weights.len()
-            )));
-        }
+        let state = self.temporal_state_for_synapse()?;
+        let expected = Self::validate_synapse_weights(state, weights.len(), "weights")?;
         if let Some(signature) = signature
             && state.synapse_precision == SynapsePrecision::F32
             && state.synapse_signature.as_deref() == Some(signature)
@@ -465,23 +474,8 @@ impl GpuAccelerator {
         signature: &str,
         weights: &[u16],
     ) -> GpuResult<()> {
-        if !self.has_context() {
-            return Err(GpuError::NoGpu);
-        }
-        let state = self
-            .temporal_state
-            .as_mut()
-            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
-        let expected = state.neuron_count * state.n_inputs;
-        if weights.len() != expected {
-            return Err(GpuError::MemoryError(format!(
-                "f16 weights length mismatch: expected {} ({}x{}), got {}",
-                expected,
-                state.neuron_count,
-                state.n_inputs,
-                weights.len()
-            )));
-        }
+        let state = self.temporal_state_for_synapse()?;
+        let expected = Self::validate_synapse_weights(state, weights.len(), "f16 weights")?;
 
         if state.synapse_precision == SynapsePrecision::F16
             && state.synapse_signature.as_deref() == Some(signature)

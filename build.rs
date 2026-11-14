@@ -365,6 +365,39 @@ fn nvcc_feature_defines(_cu_name: &str) -> Vec<String> {
     Vec::new()
 }
 
+fn nvcc_threads() -> usize {
+    let threads_raw = env::var("MYELIN_NVCC_THREADS").unwrap_or_else(|_| "0".to_string());
+    threads_raw.parse::<usize>().unwrap_or_else(|_| {
+        panic!("MYELIN_NVCC_THREADS must be a non-negative integer, got \"{threads_raw}\"")
+    })
+}
+
+// Flags:
+//   -std=c++17                keep the Edison host front-end in C++17 mode so
+//                             libstdc++ 16's C++23 paths aren't parsed.
+//   --expt-relaxed-constexpr  allow device-side relaxed constexpr.
+//   -Xcompiler -fno-builtin   pass -fno-builtin to the host compiler so nvcc
+//                             doesn't misread host libm builtins as device
+//                             intrinsics. MSVC would need /Oi- instead.
+fn append_nvcc_compile_args(
+    cmd: &mut Command,
+    cu_dir: &Path,
+    output: &Path,
+    source: &Path,
+    extra_args: &[String],
+) {
+    cmd.arg("-O3")
+        .arg("--use_fast_math")
+        .arg("--restrict")
+        .arg("--threads")
+        .arg(nvcc_threads().to_string());
+    nvcc_common_host_flags(cmd);
+    cmd.arg("-I").arg(cu_dir).arg("-o").arg(output).arg(source);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+}
+
 fn compile_to_ptx(
     nvcc: &Path,
     cu_dir: &Path,
@@ -373,48 +406,9 @@ fn compile_to_ptx(
     arch: &str,
     extra_args: &[String],
 ) {
-    let threads_raw = env::var("MYELIN_NVCC_THREADS").unwrap_or_else(|_| "0".to_string());
-    let threads = threads_raw.parse::<usize>().unwrap_or_else(|_| {
-        panic!("MYELIN_NVCC_THREADS must be a non-negative integer, got \"{threads_raw}\"")
-    });
-
-    // Flags:
-    //   -std=c++17                      keep the Edison host front-end in C++17
-    //                                    mode so libstdc++ 16's C++23 paths aren't
-    //                                    parsed (avoids the type_traits errors
-    //                                    seen on GCC 16 / nvcc 13.2 hosts).
-    //   --expt-relaxed-constexpr        allow device-side relaxed constexpr.
-    //   -Xcompiler -fno-builtin         pass -fno-builtin to the host compiler
-    //                                    (GCC/Clang) so nvcc doesn't misread
-    //                                    host libm builtins as device intrinsics.
-    //                                    On MSVC the equivalent is /Oi-, but the
-    //                                    CI only targets Linux + the
-    //                                    self-hosted runner is Linux, so this
-    //                                    is fine. Add an MSVC branch here if
-    //                                    Windows CUDA builds become supported.
     let mut cmd = Command::new(nvcc);
-    cmd.arg("-ptx")
-        .arg(format!("-arch={arch}"))
-        .arg("-O3")
-        .arg("--use_fast_math")
-        .arg("--restrict")
-        .arg("--threads")
-        .arg(threads.to_string())
-        .arg("-std=c++17")
-        .arg("-D__STRICT_ANSI__")
-        .arg("--allow-unsupported-compiler")
-        .arg("--expt-relaxed-constexpr")
-        .arg("-I")
-        .arg(cu_dir)
-        .arg("-o")
-        .arg(output)
-        .arg(source);
-    for arg in extra_args {
-        cmd.arg(arg);
-    }
-    if cfg!(unix) {
-        cmd.arg("-Xcompiler").arg("-fno-builtin");
-    }
+    cmd.arg("-ptx").arg(format!("-arch={arch}"));
+    append_nvcc_compile_args(&mut cmd, cu_dir, output, source, extra_args);
 
     let status = cmd
         .status()
@@ -449,36 +443,13 @@ fn compile_to_fatbin(
     arch: &str,
     extra_args: &[String],
 ) {
-    let threads_raw = env::var("MYELIN_NVCC_THREADS").unwrap_or_else(|_| "0".to_string());
-    let threads = threads_raw.parse::<usize>().unwrap_or_else(|_| {
-        panic!("MYELIN_NVCC_THREADS must be a non-negative integer, got \"{threads_raw}\"")
-    });
     let (compute, sm) = arch_gencode_parts(arch);
 
     let mut cmd = Command::new(nvcc);
     cmd.arg("-fatbin")
         .arg(format!("-gencode=arch={compute},code={sm}"))
-        .arg(format!("-gencode=arch={compute},code={compute}"))
-        .arg("-O3")
-        .arg("--use_fast_math")
-        .arg("--restrict")
-        .arg("--threads")
-        .arg(threads.to_string())
-        .arg("-std=c++17")
-        .arg("-D__STRICT_ANSI__")
-        .arg("--allow-unsupported-compiler")
-        .arg("--expt-relaxed-constexpr")
-        .arg("-I")
-        .arg(cu_dir)
-        .arg("-o")
-        .arg(output)
-        .arg(source);
-    for arg in extra_args {
-        cmd.arg(arg);
-    }
-    if cfg!(unix) {
-        cmd.arg("-Xcompiler").arg("-fno-builtin");
-    }
+        .arg(format!("-gencode=arch={compute},code={compute}"));
+    append_nvcc_compile_args(&mut cmd, cu_dir, output, source, extra_args);
 
     let status = cmd
         .status()
@@ -506,10 +477,7 @@ fn nvcc_common_host_flags(cmd: &mut Command) {
 fn build_myelin_shim(nvcc: &Path, cu_dir: &Path, out_dir: &Path, arch: &str) {
     let source = cu_dir.join("myelin_shim.cu");
     let object = out_dir.join("myelin_shim.o");
-    let threads_raw = env::var("MYELIN_NVCC_THREADS").unwrap_or_else(|_| "0".to_string());
-    let threads = threads_raw.parse::<usize>().unwrap_or_else(|_| {
-        panic!("MYELIN_NVCC_THREADS must be a non-negative integer, got \"{threads_raw}\"")
-    });
+    let threads = nvcc_threads();
 
     let mut cmd = Command::new(nvcc);
     cmd.arg("-c")
