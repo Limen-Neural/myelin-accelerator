@@ -452,7 +452,7 @@ impl GpuAccelerator {
         weights: &[f32],
     ) -> GpuResult<()> {
         let state = self.temporal_state_for_synapse()?;
-        let expected = Self::validate_synapse_weights(state, weights.len(), "weights")?;
+        Self::validate_synapse_weights(state, weights.len(), "weights")?;
         if let Some(signature) = signature
             && state.synapse_precision == SynapsePrecision::F32
             && state.synapse_signature.as_deref() == Some(signature)
