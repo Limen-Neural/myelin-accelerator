@@ -10,6 +10,7 @@ use cust::launch;
 
 const TEMPORAL_BLOCK_SIZE: u32 = GIF_BLOCK_SIZE;
 const TEMPORAL_SHARED_MEM_BYTES: u32 = 0;
+const TEMPORAL_MAX_SHARED_MEM_BYTES: u32 = 48 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SynapsePrecision {
@@ -39,9 +40,7 @@ impl GpuAccelerator {
     }
 
     pub fn ensure_temporal_state(&mut self, neuron_count: usize, n_inputs: usize) -> GpuResult<()> {
-        if !self.has_context() {
-            return Err(GpuError::NoGpu);
-        }
+        self.require_context_current()?;
         if neuron_count == 0 {
             return Err(GpuError::LaunchFailed(
                 "temporal state requires neuron_count > 0".into(),
@@ -65,9 +64,7 @@ impl GpuAccelerator {
     }
 
     fn checked_temporal_state(&self, neuron_count: usize) -> GpuResult<&TemporalState> {
-        if !self.has_context() {
-            return Err(GpuError::NoGpu);
-        }
+        self.require_context_current()?;
         let state = self
             .temporal_state
             .as_ref()
@@ -134,9 +131,7 @@ impl GpuAccelerator {
     }
 
     fn temporal_state_for_synapse(&mut self) -> GpuResult<&mut TemporalState> {
-        if !self.has_context() {
-            return Err(GpuError::NoGpu);
-        }
+        self.require_context_current()?;
         self.temporal_state
             .as_mut()
             .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))
@@ -330,9 +325,7 @@ impl GpuAccelerator {
 
     /// Zero resident GIF state (membrane, adaptation, spikes, inputs).
     pub fn reset_temporal_state(&mut self) -> GpuResult<()> {
-        if !self.has_context() {
-            return Err(GpuError::NoGpu);
-        }
+        self.require_context_current()?;
         if self.temporal_state.is_none() {
             return Ok(());
         }
@@ -433,11 +426,18 @@ impl GpuAccelerator {
         let bytes = n_inputs.checked_mul(4).ok_or_else(|| {
             GpuError::LaunchFailed("temporal shared-memory size overflows".into())
         })?;
-        u32::try_from(bytes).map_err(|_| {
+        let bytes = u32::try_from(bytes).map_err(|_| {
             GpuError::LaunchFailed(format!(
                 "temporal shared-memory size {bytes} exceeds u32 launch limit"
             ))
-        })
+        })?;
+        if bytes > TEMPORAL_MAX_SHARED_MEM_BYTES {
+            return Err(GpuError::LaunchFailed(format!(
+                "temporal shared-memory size {bytes} exceeds the default 48 KiB \
+                 dynamic shared-memory limit; reduce n_inputs or add a shared-memory opt-in"
+            )));
+        }
+        Ok(bytes)
     }
 
     fn require_state_neuron_count(state: &TemporalState, neuron_count: usize) -> GpuResult<()> {

@@ -81,7 +81,7 @@ impl GpuAccelerator {
 
     /// Construct under an explicit execution policy.
     pub fn with_policy(policy: ExecutionPolicy) -> GpuResult<Self> {
-        match Self::try_init_gpu() {
+        match Self::try_init_gpu(policy) {
             Ok(acc) => Ok(acc),
             Err(failure) => {
                 let detail = sanitize_diagnostic(&failure.detail);
@@ -105,12 +105,12 @@ impl GpuAccelerator {
         }
     }
 
-    fn try_init_gpu() -> Result<Self, InitFailure> {
+    fn try_init_gpu(policy: ExecutionPolicy) -> Result<Self, InitFailure> {
         let current_context = CurrentContextGuard::capture();
         let mut facts = crate::host_facts();
 
         let ctx = Self::init_cuda_context(&mut facts)?;
-        let modules = Self::load_kernel_modules(&mut facts)?;
+        let modules = Self::load_kernel_modules(&mut facts, policy)?;
         let stream = Self::create_default_stream(&facts)?;
 
         Ok(Self::finish_gpu_init(
@@ -158,6 +158,7 @@ impl GpuAccelerator {
 
     fn load_kernel_modules(
         facts: &mut CapabilityFacts,
+        policy: ExecutionPolicy,
     ) -> Result<Option<KernelModule>, InitFailure> {
         match KernelModule::load_with_availability() {
             Ok(modules) => {
@@ -170,6 +171,13 @@ impl GpuAccelerator {
                     .error
                     .fallback_reason()
                     .unwrap_or(FallbackReason::DriverRuntimeFailure);
+                if policy == ExecutionPolicy::RequireGpu {
+                    return Err(InitFailure {
+                        facts: facts.clone(),
+                        reason,
+                        detail: failure.error.to_string(),
+                    });
+                }
                 warn!(
                     reason = reason.code(),
                     detail = sanitize_diagnostic(&failure.error.to_string()),
@@ -238,6 +246,16 @@ impl GpuAccelerator {
 
     pub(crate) fn has_context(&self) -> bool {
         self._ctx.is_some()
+    }
+
+    pub(crate) fn require_context_current(&self) -> GpuResult<()> {
+        if !self.has_context() {
+            return Err(GpuError::NoGpu);
+        }
+        self._ctx
+            .as_ref()
+            .expect("has_context checked above")
+            .require_current()
     }
 
     pub(crate) fn ptx_launch_error(
