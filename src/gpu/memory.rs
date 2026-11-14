@@ -117,7 +117,7 @@ impl<T: cust::memory::DeviceCopy + Default + Clone> GpuBuffer<T> {
     }
 }
 
-impl GpuBuffer<f32> {
+impl<T: cust::memory::DeviceCopy + Default> GpuBuffer<T> {
     /// Zero the first `count` elements on device; leaves any tail untouched.
     ///
     /// Uses a device memset (no host-sized staging buffer), so empty-K GEMM/GEMV
@@ -140,7 +140,9 @@ impl GpuBuffer<f32> {
             .set_zero()
             .map_err(|e| GpuError::MemoryError(format!("zero_prefix: {e:?}")))
     }
+}
 
+impl GpuBuffer<f32> {
     /// Enqueue a prefix zero-fill on `stream`, leaving any tail untouched.
     ///
     /// # Safety
@@ -152,7 +154,7 @@ impl GpuBuffer<f32> {
     pub unsafe fn zero_prefix_on(&mut self, count: usize, stream: &Stream) -> GpuResult<()> {
         if count > self.len {
             return Err(GpuError::MemoryError(format!(
-                "zero_prefix: count {count} > device len {}",
+                "zero_prefix_on: count {count} > device len {}",
                 self.len
             )));
         }
@@ -164,24 +166,5 @@ impl GpuBuffer<f32> {
         // and that no unordered access to the prefix occurs before completion.
         unsafe { prefix.set_zero_async(stream) }
             .map_err(|e| GpuError::MemoryError(format!("zero_prefix_on: {e:?}")))
-    }
-}
-
-impl GpuBuffer<u32> {
-    /// Zero the first `count` elements on device; leaves any tail untouched.
-    pub fn zero_prefix(&mut self, count: usize) -> GpuResult<()> {
-        if count > self.len {
-            return Err(GpuError::MemoryError(format!(
-                "zero_prefix: count {count} > device len {}",
-                self.len
-            )));
-        }
-        if count == 0 {
-            return Ok(());
-        }
-        let mut prefix = self.inner.index(0..count);
-        prefix
-            .set_zero()
-            .map_err(|e| GpuError::MemoryError(format!("zero_prefix: {e:?}")))
     }
 }

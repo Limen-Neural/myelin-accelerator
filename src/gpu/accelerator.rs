@@ -568,21 +568,23 @@ impl GpuAccelerator {
                     let weights_f16 = state.weights_f16.as_ref().ok_or_else(|| {
                         GpuError::MemoryError("f16 synapse buffer not initialised".into())
                     })?;
-                    ffi::launch_gif_step_weighted_f16(
+                    ffi::launch_gif_step_weighted_f16(ffi::GifF16Launch {
                         stream,
-                        grid,
-                        TEMPORAL_BLOCK_SIZE,
+                        grid_x: grid,
+                        block_x: TEMPORAL_BLOCK_SIZE,
                         shared_bytes,
-                        state.membrane.as_device_ptr(),
-                        state.adaptation.as_device_ptr(),
-                        weights_f16.as_device_ptr(),
-                        state.input_spikes.as_device_ptr(),
-                        state.input_current.as_device_ptr(),
-                        state.refractory.as_device_ptr(),
-                        state.spikes_out.as_device_ptr(),
-                        neuron_count as i32,
-                        n_inputs as i32,
-                    )?;
+                        buffers: ffi::GifF16Buffers {
+                            membrane: state.membrane.as_device_ptr(),
+                            adaptation: state.adaptation.as_device_ptr(),
+                            weights: weights_f16.as_device_ptr(),
+                            input_spikes: state.input_spikes.as_device_ptr(),
+                            input_current: state.input_current.as_device_ptr(),
+                            refractory: state.refractory.as_device_ptr(),
+                            spikes_out: state.spikes_out.as_device_ptr(),
+                        },
+                        n_neurons: neuron_count as i32,
+                        n_inputs: n_inputs as i32,
+                    })?;
                 }
                 SynapsePrecision::None => unreachable!("validated above"),
             }

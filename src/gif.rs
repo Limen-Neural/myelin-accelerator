@@ -42,58 +42,65 @@ pub fn gif_grid(neuron_count: usize) -> Result<u32, String> {
     Ok(blocks.max(1) as u32)
 }
 
+/// Per-neuron mutable GIF state.
+pub struct GifNeuronState<'a> {
+    pub membrane: &'a mut [f32],
+    pub adaptation: &'a mut [f32],
+    pub refractory: &'a mut [u32],
+    pub spikes_out: &'a mut [u32],
+}
+
+/// Read-only GIF inputs for one step.
+pub struct GifStepInputs<'a> {
+    /// Row-major `n_neurons × n_inputs` synapse matrix.
+    pub weights: &'a [f32],
+    pub input_spikes: &'a [f32],
+    pub input_current: &'a [f32],
+}
+
 /// Host GIF step matching `gif_step_weighted`.
 ///
-/// `weights` is row-major `n_neurons × n_inputs`; `n_neurons` and `n_inputs`
-/// are derived from the buffer lengths. All buffers are length-checked; panics
-/// only on programmer error in tests.
-pub fn gif_step_weighted(
-    membrane: &mut [f32],
-    adaptation: &mut [f32],
-    weights: &[f32],
-    input_spikes: &[f32],
-    input_current: &[f32],
-    refractory: &mut [u32],
-    spikes_out: &mut [u32],
-) {
-    let n_neurons = membrane.len();
-    let n_inputs = input_spikes.len();
-    assert_eq!(adaptation.len(), n_neurons);
-    assert_eq!(refractory.len(), n_neurons);
-    assert_eq!(spikes_out.len(), n_neurons);
-    assert_eq!(input_current.len(), n_neurons);
-    assert_eq!(weights.len(), n_neurons.saturating_mul(n_inputs));
+/// `n_neurons` and `n_inputs` are derived from the buffer lengths. All buffers
+/// are length-checked; panics only on programmer error in tests.
+pub fn gif_step_weighted(neurons: &mut GifNeuronState<'_>, inputs: &GifStepInputs<'_>) {
+    let n_neurons = neurons.membrane.len();
+    let n_inputs = inputs.input_spikes.len();
+    assert_eq!(neurons.adaptation.len(), n_neurons);
+    assert_eq!(neurons.refractory.len(), n_neurons);
+    assert_eq!(neurons.spikes_out.len(), n_neurons);
+    assert_eq!(inputs.input_current.len(), n_neurons);
+    assert_eq!(inputs.weights.len(), n_neurons.saturating_mul(n_inputs));
 
     for tid in 0..n_neurons {
-        let mut v = membrane[tid];
-        let mut a = adaptation[tid];
+        let mut v = neurons.membrane[tid];
+        let mut a = neurons.adaptation[tid];
         let mut spike = 0u32;
-        let r = refractory[tid];
+        let r = neurons.refractory[tid];
 
         if r > 0 {
             v = LIF_RESET;
-            refractory[tid] = r - 1;
-            adaptation[tid] = a * GIF_ADAPTATION_DECAY;
+            neurons.refractory[tid] = r - 1;
+            neurons.adaptation[tid] = a * GIF_ADAPTATION_DECAY;
         } else {
             a *= GIF_ADAPTATION_DECAY;
-            let row = &weights[tid * n_inputs..tid * n_inputs + n_inputs];
+            let row = &inputs.weights[tid * n_inputs..tid * n_inputs + n_inputs];
             let mut drive = 0.0f32;
-            for j in 0..n_inputs {
-                drive = row[j].mul_add(input_spikes[j], drive);
+            for (weight, spike) in row.iter().zip(inputs.input_spikes.iter()) {
+                drive = weight.mul_add(*spike, drive);
             }
             v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM
-                + input_current[tid];
+                + inputs.input_current[tid];
             let threshold = GIF_THRESHOLD_BASE + a * GIF_ADAPTATION_SCALE;
             if v >= threshold {
                 spike = 1;
                 v -= threshold * GIF_RESET_RATIO;
                 a += 1.0;
-                refractory[tid] = LIF_REFRACT_TICK;
+                neurons.refractory[tid] = LIF_REFRACT_TICK;
             }
-            adaptation[tid] = a;
+            neurons.adaptation[tid] = a;
         }
-        membrane[tid] = v;
-        spikes_out[tid] = spike;
+        neurons.membrane[tid] = v;
+        neurons.spikes_out[tid] = spike;
     }
 }
 
@@ -109,15 +116,18 @@ mod tests {
         let input = vec![1.0f32];
         let mut refract = vec![0u32];
         let mut spikes = vec![0u32];
-        gif_step_weighted(
-            &mut membrane,
-            &mut adaptation,
-            &weights,
-            &input,
-            &[0.0],
-            &mut refract,
-            &mut spikes,
-        );
+        let mut neurons = GifNeuronState {
+            membrane: &mut membrane,
+            adaptation: &mut adaptation,
+            refractory: &mut refract,
+            spikes_out: &mut spikes,
+        };
+        let inputs = GifStepInputs {
+            weights: &weights,
+            input_spikes: &input,
+            input_current: &[0.0],
+        };
+        gif_step_weighted(&mut neurons, &inputs);
         // drive = 1, v = 0.8*0.92 + 0.75 - 0 = 1.486; threshold = 0.65 → spike
         assert_eq!(spikes[0], 1);
         assert!(adaptation[0] > 0.9);
@@ -136,15 +146,18 @@ mod tests {
         let input = vec![1.0f32];
         let mut refract = vec![1u32];
         let mut spikes = vec![99u32];
-        gif_step_weighted(
-            &mut membrane,
-            &mut adaptation,
-            &weights,
-            &input,
-            &[0.0],
-            &mut refract,
-            &mut spikes,
-        );
+        let mut neurons = GifNeuronState {
+            membrane: &mut membrane,
+            adaptation: &mut adaptation,
+            refractory: &mut refract,
+            spikes_out: &mut spikes,
+        };
+        let inputs = GifStepInputs {
+            weights: &weights,
+            input_spikes: &input,
+            input_current: &[0.0],
+        };
+        gif_step_weighted(&mut neurons, &inputs);
         assert_eq!(spikes[0], 0);
         assert_eq!(membrane[0], LIF_RESET);
         assert_eq!(refract[0], 0);
@@ -160,15 +173,18 @@ mod tests {
         let current = vec![0.5f32];
         let mut refract = vec![0u32];
         let mut spikes = vec![0u32];
-        gif_step_weighted(
-            &mut membrane,
-            &mut adaptation,
-            &weights,
-            &input,
-            &current,
-            &mut refract,
-            &mut spikes,
-        );
+        let mut neurons = GifNeuronState {
+            membrane: &mut membrane,
+            adaptation: &mut adaptation,
+            refractory: &mut refract,
+            spikes_out: &mut spikes,
+        };
+        let inputs = GifStepInputs {
+            weights: &weights,
+            input_spikes: &input,
+            input_current: &current,
+        };
+        gif_step_weighted(&mut neurons, &inputs);
         let expected = 0.0 * GIF_LEAK + 0.5;
         assert!((membrane[0] - expected).abs() < 1e-6);
         assert_eq!(spikes[0], 0);

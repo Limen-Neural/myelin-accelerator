@@ -107,44 +107,53 @@ fn main() {
         None => println!("cargo:warning=using nvcc at {}", nvcc_path.display()),
     }
 
+    let emitted_ptx_version = compile_ptx_kernels(
+        &nvcc_path,
+        &cu_dir,
+        &out_dir,
+        arch.as_str(),
+        ptx_version_override.as_deref(),
+        is_blackwell,
+    );
+
+    compile_fatbins(&nvcc_path, &cu_dir, &out_dir, arch.as_str());
+
+    build_myelin_shim(&nvcc_path, &cu_dir, &out_dir, &arch);
+    emit_cuda_runtime_linking(&nvcc_path);
+    println!("cargo:rustc-env=MYELIN_BUILD_CUDA_ARCH={arch}");
+    if let Some(version) = emitted_ptx_version {
+        println!("cargo:rustc-env=MYELIN_BUILD_PTX_VERSION={version}");
+    }
+}
+
+fn compile_ptx_kernels(
+    nvcc: &Path,
+    cu_dir: &Path,
+    out_dir: &Path,
+    arch: &str,
+    ptx_version_override: Option<&str>,
+    is_blackwell: bool,
+) -> Option<String> {
     let mut emitted_ptx_version = None;
     for &(cu_name, ptx_name) in KERNELS {
         let source = cu_dir.join(cu_name);
         let output = out_dir.join(ptx_name);
         compile_to_ptx(
-            &nvcc_path,
-            &cu_dir,
+            nvcc,
+            cu_dir,
             &source,
             &output,
-            &arch,
+            arch,
             &nvcc_feature_defines(cu_name),
         );
-        // sm_120 + PTX < 9.2 is invalid. Explicit overrides are applied for
-        // non-Blackwell arches; on Blackwell, clamp any override below the floor.
-        if let Some(ref ver) = ptx_version_override {
-            let effective = if is_blackwell && ptx_version_less(ver, DEFAULT_REAL_PTX_VERSION) {
-                println!(
-                    "cargo:warning=MYELIN_PTX_VERSION={ver} is below {DEFAULT_REAL_PTX_VERSION} for {arch}; clamping"
-                );
-                DEFAULT_REAL_PTX_VERSION
-            } else {
-                ver.as_str()
-            };
-            patch_ptx_version_any(&output, effective);
-            println!(
-                "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx={effective} [override])"
-            );
-        } else if is_blackwell {
-            // Leave nvcc's header when already high enough; raise only if lower.
-            ensure_min_ptx_version(&output, DEFAULT_REAL_PTX_VERSION);
-            println!(
-                "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx>={DEFAULT_REAL_PTX_VERSION})"
-            );
-        } else {
-            println!(
-                "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx=nvcc-default)"
-            );
-        }
+        apply_ptx_version_policy(
+            &output,
+            cu_name,
+            ptx_name,
+            arch,
+            ptx_version_override,
+            is_blackwell,
+        );
         if let Some(version) = read_ptx_version(&output) {
             if let Some(previous) = emitted_ptx_version.as_deref() {
                 assert_eq!(
@@ -156,26 +165,56 @@ fn main() {
             }
         }
     }
+    emitted_ptx_version
+}
 
+fn apply_ptx_version_policy(
+    output: &Path,
+    cu_name: &str,
+    ptx_name: &str,
+    arch: &str,
+    ptx_version_override: Option<&str>,
+    is_blackwell: bool,
+) {
+    // sm_120 + PTX < 9.2 is invalid. Explicit overrides are applied for
+    // non-Blackwell arches; on Blackwell, clamp any override below the floor.
+    if let Some(ver) = ptx_version_override {
+        let effective = if is_blackwell && ptx_version_less(ver, DEFAULT_REAL_PTX_VERSION) {
+            println!(
+                "cargo:warning=MYELIN_PTX_VERSION={ver} is below {DEFAULT_REAL_PTX_VERSION} for {arch}; clamping"
+            );
+            DEFAULT_REAL_PTX_VERSION
+        } else {
+            ver
+        };
+        patch_ptx_version_any(output, effective);
+        println!(
+            "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx={effective} [override])"
+        );
+    } else if is_blackwell {
+        // Leave nvcc's header when already high enough; raise only if lower.
+        ensure_min_ptx_version(output, DEFAULT_REAL_PTX_VERSION);
+        println!(
+            "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx>={DEFAULT_REAL_PTX_VERSION})"
+        );
+    } else {
+        println!("cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx=nvcc-default)");
+    }
+}
+
+fn compile_fatbins(nvcc: &Path, cu_dir: &Path, out_dir: &Path, arch: &str) {
     for &(cu_name, fatbin_name) in FATBINS {
         let source = cu_dir.join(cu_name);
         let output = out_dir.join(fatbin_name);
         compile_to_fatbin(
-            &nvcc_path,
-            &cu_dir,
+            nvcc,
+            cu_dir,
             &source,
             &output,
-            &arch,
+            arch,
             &nvcc_feature_defines(cu_name),
         );
         println!("cargo:warning=compiled {cu_name} -> {fatbin_name} ({arch} SASS + PTX fallback)");
-    }
-
-    build_myelin_shim(&nvcc_path, &cu_dir, &out_dir, &arch);
-    emit_cuda_runtime_linking(&nvcc_path);
-    println!("cargo:rustc-env=MYELIN_BUILD_CUDA_ARCH={arch}");
-    if let Some(version) = emitted_ptx_version {
-        println!("cargo:rustc-env=MYELIN_BUILD_PTX_VERSION={version}");
     }
 }
 

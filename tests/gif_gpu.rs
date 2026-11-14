@@ -6,7 +6,7 @@
 #![cfg(feature = "cuda")]
 
 use myelin_accelerator::GpuAccelerator;
-use myelin_accelerator::gif::gif_step_weighted;
+use myelin_accelerator::gif::{GifNeuronState, GifStepInputs, gif_step_weighted};
 
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
@@ -28,15 +28,19 @@ fn gif_step_weighted_tick_matches_host_ref() {
     let mut adaptation = vec![0.0f32; n];
     let mut refractory = vec![0u32; n];
     let mut spikes = vec![0u32; n];
-    gif_step_weighted(
-        &mut membrane,
-        &mut adaptation,
-        &weights,
-        &input,
-        &vec![0.0f32; n],
-        &mut refractory,
-        &mut spikes,
-    );
+    let input_current = vec![0.0f32; n];
+    let mut neurons = GifNeuronState {
+        membrane: &mut membrane,
+        adaptation: &mut adaptation,
+        refractory: &mut refractory,
+        spikes_out: &mut spikes,
+    };
+    let inputs = GifStepInputs {
+        weights: &weights,
+        input_spikes: &input,
+        input_current: &input_current,
+    };
+    gif_step_weighted(&mut neurons, &inputs);
 
     acc.load_synapse_weights_named("gif-parity", &weights)
         .expect("weights");

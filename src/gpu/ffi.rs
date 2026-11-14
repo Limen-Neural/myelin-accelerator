@@ -31,38 +31,53 @@ unsafe extern "C" {
         n_neurons: i32,
         n_inputs: i32,
     ) -> i32;
-
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn launch_gif_step_weighted_f16(
-    stream: &Stream,
-    grid_x: u32,
-    block_x: u32,
-    shared_bytes: u32,
-    membrane: DevicePointer<f32>,
-    adaptation: DevicePointer<f32>,
-    weights: DevicePointer<u16>,
-    input_spikes: DevicePointer<f32>,
-    input_current: DevicePointer<f32>,
-    refractory: DevicePointer<u32>,
-    spikes_out: DevicePointer<u32>,
-    n_neurons: i32,
-    n_inputs: i32,
-) -> GpuResult<()> {
+/// Device buffers for one F16 GIF weighted step.
+pub struct GifF16Buffers {
+    pub membrane: DevicePointer<f32>,
+    pub adaptation: DevicePointer<f32>,
+    pub weights: DevicePointer<u16>,
+    pub input_spikes: DevicePointer<f32>,
+    pub input_current: DevicePointer<f32>,
+    pub refractory: DevicePointer<u32>,
+    pub spikes_out: DevicePointer<u32>,
+}
+
+/// Launch description for [`launch_gif_step_weighted_f16`].
+pub struct GifF16Launch<'a> {
+    pub stream: &'a Stream,
+    pub grid_x: u32,
+    pub block_x: u32,
+    pub shared_bytes: u32,
+    pub buffers: GifF16Buffers,
+    pub n_neurons: i32,
+    pub n_inputs: i32,
+}
+
+pub fn launch_gif_step_weighted_f16(launch: GifF16Launch<'_>) -> GpuResult<()> {
+    let GifF16Launch {
+        stream,
+        grid_x,
+        block_x,
+        shared_bytes,
+        buffers,
+        n_neurons,
+        n_inputs,
+    } = launch;
     let code = unsafe {
         myelin_launch_gif_step_weighted_f16(
             stream.as_inner().cast::<c_void>(),
             grid_x,
             block_x,
             shared_bytes,
-            device_ptr_to_void(membrane),
-            device_ptr_to_void(adaptation),
-            device_ptr_to_void(weights),
-            device_ptr_to_void(input_spikes),
-            device_ptr_to_void(input_current),
-            device_ptr_to_void(refractory),
-            device_ptr_to_void(spikes_out),
+            device_ptr_to_void(buffers.membrane),
+            device_ptr_to_void(buffers.adaptation),
+            device_ptr_to_void(buffers.weights),
+            device_ptr_to_void(buffers.input_spikes),
+            device_ptr_to_void(buffers.input_current),
+            device_ptr_to_void(buffers.refractory),
+            device_ptr_to_void(buffers.spikes_out),
             n_neurons,
             n_inputs,
         )
