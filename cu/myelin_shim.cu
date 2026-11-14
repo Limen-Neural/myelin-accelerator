@@ -29,6 +29,16 @@ extern "C" int myelin_launch_gif_step_weighted_f16(
     unsigned int* refractory_ptr = reinterpret_cast<unsigned int*>(refractory);
     unsigned int* spikes_out_ptr = reinterpret_cast<unsigned int*>(spikes_out);
 
+    if (shared_bytes > 48u * 1024u) {
+        cudaError_t attr_status = cudaFuncSetAttribute(
+            gif_step_weighted_f16,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            static_cast<int>(shared_bytes));
+        if (attr_status != cudaSuccess) {
+            return static_cast<int>(attr_status);
+        }
+    }
+
     gif_step_weighted_f16<<<grid_x, block_x, shared_bytes, cuda_stream>>>(
         membrane_ptr,
         adaptation_ptr,

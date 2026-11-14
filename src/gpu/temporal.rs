@@ -10,7 +10,7 @@ use cust::launch;
 
 const TEMPORAL_BLOCK_SIZE: u32 = GIF_BLOCK_SIZE;
 const TEMPORAL_SHARED_MEM_BYTES: u32 = 0;
-const TEMPORAL_MAX_SHARED_MEM_BYTES: u32 = 48 * 1024;
+const TEMPORAL_DEFAULT_SHARED_MEM_BYTES: u32 = 48 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SynapsePrecision {
@@ -47,6 +47,7 @@ impl GpuAccelerator {
             ));
         }
         Self::validate_temporal_dimensions(neuron_count, n_inputs)?;
+        Self::validate_temporal_shared_mem(n_inputs)?;
 
         let needs_realloc = self
             .temporal_state
@@ -262,6 +263,9 @@ impl GpuAccelerator {
         let shared_bytes = Self::temporal_shared_bytes(n_inputs)?;
         let stream = self.cuda_stream().ok_or(GpuError::NoGpu)?;
         let gif_step = self.kernels()?.get_function("gif_step_weighted")?;
+        if shared_bytes > TEMPORAL_DEFAULT_SHARED_MEM_BYTES {
+            Self::opt_in_gif_shared_mem(&gif_step, shared_bytes)?;
+        }
         unsafe {
             launch!(gif_step<<<grid, TEMPORAL_BLOCK_SIZE, shared_bytes, stream>>>(
                 state.membrane.as_device_ptr(),
@@ -431,13 +435,60 @@ impl GpuAccelerator {
                 "temporal shared-memory size {bytes} exceeds u32 launch limit"
             ))
         })?;
-        if bytes > TEMPORAL_MAX_SHARED_MEM_BYTES {
+        Ok(bytes)
+    }
+
+    fn validate_temporal_shared_mem(n_inputs: usize) -> GpuResult<()> {
+        let bytes = Self::temporal_shared_bytes(n_inputs)?;
+        let limit = Self::temporal_shared_mem_limit()?;
+        if bytes > limit {
             return Err(GpuError::LaunchFailed(format!(
-                "temporal shared-memory size {bytes} exceeds the default 48 KiB \
-                 dynamic shared-memory limit; reduce n_inputs or add a shared-memory opt-in"
+                "temporal shared-memory size {bytes} exceeds device opt-in limit {limit}; reduce n_inputs"
             )));
         }
-        Ok(bytes)
+        Ok(())
+    }
+
+    fn temporal_shared_mem_limit() -> GpuResult<u32> {
+        let device = cust::device::Device::get_device(0)
+            .map_err(|e| GpuError::CudaError(format!("device query: {e:?}")))?;
+        let mut value = 0i32;
+        let result = unsafe {
+            cust::sys::cuDeviceGetAttribute(
+                &mut value as *mut i32,
+                cust::sys::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN,
+                device.as_raw(),
+            )
+        };
+        if result as i32 != 0 {
+            return Err(GpuError::CudaError(format!(
+                "cuDeviceGetAttribute shared-memory opt-in limit: {result:?}"
+            )));
+        }
+        u32::try_from(value)
+            .map_err(|_| GpuError::CudaError("shared-memory opt-in limit is negative".into()))
+    }
+
+    fn opt_in_gif_shared_mem(
+        function: &cust::function::Function<'_>,
+        shared_bytes: u32,
+    ) -> GpuResult<()> {
+        let value = i32::try_from(shared_bytes).map_err(|_| {
+            GpuError::LaunchFailed("temporal shared-memory size exceeds i32 opt-in limit".into())
+        })?;
+        let result = unsafe {
+            cust::sys::cuFuncSetAttribute(
+                function.to_raw(),
+                cust::sys::CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                value,
+            )
+        };
+        if result as i32 != 0 {
+            return Err(GpuError::CudaError(format!(
+                "cuFuncSetAttribute gif_step_weighted shared-memory opt-in: {result:?}"
+            )));
+        }
+        Ok(())
     }
 
     fn require_state_neuron_count(state: &TemporalState, neuron_count: usize) -> GpuResult<()> {

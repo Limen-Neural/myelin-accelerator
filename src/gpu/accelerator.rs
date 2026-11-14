@@ -250,7 +250,7 @@ impl GpuAccelerator {
 
     pub(crate) fn require_context_current(&self) -> GpuResult<()> {
         if !self.has_context() {
-            return Err(GpuError::NoGpu);
+            return Err(self.unavailable_error());
         }
         self._ctx
             .as_ref()
