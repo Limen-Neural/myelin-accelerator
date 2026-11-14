@@ -1,7 +1,6 @@
 // Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::bitpacking::TERNARY_VALUES_PER_WORD;
 use crate::capability::{
     Backend, CapabilityFacts, CapabilityReport, ComputeCapability, ExecutionPolicy, FallbackReason,
     FallbackRecord, KernelAvailability, apply_failure_to_facts, evaluate_capabilities,
@@ -12,14 +11,17 @@ use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::kernel::KernelModule;
 use crate::gpu::memory::GpuBuffer;
 use crate::gpu::routing_ops::RoutingScratch;
-use cust::launch;
+use crate::gpu::temporal::TemporalState;
+use crate::launch_hook::{LaunchFailure, LaunchType, report_launch_failure};
 use cust::stream::{Stream, StreamFlags};
-use nvtx::{range_pop, range_push};
 use std::cell::RefCell;
 use tracing::warn;
 
-const SATSOLVER_BLOCK_SIZE: u32 = 256;
-const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
+pub(crate) mod poisson;
+pub(crate) mod routing;
+pub(crate) mod satsolver;
+pub(crate) mod stdp;
+pub(crate) mod ternary;
 
 /// Owns CUDA resources whose explicit teardown is implemented in `Drop`.
 ///
@@ -32,6 +34,7 @@ const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
 pub struct GpuAccelerator {
     modules: Option<KernelModule>,
     stream: Option<Stream>,
+    pub(crate) temporal_state: Option<TemporalState>,
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
     pub(super) routing_scratch: RefCell<Option<RoutingScratch>>,
@@ -45,14 +48,11 @@ struct InitFailure {
     detail: String,
 }
 
-struct StdpTraceLaunch<'a> {
-    pre_spikes: &'a GpuBuffer<f32>,
-    post_spikes: &'a GpuBuffer<f32>,
-    pre_traces: &'a mut GpuBuffer<f32>,
-    post_traces: &'a mut GpuBuffer<f32>,
-    n_post: i32,
-    n_pre: i32,
-    dt_ms: f32,
+#[derive(Clone, Copy)]
+pub(crate) struct LaunchShape {
+    pub(crate) grid: u32,
+    pub(crate) block: u32,
+    pub(crate) shared_mem: u32,
 }
 
 impl GpuAccelerator {
@@ -71,7 +71,7 @@ impl GpuAccelerator {
 
     /// Construct under an explicit execution policy.
     pub fn with_policy(policy: ExecutionPolicy) -> GpuResult<Self> {
-        match Self::try_init_gpu() {
+        match Self::try_init_gpu(policy) {
             Ok(acc) => Ok(acc),
             Err(failure) => {
                 let detail = sanitize_diagnostic(&failure.detail);
@@ -95,12 +95,12 @@ impl GpuAccelerator {
         }
     }
 
-    fn try_init_gpu() -> Result<Self, InitFailure> {
+    fn try_init_gpu(policy: ExecutionPolicy) -> Result<Self, InitFailure> {
         let current_context = CurrentContextGuard::capture();
         let mut facts = crate::host_facts();
 
         let ctx = Self::init_cuda_context(&mut facts)?;
-        let modules = Self::load_kernel_modules(&mut facts)?;
+        let modules = Self::load_kernel_modules(&mut facts, policy)?;
         let stream = Self::create_default_stream(&facts)?;
 
         Ok(Self::finish_gpu_init(
@@ -146,11 +146,14 @@ impl GpuAccelerator {
         }
     }
 
-    fn load_kernel_modules(facts: &mut CapabilityFacts) -> Result<KernelModule, InitFailure> {
+    fn load_kernel_modules(
+        facts: &mut CapabilityFacts,
+        policy: ExecutionPolicy,
+    ) -> Result<Option<KernelModule>, InitFailure> {
         match KernelModule::load_with_availability() {
             Ok(modules) => {
                 facts.kernels = KernelAvailability::all_available();
-                Ok(modules)
+                Ok(Some(modules))
             }
             Err(failure) => {
                 facts.kernels = failure.availability;
@@ -158,11 +161,19 @@ impl GpuAccelerator {
                     .error
                     .fallback_reason()
                     .unwrap_or(FallbackReason::DriverRuntimeFailure);
-                Err(InitFailure {
-                    facts: facts.clone(),
-                    reason,
-                    detail: failure.error.to_string(),
-                })
+                if policy == ExecutionPolicy::RequireGpu {
+                    return Err(InitFailure {
+                        facts: facts.clone(),
+                        reason,
+                        detail: failure.error.to_string(),
+                    });
+                }
+                warn!(
+                    reason = reason.code(),
+                    detail = sanitize_diagnostic(&failure.error.to_string()),
+                    "fatbin/PTX load failed; continuing with shim-only temporal path when possible"
+                );
+                Ok(None)
             }
         }
     }
@@ -177,16 +188,17 @@ impl GpuAccelerator {
 
     fn finish_gpu_init(
         ctx: GpuContext,
-        modules: KernelModule,
+        modules: Option<KernelModule>,
         stream: Stream,
         facts: CapabilityFacts,
         current_context: CurrentContextGuard,
     ) -> Self {
-        let capabilities = capability_report_for_success(facts);
+        let capabilities = capability_report_for_success(facts, modules.is_some());
         let accelerator = Self {
             _ctx: Some(ctx),
-            modules: Some(modules),
+            modules,
             stream: Some(stream),
+            temporal_state: None,
             aux_partial_scores: RefCell::new(None),
             aux_partial_walkers: RefCell::new(None),
             routing_scratch: RefCell::new(None),
@@ -201,6 +213,7 @@ impl GpuAccelerator {
             _ctx: None,
             modules: None,
             stream: None,
+            temporal_state: None,
             aux_partial_scores: RefCell::new(None),
             aux_partial_walkers: RefCell::new(None),
             routing_scratch: RefCell::new(None),
@@ -208,11 +221,76 @@ impl GpuAccelerator {
         }
     }
 
+    /// `true` when a CUDA context, stream, and kernel modules are ready for GPU use.
     pub fn is_ready(&self) -> bool {
         self._ctx.is_some()
-            && self.modules.is_some()
             && self.stream.is_some()
+            && self.modules.is_some()
             && self.capabilities.gpu_usable()
+    }
+
+    /// `true` when [`Self::is_ready`] and fatbin/PTX modules loaded successfully.
+    pub fn kernels_ready(&self) -> bool {
+        self.is_ready()
+    }
+
+    pub(crate) fn require_ready(&self) -> GpuResult<()> {
+        if self.is_ready() {
+            Ok(())
+        } else {
+            Err(self.unavailable_error())
+        }
+    }
+
+    pub(crate) fn has_context(&self) -> bool {
+        self._ctx.is_some()
+    }
+
+    pub(crate) fn require_context_current(&self) -> GpuResult<()> {
+        if !self.has_context() {
+            return Err(self.unavailable_error());
+        }
+        self._ctx
+            .as_ref()
+            .expect("has_context checked above")
+            .require_current()
+    }
+
+    pub(crate) fn ptx_launch_error(
+        kernel_name: &str,
+        shape: LaunchShape,
+        neuron_count: Option<usize>,
+        error: impl std::fmt::Debug,
+    ) -> GpuError {
+        Self::reported_launch_error(
+            kernel_name,
+            LaunchType::PtxFatbin,
+            shape,
+            neuron_count,
+            error,
+        )
+    }
+
+    fn reported_launch_error(
+        kernel_name: &str,
+        launch_type: LaunchType,
+        shape: LaunchShape,
+        neuron_count: Option<usize>,
+        error: impl std::fmt::Debug,
+    ) -> GpuError {
+        let gpu_error = GpuError::LaunchFailed(format!("{kernel_name} launch: {error:?}"));
+        report_launch_failure(LaunchFailure {
+            kernel_name: kernel_name.to_string(),
+            launch_type,
+            grid: (shape.grid, 1, 1),
+            block: (shape.block, 1, 1),
+            shared_mem: shape.shared_mem,
+            neuron_count,
+            error: gpu_error.to_string(),
+            jit_error_log: None,
+            jit_info_log: None,
+        });
+        gpu_error
     }
 
     /// Snapshot of the capability probe used to select this backend.
@@ -236,6 +314,14 @@ impl GpuAccelerator {
             .ok_or_else(|| self.unavailable_error())
     }
 
+    pub(crate) fn has_modules(&self) -> bool {
+        self.modules.is_some()
+    }
+
+    pub(crate) fn cuda_stream(&self) -> Option<&Stream> {
+        self.stream.as_ref()
+    }
+
     pub fn synchronize(&self) -> GpuResult<()> {
         let stream = self
             .stream
@@ -253,806 +339,6 @@ impl GpuAccelerator {
         }
     }
 
-    /// Update STDP weights and eligibility traces in one ordered operation.
-    ///
-    /// The weight kernel reads old traces and computes the current-step trace
-    /// values locally. The trace kernel then writes each trace once. Both
-    /// launches use this accelerator's stream, so they cannot race each other.
-    /// If either launch fails, queued work is synchronized before returning;
-    /// an error can still leave weights or traces partially updated.
-    #[allow(clippy::too_many_arguments)]
-    pub fn stdp_update(
-        &self,
-        weights: &mut GpuBuffer<f32>,
-        pre_spikes: &GpuBuffer<f32>,
-        post_spikes: &GpuBuffer<f32>,
-        pre_traces: &mut GpuBuffer<f32>,
-        post_traces: &mut GpuBuffer<f32>,
-        n_post: i32,
-        n_pre: i32,
-        dt_ms: f32,
-    ) -> GpuResult<()> {
-        let update_result = self.stdp_update_async(
-            weights,
-            pre_spikes,
-            post_spikes,
-            pre_traces,
-            post_traces,
-            n_post,
-            n_pre,
-            dt_ms,
-        );
-        let sync_result = self.synchronize();
-        update_result?;
-        sync_result
-    }
-
-    /// Enqueue both STDP kernels on the accelerator stream without waiting.
-    ///
-    /// Call [`Self::synchronize`] before reading, reusing, or dropping any
-    /// argument buffer. Concurrent launches on another stream must not touch
-    /// these weights, spikes, or traces until this operation completes.
-    /// A launch error can leave the preceding weight launch queued; synchronize
-    /// before reusing the buffers, and do not assume an atomic update.
-    #[allow(clippy::too_many_arguments)]
-    pub fn stdp_update_async(
-        &self,
-        weights: &mut GpuBuffer<f32>,
-        pre_spikes: &GpuBuffer<f32>,
-        post_spikes: &GpuBuffer<f32>,
-        pre_traces: &mut GpuBuffer<f32>,
-        post_traces: &mut GpuBuffer<f32>,
-        n_post: i32,
-        n_pre: i32,
-        dt_ms: f32,
-    ) -> GpuResult<()> {
-        Self::validate_stdp_buffers(
-            weights,
-            pre_spikes,
-            post_spikes,
-            pre_traces,
-            post_traces,
-            n_post,
-            n_pre,
-            dt_ms,
-        )?;
-        if n_post == 0 && n_pre == 0 {
-            return Ok(());
-        }
-
-        let kernels = self.kernels()?;
-        let stream = self
-            .stream
-            .as_ref()
-            .ok_or_else(|| self.unavailable_error())?;
-
-        if n_post > 0 && n_pre > 0 {
-            let update_weights = kernels.get_function("stdp_update_weights")?;
-            let blocks = ((n_post as u64) * (n_pre as u64)).div_ceil(256);
-            if blocks > i32::MAX as u64 {
-                return Err(GpuError::invalid_input(
-                    "stdp_update: weight grid exceeds CUDA grid.x limit".to_string(),
-                ));
-            }
-            let grid = blocks as u32;
-            // SAFETY: every matrix/trace/spike buffer was length-checked; the
-            // kernel bounds-checks both global indices, and the stream and
-            // buffers remain alive until the caller synchronizes.
-            unsafe {
-                launch!(update_weights<<<grid, 256u32, 0u32, stream>>>(
-                    weights.as_device_ptr(),
-                    pre_spikes.as_device_ptr(),
-                    post_spikes.as_device_ptr(),
-                    pre_traces.as_device_ptr(),
-                    post_traces.as_device_ptr(),
-                    n_post,
-                    n_pre,
-                    dt_ms
-                ))
-                .map_err(|e| {
-                    GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                        "stdp_update_weights launch: {e:?}"
-                    )))
-                })?;
-            }
-        }
-
-        self.launch_stdp_traces(StdpTraceLaunch {
-            pre_spikes,
-            post_spikes,
-            pre_traces,
-            post_traces,
-            n_post,
-            n_pre,
-            dt_ms,
-        })
-    }
-
-    fn launch_stdp_traces(&self, args: StdpTraceLaunch<'_>) -> GpuResult<()> {
-        let update_traces = self.kernels()?.get_function("stdp_update_traces")?;
-        let stream = self
-            .stream
-            .as_ref()
-            .ok_or_else(|| self.unavailable_error())?;
-        let grid = Self::ceil_div_u32(args.n_post.max(args.n_pre) as u32, 256);
-        // SAFETY: each global thread owns at most one index of each trace
-        // buffer. The accelerator stream orders this after the weight update.
-        unsafe {
-            launch!(update_traces<<<grid, 256u32, 0u32, stream>>>(
-                args.pre_spikes.as_device_ptr(),
-                args.post_spikes.as_device_ptr(),
-                args.pre_traces.as_device_ptr(),
-                args.post_traces.as_device_ptr(),
-                args.n_post,
-                args.n_pre,
-                args.dt_ms
-            ))
-            .map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "stdp_update_traces launch: {e:?}"
-                )))
-            })?;
-        }
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn validate_stdp_buffers(
-        weights: &GpuBuffer<f32>,
-        pre_spikes: &GpuBuffer<f32>,
-        post_spikes: &GpuBuffer<f32>,
-        pre_traces: &GpuBuffer<f32>,
-        post_traces: &GpuBuffer<f32>,
-        n_post: i32,
-        n_pre: i32,
-        dt_ms: f32,
-    ) -> GpuResult<()> {
-        let invalid_shape = n_post < 0 || n_pre < 0;
-        let invalid_time = !dt_ms.is_finite() || dt_ms < 0.0;
-        if invalid_shape || invalid_time {
-            return Err(GpuError::invalid_input(
-                "stdp_update: n_post/n_pre and finite dt_ms must be nonnegative".to_string(),
-            ));
-        }
-        let post = n_post as usize;
-        let pre = n_pre as usize;
-        Self::expect_len("weights", weights.len(), post.saturating_mul(pre))?;
-        Self::expect_len("pre_spikes", pre_spikes.len(), pre)?;
-        Self::expect_len("post_spikes", post_spikes.len(), post)?;
-        Self::expect_len("pre_traces", pre_traces.len(), pre)?;
-        Self::expect_len("post_traces", post_traces.len(), post)?;
-        Ok(())
-    }
-
-    pub fn satsolver_extract(
-        &self,
-        assignment: &GpuBuffer<u8>,
-        best_walker: &GpuBuffer<i32>,
-        output: &mut GpuBuffer<u8>,
-        n_vars: i32,
-        n_walkers: i32,
-    ) -> GpuResult<()> {
-        self.satsolver_extract_async(assignment, best_walker, output, n_vars, n_walkers)?;
-        self.synchronize()
-    }
-
-    /// Async variant of [`Self::satsolver_extract`]: enqueues the launch on the
-    /// internal stream and returns without waiting.
-    ///
-    /// The caller must call [`Self::synchronize`] before reading `output` on the
-    /// host or dropping/reusing any argument buffer: `cust` frees device memory
-    /// synchronously on `Drop`, which is not ordered against a pending launch.
-    pub fn satsolver_extract_async(
-        &self,
-        assignment: &GpuBuffer<u8>,
-        best_walker: &GpuBuffer<i32>,
-        output: &mut GpuBuffer<u8>,
-        n_vars: i32,
-        n_walkers: i32,
-    ) -> GpuResult<()> {
-        if n_vars < 0 {
-            return Err(GpuError::invalid_input(format!(
-                "satsolver_extract: n_vars must be >= 0, got {n_vars}"
-            )));
-        }
-        if n_walkers <= 0 {
-            return Err(GpuError::invalid_input(format!(
-                "satsolver_extract: n_walkers must be > 0, got {n_walkers}"
-            )));
-        }
-        if n_vars == 0 {
-            return Ok(());
-        }
-
-        let n_vars = n_vars as usize;
-        let n_walkers_usize = n_walkers as usize;
-        Self::expect_len(
-            "assignment",
-            assignment.len(),
-            n_walkers_usize.saturating_mul(n_vars),
-        )?;
-        Self::expect_len("best_walker", best_walker.len(), 1)?;
-        Self::expect_len("output", output.len(), n_vars)?;
-
-        let kernels = self.kernels()?;
-        let satsolver_extract = kernels.get_function("satsolver_extract")?;
-        let stream = self
-            .stream
-            .as_ref()
-            .ok_or_else(|| self.unavailable_error())?;
-        let grid = Self::ceil_div_u32(n_vars as u32, SATSOLVER_BLOCK_SIZE);
-        let block = SATSOLVER_BLOCK_SIZE;
-
-        // SAFETY: launching the `satsolver_extract` kernel.
-        // - ABI: the CUDA entry (cu/satsolver.cu) is
-        //   `(const u8* assignment, const i32* best_walker, u8* output, i32 n_vars, i32 n_walkers)`.
-        //   Arguments below match that order and type: `assignment`/`best_walker` are read-only
-        //   device pointers, `output` is the write target, and the two trailing scalars are `i32`
-        //   (`n_vars` is re-narrowed from the validated `usize`; `n_walkers` is the original `i32`).
-        // - Bounds: `n_vars >= 1` and `n_walkers > 0` are validated above; `assignment` has
-        //   `>= n_walkers*n_vars` elements, `best_walker >= 1`, and `output >= n_vars` (checked via
-        //   `expect_len`). The kernel guards `var >= n_vars` and clamps an out-of-range walker index
-        //   to 0, so every `assignment[bw*n_vars + var]` read and `output[var]` write is in bounds.
-        // - Launch dims: `grid = ceil_div(n_vars, block)` covers all `n_vars` output threads;
-        //   dynamic shared memory is 0 (the kernel declares none).
-        // - Lifetime/aliasing: `assignment`, `best_walker`, `output` are borrowed for this call and
-        //   `output` is uniquely `&mut`, so there is no host aliasing; the buffers are owned by the
-        //   caller and outlive the borrow. Completion is forced by the `synchronize()` in the
-        //   synchronous `satsolver_extract` wrapper before the buffers can be freed or reused; the
-        //   async form documents that the caller must synchronize before dropping them.
-        // - Context/module/stream: `self._ctx`, `self.modules`, and `self.stream` are all `Some`
-        //   here (readiness is required to reach a launch) and live as long as `self`.
-        unsafe {
-            launch!(satsolver_extract<<<grid, block, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
-                assignment.as_device_ptr(),
-                best_walker.as_device_ptr(),
-                output.as_device_ptr(),
-                n_vars as i32,
-                n_walkers,
-            ))
-            .map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "satsolver_extract launch: {e:?}"
-                )))
-            })?;
-        }
-
-        Ok(())
-    }
-
-    // 11 parameters mirror the satsolver_aux_update CUDA kernel ABI;
-    // grouping them would require a context struct on every call site
-    // without simplifying the launch. Allow the clippy lint.
-    #[allow(clippy::too_many_arguments)]
-    pub fn satsolver_aux_reduce_best(
-        &self,
-        assignment: &GpuBuffer<u8>,
-        sat_flags: &mut GpuBuffer<u8>,
-        scores: &GpuBuffer<i32>,
-        best_score: &mut GpuBuffer<i32>,
-        best_walker: &mut GpuBuffer<i32>,
-        clauses: &GpuBuffer<i32>,
-        n_walkers: i32,
-        n_vars: i32,
-        n_clauses: i32,
-        clause_len: i32,
-    ) -> GpuResult<()> {
-        self.satsolver_aux_reduce_best_async(
-            assignment,
-            sat_flags,
-            scores,
-            best_score,
-            best_walker,
-            clauses,
-            n_walkers,
-            n_vars,
-            n_clauses,
-            clause_len,
-        )?;
-        self.synchronize()
-    }
-
-    /// Async variant of [`Self::satsolver_aux_reduce_best`]: enqueues both
-    /// reduction launches on the internal stream and returns without waiting.
-    ///
-    /// The caller must call [`Self::synchronize`] before reading `best_score` /
-    /// `best_walker` on the host or dropping/reusing any argument buffer.
-    // 11 parameters mirror the satsolver_aux_update CUDA kernel ABI;
-    // grouping them would require a context struct on every call site
-    // without simplifying the launch. Allow the clippy lint.
-    #[allow(clippy::too_many_arguments)]
-    pub fn satsolver_aux_reduce_best_async(
-        &self,
-        assignment: &GpuBuffer<u8>,
-        sat_flags: &mut GpuBuffer<u8>,
-        scores: &GpuBuffer<i32>,
-        best_score: &mut GpuBuffer<i32>,
-        best_walker: &mut GpuBuffer<i32>,
-        clauses: &GpuBuffer<i32>,
-        n_walkers: i32,
-        n_vars: i32,
-        n_clauses: i32,
-        clause_len: i32,
-    ) -> GpuResult<()> {
-        if n_walkers <= 0 {
-            return Err(GpuError::invalid_input(format!(
-                "satsolver_aux_reduce_best: n_walkers must be > 0, got {n_walkers}"
-            )));
-        }
-        if n_vars < 0 {
-            return Err(GpuError::invalid_input(format!(
-                "satsolver_aux_reduce_best: n_vars must be >= 0, got {n_vars}"
-            )));
-        }
-        if n_clauses < 0 {
-            return Err(GpuError::invalid_input(format!(
-                "satsolver_aux_reduce_best: n_clauses must be >= 0, got {n_clauses}"
-            )));
-        }
-        if clause_len < 0 {
-            return Err(GpuError::invalid_input(format!(
-                "satsolver_aux_reduce_best: clause_len must be >= 0, got {clause_len}"
-            )));
-        }
-
-        let n_walkers_usize = n_walkers as usize;
-        let n_vars_usize = n_vars as usize;
-        let n_clauses_usize = n_clauses as usize;
-        let clause_len_usize = clause_len as usize;
-
-        Self::expect_len(
-            "assignment",
-            assignment.len(),
-            n_walkers_usize.saturating_mul(n_vars_usize),
-        )?;
-        Self::expect_len(
-            "sat_flags",
-            sat_flags.len(),
-            n_walkers_usize.saturating_mul(n_clauses_usize),
-        )?;
-        Self::expect_len("scores", scores.len(), n_walkers_usize)?;
-        Self::expect_len("best_score", best_score.len(), 1)?;
-        Self::expect_len("best_walker", best_walker.len(), 1)?;
-        Self::expect_len(
-            "clauses",
-            clauses.len(),
-            n_clauses_usize.saturating_mul(clause_len_usize),
-        )?;
-
-        let grid_x = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
-        let block = SATSOLVER_BLOCK_SIZE;
-        let partial_len = grid_x as usize;
-        self.ensure_aux_scratch(partial_len)?;
-        let kernels = self.kernels()?;
-        let satsolver_aux_update = kernels.get_function("satsolver_aux_update")?;
-        let satsolver_best_reduce_pass2 = kernels.get_function("satsolver_best_reduce_pass2")?;
-        let stream = self
-            .stream
-            .as_ref()
-            .ok_or_else(|| self.unavailable_error())?;
-        let partial_scores = self.aux_partial_scores.borrow();
-        let partial_walkers = self.aux_partial_walkers.borrow();
-        let partial_scores = partial_scores.as_ref().expect("partial_scores buffer");
-        let partial_walkers = partial_walkers.as_ref().expect("partial_walkers buffer");
-
-        // SAFETY: two stream-ordered launches implementing the block-partial + final reduction.
-        //
-        // `satsolver_aux_update`:
-        // - ABI: the CUDA entry is `(const u8* assignment, u8* sat_flags, const i32* scores,
-        //   i32* best_score, i32* best_walker, const i32* clauses, i32 n_walkers, i32 n_vars,
-        //   i32 n_clauses, i32 clause_len)`. This kernel emits ONE (score, walker) pair per block,
-        //   so the wrapper deliberately passes the `partial_scores`/`partial_walkers` scratch
-        //   buffers into the kernel's `best_score`/`best_walker` parameter slots (both `i32*`,
-        //   matching order and type); the true `best_score`/`best_walker` are reduced by pass2.
-        // - Bounds: `n_walkers > 0` and `n_vars,n_clauses,clause_len >= 0` are validated; each input
-        //   buffer is length-checked via `expect_len` (`assignment >= n_walkers*n_vars`,
-        //   `sat_flags >= n_walkers*n_clauses`, `scores >= n_walkers`, `clauses >= n_clauses*clause_len`).
-        //   `partial_scores`/`partial_walkers` are (re)allocated above to hold `>= grid_x` elements,
-        //   and the kernel writes exactly one pair per block (`gridDim.x == grid_x`), so every write
-        //   `partial_*[blockIdx.x]` is in bounds. The kernel guards `walker >= n_walkers`.
-        // - Launch dims: `grid_x = ceil_div(n_walkers, block)`, `block = 256`; shared memory is 0
-        //   (the kernel uses a fixed `__shared__ int[32]`, not dynamic shared memory).
-        //
-        // `satsolver_best_reduce_pass2`:
-        // - ABI: `(const i32* partial_scores, const i32* partial_walkers, i32* best_score,
-        //   i32* best_walker, i32 n_partials)`; arguments match. `partial_len as i32` is the exact
-        //   number of partials produced by the previous launch (`grid_x`, which fits u32/i32 here).
-        // - Bounds: reads `partial_*[0..n_partials]` (in bounds by the alloc above) and writes the
-        //   single-element `best_score`/`best_walker` (each `expect_len(.., 1)`-checked). Launched
-        //   with one block as the kernel documents (`__launch_bounds__(256)`).
-        //
-        // Ordering/lifetime: both launches use `self.stream`, so pass2 observes pass1's writes
-        // without an intervening host sync. All buffers are borrowed for the call (`sat_flags`,
-        // `best_score`, `best_walker` uniquely `&mut`; no host aliasing) and the scratch buffers are
-        // owned by `self`. The synchronous `satsolver_aux_reduce_best` wrapper calls `synchronize()`
-        // before returning; the async form documents the caller must synchronize before freeing or
-        // reusing any argument. Context/module/stream are `Some` and live as long as `self`.
-        unsafe {
-            launch!(satsolver_aux_update<<<grid_x, block, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
-                assignment.as_device_ptr(),
-                sat_flags.as_device_ptr(),
-                scores.as_device_ptr(),
-                partial_scores.as_device_ptr(),
-                partial_walkers.as_device_ptr(),
-                clauses.as_device_ptr(),
-                n_walkers,
-                n_vars,
-                n_clauses,
-                clause_len,
-            ))
-            .map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "satsolver_aux_update launch: {e:?}"
-                )))
-            })?;
-
-            launch!(satsolver_best_reduce_pass2<<<1u32, block, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
-                partial_scores.as_device_ptr(),
-                partial_walkers.as_device_ptr(),
-                best_score.as_device_ptr(),
-                best_walker.as_device_ptr(),
-                partial_len as i32,
-            ))
-            .map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "satsolver_best_reduce_pass2 launch: {e:?}"
-                )))
-            })?;
-        }
-
-        Ok(())
-    }
-
-    pub fn poisson_encode(
-        &self,
-        stimuli: &GpuBuffer<f32>,
-        spikes: &mut GpuBuffer<u32>,
-        seed: u32,
-    ) -> GpuResult<()> {
-        self.poisson_encode_async(stimuli, spikes, seed)?;
-        self.synchronize()
-    }
-
-    /// Async variant of [`Self::poisson_encode`]: enqueues the launch on the
-    /// internal stream and returns without waiting.
-    ///
-    /// An empty stimulus is a defined no-op on a ready accelerator: it
-    /// succeeds without launching a kernel (a zero-grid launch would fail
-    /// with `InvalidValue`) and leaves any pooled output tail untouched.
-    /// Readiness is still required, so a CPU-fallback accelerator reports
-    /// `Unavailable` here exactly as it does for non-empty inputs, keeping
-    /// the sync/async contract coherent. The caller must call
-    /// [`Self::synchronize`] before reading `spikes` on the host or
-    /// dropping/reusing either buffer.
-    pub fn poisson_encode_async(
-        &self,
-        stimuli: &GpuBuffer<f32>,
-        spikes: &mut GpuBuffer<u32>,
-        seed: u32,
-    ) -> GpuResult<()> {
-        let n = stimuli.len();
-        Self::expect_len("spikes", spikes.len(), n)?;
-
-        // The CUDA kernel takes the element count as `int`. Reject `n > i32::MAX`
-        // before the cast: `n as i32` would otherwise wrap negative and the
-        // kernel's `tid >= n` guard would make every thread skip, silently
-        // producing no output. `n as u32` for the grid is safe once `n` fits i32.
-        let n_i32 = i32::try_from(n).map_err(|_| {
-            GpuError::invalid_input(format!(
-                "poisson_encode: element count {n} exceeds i32::MAX kernel limit"
-            ))
-        })?;
-
-        if n == 0 {
-            // Defined empty-input contract (GH #48): the spikes-length check
-            // above already ran, so an invalid buffer relationship still fails
-            // before this no-op return. Readiness is required so a
-            // CPU-fallback accelerator stays fail-closed (matching non-empty
-            // inputs and the sync wrapper, which must synchronize). No launch
-            // occurs and pooled tails are untouched.
-            if !self.is_ready() {
-                return Err(self.unavailable_error());
-            }
-            return Ok(());
-        }
-
-        let kernels = self.kernels()?;
-        let func = kernels.get_function("poisson_encode")?;
-        let stream = self
-            .stream
-            .as_ref()
-            .ok_or_else(|| self.unavailable_error())?;
-
-        let block = 256;
-        let grid = Self::ceil_div_u32(n as u32, block);
-
-        // SAFETY: launching the `poisson_encode` kernel.
-        // - ABI: the CUDA entry (cu/spiking_network.cu) is
-        //   `(const float* stimuli, unsigned int* spikes, int n, unsigned int seed)`. Arguments match:
-        //   `stimuli` is a read-only f32 device pointer, `spikes` is the u32 write target, `n_i32`
-        //   is the element count, and `seed` is the u32 RNG seed.
-        // - Bounds: `spikes.len() == stimuli.len() == n` is enforced above via `expect_len`, and
-        //   `n` is checked to fit `i32` via `i32::try_from` (so `n_i32 >= 0` and the grid cast
-        //   `n as u32` cannot wrap). The kernel guards `tid >= n`, so every `stimuli[tid]` read and
-        //   `spikes[tid]` write is in bounds.
-        // - Launch dims: `grid = ceil_div(n, 256)` covers all `n` threads; 0 dynamic shared memory
-        //   (the kernel declares none).
-        // - Lifetime/aliasing: `stimuli` is shared `&`, `spikes` is unique `&mut` (no host aliasing);
-        //   both are caller-owned and outlive the borrow. The synchronous `poisson_encode` wrapper
-        //   synchronizes before returning; the async form requires the caller to synchronize before
-        //   freeing/reusing the buffers. Context/module/stream are `Some` for as long as `self`.
-        unsafe {
-            launch!(func<<<grid, block, 0, stream>>>(
-                stimuli.as_device_ptr(),
-                spikes.as_device_ptr(),
-                n_i32,
-                seed,
-            ))
-            .map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "poisson_encode launch: {e:?}"
-                )))
-            })?;
-        }
-
-        Ok(())
-    }
-
-    /// Group-scaled ternary GEMV: `y = scale(W) @ x`.
-    ///
-    /// `packed_w` is row-major `M × ternary_word_count(K)` words.
-    /// `scales` is `M × groups_per_row(K, group_size)` f32.
-    /// When `skip_zeros` is true, zero trits are skipped on device.
-    #[allow(clippy::too_many_arguments)]
-    pub fn ternary_gemv(
-        &self,
-        packed_w: &GpuBuffer<u32>,
-        scales: &GpuBuffer<f32>,
-        x: &GpuBuffer<f32>,
-        y: &mut GpuBuffer<f32>,
-        m: i32,
-        k: i32,
-        group_size: i32,
-        skip_zeros: bool,
-    ) -> GpuResult<()> {
-        self.ternary_gemv_async(packed_w, scales, x, y, m, k, group_size, skip_zeros)?;
-        self.synchronize()
-    }
-
-    /// Async variant of [`Self::ternary_gemv`]. All output writes are enqueued
-    /// on the accelerator stream. When `m > 0`, the empty-K path waits for
-    /// stream completion before returning. Calls with `m == 0` return
-    /// immediately; other paths require [`Self::synchronize`] before reading
-    /// or dropping any argument buffer.
-    #[allow(clippy::too_many_arguments)]
-    pub fn ternary_gemv_async(
-        &self,
-        packed_w: &GpuBuffer<u32>,
-        scales: &GpuBuffer<f32>,
-        x: &GpuBuffer<f32>,
-        y: &mut GpuBuffer<f32>,
-        m: i32,
-        k: i32,
-        group_size: i32,
-        skip_zeros: bool,
-    ) -> GpuResult<()> {
-        if m < 0 || k < 0 {
-            return Err(GpuError::invalid_input(format!(
-                "ternary_gemv: m and k must be >= 0, got m={m} k={k}"
-            )));
-        }
-        if group_size <= 0 {
-            return Err(GpuError::invalid_input(format!(
-                "ternary_gemv: group_size must be > 0, got {group_size}"
-            )));
-        }
-
-        let m_u = m as usize;
-        let k_u = k as usize;
-        Self::expect_len("y", y.len(), m_u)?;
-
-        // Match host-ref: empty product is the zero vector (not "leave y untouched").
-        if m == 0 {
-            return Ok(());
-        }
-        if k == 0 {
-            // Device memset — no host-sized staging buffer; preserve pooled tail.
-            self.zero_output_prefix(y, m_u)?;
-            return Ok(());
-        }
-
-        let group_u = group_size as usize;
-        let words_per_row = k_u.div_ceil(TERNARY_VALUES_PER_WORD);
-        let n_groups = k_u.div_ceil(group_u);
-
-        Self::expect_len(
-            "packed_w",
-            packed_w.len(),
-            m_u.saturating_mul(words_per_row),
-        )?;
-        Self::expect_len("scales", scales.len(), m_u.saturating_mul(n_groups))?;
-        Self::expect_len("x", x.len(), k_u)?;
-
-        let kernels = self.kernels()?;
-        let func = kernels.get_function("ternary_gemv")?;
-        let stream = self
-            .stream
-            .as_ref()
-            .ok_or_else(|| self.unavailable_error())?;
-        let block = 256u32;
-        let grid = Self::ceil_div_u32(m as u32, block);
-        let skip = if skip_zeros { 1i32 } else { 0i32 };
-
-        range_push!("ternary_gemv");
-        // SAFETY: launching the `ternary_gemv` kernel.
-        // - ABI: the CUDA entry (cu/ternary_gemm.cu) is `(const u32* packed_w, const f32* scales,
-        //   const f32* x, f32* y, i32 M, i32 K, i32 group_size, i32 skip_zeros)`. Arguments match in
-        //   order and type: three read-only device pointers, the `y` write target, then the four
-        //   `i32` scalars (`skip` is `0`/`1`).
-        // - Bounds: `m,k >= 0` and `group_size > 0` are validated. The `m == 0` and `k == 0` cases
-        //   returned earlier, so here `m,k >= 1`. Buffer lengths are checked via `expect_len`:
-        //   `y >= m`, `packed_w >= m*ceil(k/TERNARY_VALUES_PER_WORD)`, `scales >= m*ceil(k/group)`,
-        //   `x >= k`. These are exactly the strides the kernel indexes (one output row per thread,
-        //   `words_per_row` words and `n_groups` scales per row), so all accesses are in bounds.
-        // - Launch dims: `grid = ceil_div(m, 256)` covers all `m` output rows; 0 dynamic shared memory.
-        // - Lifetime/aliasing: `packed_w`/`scales`/`x` are shared `&`, `y` is unique `&mut` (no host
-        //   aliasing); all are caller-owned and outlive the borrow. The synchronous `ternary_gemv`
-        //   wrapper synchronizes before returning; the async form requires the caller to synchronize
-        //   before freeing/reusing the buffers. Context/module/stream are `Some` for as long as `self`.
-        let launch_result = unsafe {
-            launch!(func<<<grid, block, 0, stream>>>(
-                packed_w.as_device_ptr(),
-                scales.as_device_ptr(),
-                x.as_device_ptr(),
-                y.as_device_ptr(),
-                m,
-                k,
-                group_size,
-                skip,
-            ))
-        };
-        range_pop!();
-        launch_result.map_err(|e| {
-            GpuError::LaunchFailed(sanitize_diagnostic(&format!("ternary_gemv launch: {e:?}")))
-        })?;
-
-        Ok(())
-    }
-
-    /// Group-scaled ternary GEMM: `C = scale(W) @ B`.
-    ///
-    /// `B` is `K × N` row-major f32; `C` is `M × N` row-major f32.
-    #[allow(clippy::too_many_arguments)]
-    pub fn ternary_gemm(
-        &self,
-        packed_w: &GpuBuffer<u32>,
-        scales: &GpuBuffer<f32>,
-        b: &GpuBuffer<f32>,
-        c: &mut GpuBuffer<f32>,
-        m: i32,
-        k: i32,
-        n: i32,
-        group_size: i32,
-        skip_zeros: bool,
-    ) -> GpuResult<()> {
-        self.ternary_gemm_async(packed_w, scales, b, c, m, k, n, group_size, skip_zeros)?;
-        self.synchronize()
-    }
-
-    /// Async variant of [`Self::ternary_gemm`]. All output writes are enqueued
-    /// on the accelerator stream. When `m > 0 && n > 0`, the empty-K path
-    /// waits for stream completion before returning. Calls with `m == 0 ||
-    /// n == 0` return immediately; other paths require [`Self::synchronize`]
-    /// before reading or dropping any argument buffer.
-    #[allow(clippy::too_many_arguments)]
-    pub fn ternary_gemm_async(
-        &self,
-        packed_w: &GpuBuffer<u32>,
-        scales: &GpuBuffer<f32>,
-        b: &GpuBuffer<f32>,
-        c: &mut GpuBuffer<f32>,
-        m: i32,
-        k: i32,
-        n: i32,
-        group_size: i32,
-        skip_zeros: bool,
-    ) -> GpuResult<()> {
-        if m < 0 || k < 0 || n < 0 {
-            return Err(GpuError::invalid_input(format!(
-                "ternary_gemm: m, k, n must be >= 0, got m={m} k={k} n={n}"
-            )));
-        }
-        if group_size <= 0 {
-            return Err(GpuError::invalid_input(format!(
-                "ternary_gemm: group_size must be > 0, got {group_size}"
-            )));
-        }
-
-        let m_u = m as usize;
-        let k_u = k as usize;
-        let n_u = n as usize;
-        Self::expect_len("c", c.len(), m_u.saturating_mul(n_u))?;
-
-        // Match host-ref: empty product zeros C (not "leave C untouched").
-        if m == 0 || n == 0 {
-            return Ok(());
-        }
-        if k == 0 {
-            // Device memset — no host-sized staging buffer; preserve pooled tail.
-            self.zero_output_prefix(c, m_u.saturating_mul(n_u))?;
-            return Ok(());
-        }
-
-        let group_u = group_size as usize;
-        let words_per_row = k_u.div_ceil(TERNARY_VALUES_PER_WORD);
-        let n_groups = k_u.div_ceil(group_u);
-
-        Self::expect_len(
-            "packed_w",
-            packed_w.len(),
-            m_u.saturating_mul(words_per_row),
-        )?;
-        Self::expect_len("scales", scales.len(), m_u.saturating_mul(n_groups))?;
-        Self::expect_len("b", b.len(), k_u.saturating_mul(n_u))?;
-
-        let kernels = self.kernels()?;
-        let func = kernels.get_function("ternary_gemm")?;
-        let stream = self
-            .stream
-            .as_ref()
-            .ok_or_else(|| self.unavailable_error())?;
-        // m,n are nonnegative i32 after validation; product always fits u64.
-        let total = (m as u64) * (n as u64);
-        let block = 256u32;
-        // Launch uses 1-D grid of u32 block indices over flattened M*N threads.
-        let grid_u64 = total.div_ceil(block as u64);
-        if grid_u64 > u32::MAX as u64 {
-            return Err(GpuError::invalid_input(format!(
-                "ternary_gemm: grid too large for 1-D launch ({grid_u64} blocks, M*N={total})"
-            )));
-        }
-        let grid = grid_u64 as u32;
-        let skip = if skip_zeros { 1i32 } else { 0i32 };
-
-        range_push!("ternary_gemm");
-        // SAFETY: launching the `ternary_gemm` kernel.
-        // - ABI: the CUDA entry (cu/ternary_gemm.cu) is `(const u32* packed_w, const f32* scales,
-        //   const f32* b, f32* c, i32 M, i32 K, i32 N, i32 group_size, i32 skip_zeros)`. Arguments
-        //   match in order and type: three read-only device pointers, the `c` write target, then the
-        //   five `i32` scalars (`skip` is `0`/`1`).
-        // - Bounds: `m,k,n >= 0` and `group_size > 0` are validated. The `m == 0 || n == 0` and
-        //   `k == 0` cases returned earlier, so here `m,k,n >= 1`. Buffer lengths are checked via
-        //   `expect_len`: `c >= m*n`, `packed_w >= m*ceil(k/TERNARY_VALUES_PER_WORD)`,
-        //   `scales >= m*ceil(k/group)`, `b >= k*n`. The kernel maps one flattened `M*N` output
-        //   element per thread and indexes those same strides, so all accesses are in bounds.
-        // - Launch dims: `grid = ceil_div(M*N, 256)` computed in u64 and rejected above if it would
-        //   exceed `u32::MAX`, so the 1-D grid covers every output element without overflow;
-        //   0 dynamic shared memory.
-        // - Lifetime/aliasing: `packed_w`/`scales`/`b` are shared `&`, `c` is unique `&mut` (no host
-        //   aliasing); all are caller-owned and outlive the borrow. The synchronous `ternary_gemm`
-        //   wrapper synchronizes before returning; the async form requires the caller to synchronize
-        //   before freeing/reusing the buffers. Context/module/stream are `Some` for as long as `self`.
-        let launch_result = unsafe {
-            launch!(func<<<grid, block, 0, stream>>>(
-                packed_w.as_device_ptr(),
-                scales.as_device_ptr(),
-                b.as_device_ptr(),
-                c.as_device_ptr(),
-                m,
-                k,
-                n,
-                group_size,
-                skip,
-            ))
-        };
-        range_pop!();
-        launch_result.map_err(|e| {
-            GpuError::LaunchFailed(sanitize_diagnostic(&format!("ternary_gemm launch: {e:?}")))
-        })?;
-
-        Ok(())
-    }
-
     /// Return the current stream, or the unavailable error on CPU-only builds.
     pub(crate) fn ready_stream(&self) -> GpuResult<&Stream> {
         self.stream.as_ref().ok_or_else(|| self.unavailable_error())
@@ -1060,58 +346,6 @@ impl GpuAccelerator {
 
     pub(crate) fn launch_error(kernel: &str, error: impl std::fmt::Debug) -> GpuError {
         GpuError::LaunchFailed(sanitize_diagnostic(&format!("{kernel} launch: {error:?}")))
-    }
-
-    pub(crate) fn ensure_routing_scratch(&self, partial_len: usize) -> GpuResult<()> {
-        self._ctx
-            .as_ref()
-            .ok_or_else(|| self.unavailable_error())?
-            .require_current()?;
-        let mut slot = self.routing_scratch.borrow_mut();
-        if slot.as_ref().is_none_or(|s| s.scores.len() < partial_len) {
-            // Replaced buffers may still be referenced by queued launches.
-            self.synchronize()?;
-            *slot = Some(RoutingScratch {
-                entropy_sum: GpuBuffer::alloc(partial_len)?,
-                entropy_max: GpuBuffer::alloc(partial_len)?,
-                scores: GpuBuffer::alloc(partial_len)?,
-                indices: GpuBuffer::alloc(partial_len)?,
-            });
-        }
-        Ok(())
-    }
-
-    fn ensure_aux_scratch(&self, partial_len: usize) -> GpuResult<()> {
-        self._ctx
-            .as_ref()
-            .ok_or_else(|| self.unavailable_error())?
-            .require_current()?;
-        let stream = self
-            .stream
-            .as_ref()
-            .ok_or_else(|| self.unavailable_error())?;
-        let mut partial_scores = self.aux_partial_scores.borrow_mut();
-        let mut partial_walkers = self.aux_partial_walkers.borrow_mut();
-        let need_partial_realloc = partial_scores
-            .as_ref()
-            .is_none_or(|b| b.len() < partial_len)
-            || partial_walkers
-                .as_ref()
-                .is_none_or(|b| b.len() < partial_len);
-        if need_partial_realloc {
-            // The current-context check protects allocation and destruction
-            // of replaced scratch buffers. Wait for their last queued use.
-            stream.synchronize().map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "stream sync before partial realloc: {e:?}"
-                )))
-            })?;
-            let scores = GpuBuffer::<i32>::alloc(partial_len)?;
-            let walkers = GpuBuffer::<i32>::alloc(partial_len)?;
-            *partial_scores = Some(scores);
-            *partial_walkers = Some(walkers);
-        }
-        Ok(())
     }
 
     pub(crate) fn zero_output_prefix(
@@ -1169,6 +403,7 @@ impl Drop for GpuAccelerator {
         // teardown during unwinding: these locals drop before the guard.
         let modules = self.modules.take();
         let stream = self.stream.take();
+        let temporal_state = self.temporal_state.take();
         let partial_walkers = self.aux_partial_walkers.get_mut().take();
         let partial_scores = self.aux_partial_scores.get_mut().take();
         let routing_scratch = self.routing_scratch.get_mut().take();
@@ -1185,6 +420,7 @@ impl Drop for GpuAccelerator {
         drop(routing_scratch);
         drop(partial_scores);
         drop(partial_walkers);
+        drop(temporal_state);
         drop(stream);
         drop(modules);
         drop(current_context);
@@ -1219,10 +455,15 @@ fn classify_context_failure(facts: &CapabilityFacts, error: &GpuError) -> Fallba
         .unwrap_or_else(|| classify_init_failure(facts))
 }
 
-fn capability_report_for_success(mut facts: CapabilityFacts) -> CapabilityReport {
+fn capability_report_for_success(
+    mut facts: CapabilityFacts,
+    kernels_loaded: bool,
+) -> CapabilityReport {
     facts.runtime_available = true;
     facts.device_available = true;
-    facts.kernels = KernelAvailability::all_available();
+    if kernels_loaded {
+        facts.kernels = KernelAvailability::all_available();
+    }
     evaluate_capabilities(&facts)
 }
 
@@ -1294,7 +535,7 @@ mod tests {
             kernels: KernelAvailability::compiled_unverified(),
         };
 
-        let report = capability_report_for_success(facts);
+        let report = capability_report_for_success(facts, true);
 
         assert!(report.runtime_available);
         assert!(report.device_available);

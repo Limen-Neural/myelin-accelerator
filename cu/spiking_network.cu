@@ -8,6 +8,8 @@
 //    poisson_encode       — rate-coded Poisson spike train
 //    lif_step             — LIF neuron step (unweighted)
 //    lif_step_weighted    — LIF step with synaptic weight matrix
+//    gif_step_weighted    — GIF step with adaptation, dynamic threshold, f32 synapses
+//    gif_step_weighted_f16 — GIF step with f16 synapses via myelin_shim
 //    spike_rate           — windowed firing-rate estimator
 //    reset_membrane       — reset membrane to resting potential
 //    stdp_update_weights  — spike-timing-dependent weight update
@@ -30,6 +32,15 @@
 #define LIF_THRESHOLD    1.0f    // normalised firing threshold
 #define LIF_RESET        0.0f    // reset potential after spike
 #define LIF_REFRACT_TICK 2       // integer ticks of absolute refractory period
+
+// ── GIF model constants ──
+#define GIF_LEAK             0.92f
+#define GIF_DRIVE_SCALE      0.75f
+#define GIF_THRESHOLD_BASE   0.65f
+#define GIF_ADAPTATION_SCALE 0.22f
+#define GIF_ADAPTATION_DECAY 0.94f
+#define GIF_RESET_RATIO      0.35f
+#define GIF_ADAPTATION_TERM  0.05f
 
 // ── STDP constants (match stdp.rs) ───────────────────────────────
 #define STDP_A_PLUS   0.01f
@@ -73,6 +84,7 @@ void poisson_encode(
     spikes[tid] = (r < threshold) ? 1u : 0u;
 }
 
+// ════════════════════════════════════════════════════════════════════
 // ════════════════════════════════════════════════════════════════════
 //  lif_step
 //
@@ -173,6 +185,139 @@ void lif_step_weighted(
             v = LIF_RESET;
             refract[tid] = (unsigned int)LIF_REFRACT_TICK;
         }
+    }
+
+    membrane[tid]   = v;
+    spikes_out[tid] = spike;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  gif_step_weighted
+//
+//  GIF (Generalized Integrate-and-Fire) neuron update with synaptic weights,
+//  per-neuron adaptation state, and dynamic threshold. Matches corinth-canal's
+//  SparseGifHiddenLayer / funnel.rs constants.
+//
+//  Adaptation decays every step; threshold = base + adaptation*scale;
+//  on spike: adaptation += 1.0, soft-reset membrane.
+//
+//  Uses shared memory for the input_spikes tile. Refractory is respected.
+//  Per-neuron `input_current` is added after the synaptic drive.
+//
+//  Params
+//    membrane      [n_neurons]              — read-write membrane potential
+//    adaptation    [n_neurons]              — read-write GIF adaptation
+//    weights       [n_neurons × n_inputs]   — row-major f32 weight matrix
+//    input_spikes  [n_inputs]               — binary spike inputs (0.0/1.0)
+//    input_current [n_neurons]              — projected external current
+//    refract       [n_neurons]              — refractory counter
+//    spikes_out    [n_neurons]              — output spike flags
+//    n_neurons, n_inputs
+// ════════════════════════════════════════════════════════════════════
+extern "C" __global__
+void gif_step_weighted(
+    float* __restrict__        membrane,
+    float* __restrict__        adaptation,
+    const float* __restrict__  weights,
+    const float* __restrict__  input_spikes,
+    const float* __restrict__  input_current,
+    unsigned int* __restrict__ refract,
+    unsigned int* __restrict__ spikes_out,
+    int n_neurons,
+    int n_inputs)
+{
+    extern __shared__ float s_inputs[];
+
+    for (int i = threadIdx.x; i < n_inputs; i += blockDim.x)
+        s_inputs[i] = input_spikes[i];
+    __syncthreads();
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_neurons) return;
+
+    unsigned int ref = refract[tid];
+    float v = membrane[tid];
+    float a = adaptation[tid];
+    unsigned int spike = 0u;
+
+    if (ref > 0u) {
+        v = LIF_RESET;
+        refract[tid] = ref - 1u;
+        adaptation[tid] = a * GIF_ADAPTATION_DECAY;
+    } else {
+        a *= GIF_ADAPTATION_DECAY;
+
+        const float* w_row = weights + (long)tid * n_inputs;
+        float drive = 0.0f;
+        for (int j = 0; j < n_inputs; ++j)
+            drive = fmaf(w_row[j], s_inputs[j], drive);
+
+        v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM
+            + input_current[tid];
+
+        float threshold = GIF_THRESHOLD_BASE + a * GIF_ADAPTATION_SCALE;
+        if (v >= threshold) {
+            spike = 1u;
+            v -= threshold * GIF_RESET_RATIO;
+            a += 1.0f;
+            refract[tid] = (unsigned int)LIF_REFRACT_TICK;
+        }
+        adaptation[tid] = a;
+    }
+
+    membrane[tid]   = v;
+    spikes_out[tid] = spike;
+}
+
+extern "C" __global__
+void gif_step_weighted_f16(
+    float* __restrict__        membrane,
+    float* __restrict__        adaptation,
+    const half* __restrict__   weights,
+    const float* __restrict__  input_spikes,
+    const float* __restrict__  input_current,
+    unsigned int* __restrict__ refract,
+    unsigned int* __restrict__ spikes_out,
+    int n_neurons,
+    int n_inputs)
+{
+    extern __shared__ float s_inputs[];
+
+    for (int i = threadIdx.x; i < n_inputs; i += blockDim.x)
+        s_inputs[i] = input_spikes[i];
+    __syncthreads();
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_neurons) return;
+
+    unsigned int ref = refract[tid];
+    float v = membrane[tid];
+    float a = adaptation[tid];
+    unsigned int spike = 0u;
+
+    if (ref > 0u) {
+        v = LIF_RESET;
+        refract[tid] = ref - 1u;
+        adaptation[tid] = a * GIF_ADAPTATION_DECAY;
+    } else {
+        a *= GIF_ADAPTATION_DECAY;
+
+        const half* w_row = weights + (long)tid * n_inputs;
+        float drive = 0.0f;
+        for (int j = 0; j < n_inputs; ++j)
+            drive = fmaf(__half2float(w_row[j]), s_inputs[j], drive);
+
+        v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM
+            + input_current[tid];
+
+        float threshold = GIF_THRESHOLD_BASE + a * GIF_ADAPTATION_SCALE;
+        if (v >= threshold) {
+            spike = 1u;
+            v -= threshold * GIF_RESET_RATIO;
+            a += 1.0f;
+            refract[tid] = (unsigned int)LIF_REFRACT_TICK;
+        }
+        adaptation[tid] = a;
     }
 
     membrane[tid]   = v;

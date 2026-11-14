@@ -43,7 +43,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy (no CUDA)
-        run: cargo clippy --locked --no-default-features -- -D warnings
+        run: cargo clippy --locked --no-default-features --tests -- -D warnings
 
   # ── CPU-only tests & builds ────────────────────────────────────────────────
   cpu-checks:
@@ -178,7 +178,7 @@ jobs:
           rustup component add clippy
           cargo clippy --locked --features cuda -- -D warnings
 
-      - name: Verify PTX non-stub + ternary present
+      - name: Verify PTX/fatbin non-stub + kernel entries
         shell: bash
         run: |
           set -euo pipefail
@@ -206,6 +206,19 @@ jobs:
             fi
             echo "✓ $f targets sm_120 (${size} bytes)"
           done
+          for f in spiking_network_sm_120.fatbin vector_similarity_sm_120.fatbin \
+                   satsolver_sm_120.fatbin ternary_gemm_sm_120.fatbin; do
+            if [ ! -f "$ptx_dir/$f" ]; then
+              echo "::error::Missing fatbin file: $f"
+              exit 1
+            fi
+            size="$(wc -c < "$ptx_dir/$f")"
+            if [ "$size" -lt 1000 ]; then
+              echo "::error::fatbin looks empty/stub ($f is ${size} bytes)"
+              exit 1
+            fi
+            echo "✓ $f (${size} bytes)"
+          done
 
       - name: Validate PTX kernel symbols
         shell: bash
@@ -230,7 +243,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: ptx-sm_120-cloud-13.3.1
-          path: target/debug/build/myelin-accelerator-*/out/*.ptx
+          path: |
+            target/debug/build/myelin-accelerator-*/out/*.ptx
+            target/debug/build/myelin-accelerator-*/out/*.fatbin
           retention-days: 14
 
   # ── CUDA build & validation (SELF-HOSTED GPU RUNNER) ─────────────────────
@@ -286,7 +301,7 @@ jobs:
         run: cargo build --locked --features cuda --release
 
       - name: Clippy with CUDA feature
-        run: cargo clippy --locked --features cuda -- -D warnings
+        run: cargo clippy --locked --features cuda --tests -- -D warnings
 
       - name: Test (debug, CUDA feature, non-ignored)
         run: cargo test --locked --features cuda
@@ -301,16 +316,16 @@ jobs:
         run: |
           python3 -B scripts/prepare_crate.py \
             --candidate-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
-            --output-dir "$RUNNER_TEMP/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}"
+            --output-dir "$RUNNER_TEMP/myelin-candidate-${{ github.run_id }}-${{ github.run_attempt }}"
 
       - name: Retain crate preparation evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
-          name: myelin-v0.2.0-candidate-${{ github.event.pull_request.head.sha || github.sha }}
+          name: myelin-candidate-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
-            ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/summary.json
-            ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/*.log
-            ${{ runner.temp }}/myelin-v0.2.0-${{ github.run_id }}-${{ github.run_attempt }}/*.crate
+            ${{ runner.temp }}/myelin-candidate-${{ github.run_id }}-${{ github.run_attempt }}/summary.json
+            ${{ runner.temp }}/myelin-candidate-${{ github.run_id }}-${{ github.run_attempt }}/*.log
+            ${{ runner.temp }}/myelin-candidate-${{ github.run_id }}-${{ github.run_attempt }}/*.crate
           if-no-files-found: error
           retention-days: 14
 
@@ -346,6 +361,19 @@ jobs:
               fi
               echo "✓ $profile: $f targets sm_120 (${size} bytes)"
             done
+            for f in spiking_network_sm_120.fatbin vector_similarity_sm_120.fatbin \
+                     satsolver_sm_120.fatbin ternary_gemm_sm_120.fatbin; do
+              if [ ! -f "$ptx_dir/$f" ]; then
+                echo "::error::Missing fatbin file ($profile): $f"
+                exit 1
+              fi
+              size="$(wc -c < "$ptx_dir/$f")"
+              if [ "$size" -lt 1000 ]; then
+                echo "::error::fatbin looks empty/stub ($profile $f is ${size} bytes)"
+                exit 1
+              fi
+              echo "✓ $profile: $f (${size} bytes)"
+            done
           done
 
       - name: Validate PTX kernel symbols
@@ -362,7 +390,6 @@ jobs:
             ./scripts/check_ptx_entries.sh "$ptx_dir" "$profile"
           done
           echo "All kernel entry points verified for both debug and release."
-
       - name: Offline ptxas assemble (sm_120)
         shell: bash
         run: |
@@ -387,7 +414,9 @@ jobs:
           name: ptx-sm_120-self-hosted
           path: |
             target/debug/build/myelin-accelerator-*/out/*.ptx
+            target/debug/build/myelin-accelerator-*/out/*.fatbin
             target/release/build/myelin-accelerator-*/out/*.ptx
+            target/release/build/myelin-accelerator-*/out/*.fatbin
           retention-days: 30
 
       - name: CUDA build done

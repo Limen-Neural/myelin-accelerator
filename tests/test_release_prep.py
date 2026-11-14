@@ -1,6 +1,6 @@
 # Copyright 2026 Raul Montoya Cardenas
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Archive boundary checks for the v0.2.0 Cargo release preflight."""
+"""Archive boundary checks for the Cargo release preflight."""
 
 import io
 import sys
@@ -11,16 +11,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from prepare_crate import REQUIRED_PATHS, check_tracked_inventory, inspect_archive, prepare_archive  # noqa: E402
+from prepare_crate import ARCHIVE_ROOT, REQUIRED_PATHS, check_tracked_inventory, inspect_archive, prepare_archive  # noqa: E402
 
 
 class ArchiveBoundaryTests(unittest.TestCase):
     def archive(self, root: Path, paths: set[str], symlink: str | None = None) -> Path:
-        output = root / "myelin-accelerator-0.2.0.crate"
+        output = root / f"{ARCHIVE_ROOT}.crate"
         with tarfile.open(output, "w:gz") as archive:
             for path in sorted(paths):
                 payload = b"fixture\n"
-                info = tarfile.TarInfo(f"myelin-accelerator-0.2.0/{path}")
+                info = tarfile.TarInfo(f"{ARCHIVE_ROOT}/{path}")
                 if path == symlink:
                     info.type = tarfile.SYMTYPE
                     info.linkname = "../outside"

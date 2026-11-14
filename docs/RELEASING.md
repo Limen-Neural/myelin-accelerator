@@ -2,7 +2,7 @@
 
 ## Prepare and qualify a candidate
 
-v0.2.0 was [published](https://crates.io/crates/myelin-accelerator/0.2.0) from qualified commit `6cfb49c60fb7f95818e87d0ea0e1ce76c2360fb5`; [LIM-1460](https://linear.app/rpd-34/issue/LIM-1460/release-publish-myelin-accelerator-v020-foundation) and [GH #37](https://github.com/Limen-Neural/myelin-accelerator/issues/37#issuecomment-5945443818) retain the evidence. Merging a later PR does not transfer qualification to its new commit. The preflight below is pinned to v0.2.0 for reproduction; update its version contract before using it for a future release. It prepares a candidate but never uploads or tags.
+v0.2.0 was [published](https://crates.io/crates/myelin-accelerator/0.2.0) from qualified commit `6cfb49c60fb7f95818e87d0ea0e1ce76c2360fb5`; [LIM-1460](https://linear.app/rpd-34/issue/LIM-1460/release-publish-myelin-accelerator-v020-foundation) and [GH #37](https://github.com/Limen-Neural/myelin-accelerator/issues/37#issuecomment-5945443818) retain the evidence. Merging a later PR does not transfer qualification to its new commit. The preflight reads the candidate version from `Cargo.toml` and records it in `summary.json`; v0.2.0 evidence remains tied to its original SHA. It prepares a candidate but never uploads or tags.
 
 The manifest has an explicit source allowlist. Cargo must include Rust and CUDA sources, the common CUDA header, build script, examples, licenses, lockfile, documentation, tests, pinned SNN fixtures, and verification scripts. Local metadata, generated PTX, and credentials do not belong in the crate. The preflight inspects the actual archive and compares its inventory with tracked files.
 

@@ -40,6 +40,6 @@ check_allowed_paths() {
 check_allowed_paths 'src' '^src/.*\.rs$'
 check_allowed_paths 'cu' '^cu/.*\.(cu|cuh)$'
 check_allowed_paths 'examples' '^examples/benchmark\.rs$'
-check_allowed_paths 'tests' '^tests/(api_contract|capability_probe|cosine_gpu|gpu_buffer|gpu_lifecycle|kernel_hazards_gpu|oracle|oracle_gpu|ptx_entry_manifest|routing_gpu|snn_fixtures|snn_fixtures_gpu|ternary_gpu)\.rs$|^tests/test_release_prep\.py$|^tests/snn_support/mod\.rs$|^tests/fixtures/snn/README\.md$|^tests/fixtures/snn/(spikenaut|synfire_lifneuron)/fixture\.json$|^tests/fixtures/snn/spikenaut/parameters_weights\.mem$'
+check_allowed_paths 'tests' '^tests/(api_contract|capability_probe|cosine_gpu|gif_gpu|gpu_buffer|gpu_lifecycle|kernel_hazards_gpu|oracle|oracle_gpu|ptx_entry_manifest|routing_gpu|snn_fixtures|snn_fixtures_gpu|ternary_gpu)\.rs$|^tests/test_release_prep\.py$|^tests/snn_support/mod\.rs$|^tests/fixtures/snn/README\.md$|^tests/fixtures/snn/(spikenaut|synfire_lifneuron)/fixture\.json$|^tests/fixtures/snn/spikenaut/parameters_weights\.mem$'
 check_allowed_paths 'docs' '^docs/(ARCHITECTURE|BENCHMARKS|COVERAGE|RELEASING|ROUTING|SNN_COMPATIBILITY|TERNARY)\.md$'
 check_allowed_paths 'scripts' '^scripts/(check-package-boundary|check_ptx_entries|gen_compile_commands_cuda|ptx_out_dir|sanitize_lifecycle|test-package-boundary)\.sh$|^scripts/prepare_crate\.py$|^scripts/ptx_entries\.txt$|^scripts/snn_fixtures/verify_fixtures\.py$'

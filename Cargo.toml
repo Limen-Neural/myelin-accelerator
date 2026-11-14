@@ -1,6 +1,6 @@
 [package]
 name = "myelin-accelerator"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 # True MSRV, measured on the default (CPU) feature set: let-chains and
 # slice::as_chunks require Rust 1.88.0 (1.85.0 fails, 1.88.0 passes
@@ -42,6 +42,9 @@ tracing   = "0.1"
 serde     = { version = "1", features = ["derive"] }
 serde_json = "1"
 nvtx      = { version = "1", optional = true }
+
+[build-dependencies]
+cc = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

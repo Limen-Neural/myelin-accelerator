@@ -1,0 +1,113 @@
+// Copyright 2026 Raul Montoya Cardenas
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+// ════════════════════════════════════════════════════════════════════
+//  gpu/ffi.rs — C ABI shim wrappers for Blackwell-critical kernels
+//
+//  Most kernels launch through fatbin/PTX in kernel.rs. The latency-critical
+//  F16 GIF path launches through a linked CUDA shim so Rust can pass raw
+//  driver handles into a runtime `<<<>>>` call.
+// ════════════════════════════════════════════════════════════════════
+
+use crate::gpu::error::{GpuError, GpuResult};
+use crate::launch_hook::{LaunchFailure, LaunchType, report_launch_failure};
+use cust::memory::{DeviceCopy, DevicePointer};
+use cust::stream::Stream;
+use std::ffi::c_void;
+
+unsafe extern "C" {
+    fn myelin_launch_gif_step_weighted_f16(
+        stream: *mut c_void,
+        grid_x: u32,
+        block_x: u32,
+        shared_bytes: u32,
+        shared_mem_limit: u32,
+        membrane: *mut c_void,
+        adaptation: *mut c_void,
+        weights: *mut c_void,
+        input_spikes: *mut c_void,
+        input_current: *mut c_void,
+        refractory: *mut c_void,
+        spikes_out: *mut c_void,
+        n_neurons: i32,
+        n_inputs: i32,
+    ) -> i32;
+}
+
+/// Device buffers for one F16 GIF weighted step.
+pub struct GifF16Buffers {
+    pub membrane: DevicePointer<f32>,
+    pub adaptation: DevicePointer<f32>,
+    pub weights: DevicePointer<u16>,
+    pub input_spikes: DevicePointer<f32>,
+    pub input_current: DevicePointer<f32>,
+    pub refractory: DevicePointer<u32>,
+    pub spikes_out: DevicePointer<u32>,
+}
+
+/// Launch description for [`launch_gif_step_weighted_f16`].
+pub struct GifF16Launch<'a> {
+    pub stream: &'a Stream,
+    pub grid_x: u32,
+    pub block_x: u32,
+    pub shared_bytes: u32,
+    pub shared_mem_limit: u32,
+    pub buffers: GifF16Buffers,
+    pub n_neurons: i32,
+    pub n_inputs: i32,
+}
+
+pub fn launch_gif_step_weighted_f16(launch: GifF16Launch<'_>) -> GpuResult<()> {
+    let GifF16Launch {
+        stream,
+        grid_x,
+        block_x,
+        shared_bytes,
+        shared_mem_limit,
+        buffers,
+        n_neurons,
+        n_inputs,
+    } = launch;
+    let code = unsafe {
+        myelin_launch_gif_step_weighted_f16(
+            stream.as_inner().cast::<c_void>(),
+            grid_x,
+            block_x,
+            shared_bytes,
+            shared_mem_limit,
+            device_ptr_to_void(buffers.membrane),
+            device_ptr_to_void(buffers.adaptation),
+            device_ptr_to_void(buffers.weights),
+            device_ptr_to_void(buffers.input_spikes),
+            device_ptr_to_void(buffers.input_current),
+            device_ptr_to_void(buffers.refractory),
+            device_ptr_to_void(buffers.spikes_out),
+            n_neurons,
+            n_inputs,
+        )
+    };
+
+    if code == 0 {
+        Ok(())
+    } else {
+        let gpu_error = GpuError::LaunchFailed(format!(
+            "myelin_launch_gif_step_weighted_f16 failed with CUDA runtime error code {code}"
+        ));
+        report_launch_failure(LaunchFailure {
+            kernel_name: "gif_step_weighted_f16".to_string(),
+            launch_type: LaunchType::CAbiShim,
+            grid: (grid_x, 1, 1),
+            block: (block_x, 1, 1),
+            shared_mem: shared_bytes,
+            neuron_count: Some(n_neurons as usize),
+            error: gpu_error.to_string(),
+            jit_error_log: None,
+            jit_info_log: None,
+        });
+        Err(gpu_error)
+    }
+}
+
+fn device_ptr_to_void<T: DeviceCopy>(ptr: DevicePointer<T>) -> *mut c_void {
+    ptr.as_raw() as usize as *mut c_void
+}

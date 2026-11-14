@@ -108,8 +108,6 @@ fn bitpacking_ternary_gemm_ref_matches_gemv_columns() {
     }
 }
 
-// ── Stub-specific tests (CPU-only, no real GPU) ─────────────────────────────
-
 #[cfg(not(feature = "cuda"))]
 mod stub_contract {
     #[test]
@@ -401,6 +399,7 @@ mod stub_contract {
     fn accelerator_construction_reports_cpu_fallback() {
         let acc = GpuAccelerator::new();
         assert!(!acc.is_ready());
+        assert!(!acc.kernels_ready());
         assert_eq!(acc.selected_backend(), Backend::Cpu);
         let fb = acc.fallback().expect("stub fallback record");
         assert_eq!(fb.reason, FallbackReason::CudaFeatureNotBuilt);
@@ -485,6 +484,11 @@ mod stub_contract {
             acc.ternary_gemm(&w, &s, &b, &mut c, 1, 1, 1, 1, false)
                 .is_err()
         );
+
+        let mut acc = GpuAccelerator::new();
+        assert!(acc.ensure_temporal_state(8, 8).is_err());
+        assert!(acc.gif_step_weighted_tick(8).is_err());
+        assert!(acc.synapse_signature().is_none());
     }
 
     /// The CPU stub stays fail-closed for empty Poisson requests on both entry

@@ -1,0 +1,506 @@
+// Copyright 2026 Raul Montoya Cardenas
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+use crate::gif::{GIF_BLOCK_SIZE, gif_grid};
+use crate::gpu::accelerator::{GpuAccelerator, LaunchShape};
+use crate::gpu::error::{GpuError, GpuResult};
+use crate::gpu::ffi;
+use crate::gpu::memory::GpuBuffer;
+use cust::launch;
+
+const TEMPORAL_BLOCK_SIZE: u32 = GIF_BLOCK_SIZE;
+const TEMPORAL_SHARED_MEM_BYTES: u32 = 0;
+const TEMPORAL_DEFAULT_SHARED_MEM_BYTES: u32 = 48 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SynapsePrecision {
+    None,
+    F32,
+    F16,
+}
+
+pub(crate) struct TemporalState {
+    neuron_count: usize,
+    n_inputs: usize,
+    shared_mem_limit: u32,
+    membrane: GpuBuffer<f32>,
+    refractory: GpuBuffer<u32>,
+    spikes_out: GpuBuffer<u32>,
+    input_current: GpuBuffer<f32>,
+    input_spikes: GpuBuffer<f32>,
+    adaptation: GpuBuffer<f32>,
+    weights_f32: GpuBuffer<f32>,
+    weights_f16: Option<GpuBuffer<u16>>,
+    synapse_precision: SynapsePrecision,
+    synapse_signature: Option<String>,
+}
+
+impl GpuAccelerator {
+    fn temporal_grid(neuron_count: usize) -> GpuResult<u32> {
+        gif_grid(neuron_count).map_err(GpuError::LaunchFailed)
+    }
+
+    pub fn ensure_temporal_state(&mut self, neuron_count: usize, n_inputs: usize) -> GpuResult<()> {
+        self.require_context_current()?;
+        if neuron_count == 0 {
+            return Err(GpuError::LaunchFailed(
+                "temporal state requires neuron_count > 0".into(),
+            ));
+        }
+        Self::validate_temporal_dimensions(neuron_count, n_inputs)?;
+        Self::validate_temporal_shared_mem(n_inputs)?;
+
+        let needs_realloc = self
+            .temporal_state
+            .as_ref()
+            .is_none_or(|state| state.neuron_count != neuron_count || state.n_inputs != n_inputs);
+
+        if needs_realloc {
+            if self.temporal_state.is_some() {
+                self.synchronize()?;
+            }
+            self.temporal_state = Some(Self::build_temporal_state(neuron_count, n_inputs)?);
+        }
+
+        Ok(())
+    }
+
+    fn checked_temporal_state(&self, neuron_count: usize) -> GpuResult<&TemporalState> {
+        self.require_context_current()?;
+        let state = self
+            .temporal_state
+            .as_ref()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+        Self::require_state_neuron_count(state, neuron_count)?;
+        Ok(state)
+    }
+
+    /// Download the current GIF spike vector.
+    ///
+    /// `neuron_count` must equal the resident temporal size.
+    pub fn temporal_spikes_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<u32>> {
+        self.checked_temporal_state(neuron_count)?
+            .spikes_out
+            .to_vec()
+    }
+
+    /// Download the current GIF membrane vector.
+    ///
+    /// `neuron_count` must equal the resident temporal size.
+    pub fn temporal_membrane_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<f32>> {
+        self.checked_temporal_state(neuron_count)?.membrane.to_vec()
+    }
+
+    /// Download the current GIF adaptation vector.
+    ///
+    /// `neuron_count` must equal the resident temporal size.
+    pub fn temporal_adaptation_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<f32>> {
+        self.checked_temporal_state(neuron_count)?
+            .adaptation
+            .to_vec()
+    }
+
+    /// Upload a per-neuron (or per-input) vector into the resident `input_spikes` buffer.
+    pub fn upload_temporal_input_spikes(&mut self, input_spikes: &[f32]) -> GpuResult<()> {
+        let state = self.temporal_state_for_synapse()?;
+        if input_spikes.len() != state.n_inputs {
+            return Err(GpuError::MemoryError(format!(
+                "temporal input_spikes length mismatch: expected {}, got {}",
+                state.n_inputs,
+                input_spikes.len()
+            )));
+        }
+        state
+            .input_spikes
+            .upload(input_spikes)
+            .map_err(|e| GpuError::MemoryError(format!("input_spikes upload failed: {e}")))
+    }
+
+    /// Upload the per-neuron external current used by the next GIF tick.
+    pub fn upload_temporal_input_current(&mut self, input_current: &[f32]) -> GpuResult<()> {
+        let state = self.temporal_state_for_synapse()?;
+        if input_current.len() != state.neuron_count {
+            return Err(GpuError::MemoryError(format!(
+                "temporal input_current length mismatch: expected {}, got {}",
+                state.neuron_count,
+                input_current.len()
+            )));
+        }
+        state
+            .input_current
+            .upload(input_current)
+            .map_err(|e| GpuError::MemoryError(format!("input_current upload failed: {e}")))
+    }
+
+    fn temporal_state_for_synapse(&mut self) -> GpuResult<&mut TemporalState> {
+        self.require_context_current()?;
+        self.temporal_state
+            .as_mut()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))
+    }
+
+    fn validate_synapse_weights(
+        state: &TemporalState,
+        weights_len: usize,
+        label: &str,
+    ) -> GpuResult<usize> {
+        let expected = state
+            .neuron_count
+            .checked_mul(state.n_inputs)
+            .ok_or_else(|| GpuError::MemoryError("temporal synapse dimensions overflow".into()))?;
+        if weights_len != expected {
+            return Err(GpuError::MemoryError(format!(
+                "{label} length mismatch: expected {} ({}x{}), got {}",
+                expected, state.neuron_count, state.n_inputs, weights_len
+            )));
+        }
+        Ok(expected)
+    }
+
+    /// Load an f32 synapse matrix, always uploading the supplied contents.
+    pub fn load_synapse_weights(&mut self, weights: &[f32]) -> GpuResult<()> {
+        self.load_synapse_weights_impl(None, weights)
+    }
+
+    /// Load an f32 synapse matrix, skipping the upload only when `signature`
+    /// matches the resident signature. Callers must change `signature` whenever
+    /// the matrix contents change.
+    pub fn load_synapse_weights_named(
+        &mut self,
+        signature: &str,
+        weights: &[f32],
+    ) -> GpuResult<()> {
+        self.load_synapse_weights_impl(Some(signature), weights)
+    }
+
+    fn load_synapse_weights_impl(
+        &mut self,
+        signature: Option<&str>,
+        weights: &[f32],
+    ) -> GpuResult<()> {
+        let state = self.temporal_state_for_synapse()?;
+        Self::validate_synapse_weights(state, weights.len(), "weights")?;
+        let skip_upload = signature.is_some_and(|signature| {
+            state.synapse_precision == SynapsePrecision::F32
+                && state.synapse_signature.as_deref() == Some(signature)
+        });
+        if skip_upload {
+            return Ok(());
+        }
+        state
+            .weights_f32
+            .upload(weights)
+            .map_err(|e| GpuError::MemoryError(format!("synapse weights upload failed: {e}")))?;
+        state.synapse_precision = SynapsePrecision::F32;
+        state.synapse_signature = signature.map(str::to_owned);
+        Ok(())
+    }
+
+    /// Load an IEEE f16 synapse matrix from host `u16` bits.
+    pub fn load_synapse_weights_f16_registered(
+        &mut self,
+        signature: &str,
+        weights: &[u16],
+    ) -> GpuResult<()> {
+        let state = self.temporal_state_for_synapse()?;
+        let expected = Self::validate_synapse_weights(state, weights.len(), "f16 weights")?;
+
+        if state.synapse_precision == SynapsePrecision::F16
+            && state.synapse_signature.as_deref() == Some(signature)
+        {
+            return Ok(());
+        }
+
+        let f16_weights = match state.weights_f16.as_mut() {
+            Some(weights_f16) => weights_f16,
+            _ => {
+                state.weights_f16 = Some(GpuBuffer::<u16>::alloc(expected)?);
+                state
+                    .weights_f16
+                    .as_mut()
+                    .expect("weights_f16 was just inserted")
+            }
+        };
+        f16_weights.upload(weights).map_err(|e| {
+            GpuError::MemoryError(format!("registered f16 synapse upload failed: {e}"))
+        })?;
+        state.synapse_precision = SynapsePrecision::F16;
+        state.synapse_signature = Some(signature.to_owned());
+        Ok(())
+    }
+
+    /// One GIF-weighted tick over the resident temporal state.
+    ///
+    /// Requires synapse weights to be loaded. Synchronizes before returning so
+    /// callers can immediately download spikes, membrane, or adaptation.
+    pub fn gif_step_weighted_tick(&mut self, neuron_count: usize) -> GpuResult<()> {
+        if self.temporal_state.is_none() {
+            self.ensure_temporal_state(neuron_count, neuron_count)?;
+        }
+
+        let precision = self.checked_temporal_state(neuron_count)?.synapse_precision;
+        if precision == SynapsePrecision::None {
+            return Err(GpuError::MemoryError(
+                "synapse weights must be loaded before gif_step_weighted_tick".into(),
+            ));
+        }
+
+        match precision {
+            SynapsePrecision::F32 => self.launch_gif_step_f32(neuron_count)?,
+            SynapsePrecision::F16 => self.launch_gif_step_f16(neuron_count)?,
+            SynapsePrecision::None => unreachable!("validated above"),
+        }
+
+        self.synchronize()
+    }
+
+    fn launch_gif_step_f32(&self, neuron_count: usize) -> GpuResult<()> {
+        let state = self
+            .temporal_state
+            .as_ref()
+            .expect("temporal state checked above");
+        let n_inputs = state.n_inputs;
+        let grid = Self::temporal_grid(neuron_count)?;
+        let shared_bytes = Self::temporal_shared_bytes(n_inputs)?;
+        let stream = self.cuda_stream().ok_or(GpuError::NoGpu)?;
+        let gif_step = self.kernels()?.get_function("gif_step_weighted")?;
+        if shared_bytes > TEMPORAL_DEFAULT_SHARED_MEM_BYTES {
+            Self::opt_in_gif_shared_mem(&gif_step, shared_bytes)?;
+        }
+        unsafe {
+            launch!(gif_step<<<grid, TEMPORAL_BLOCK_SIZE, shared_bytes, stream>>>(
+                state.membrane.as_device_ptr(),
+                state.adaptation.as_device_ptr(),
+                state.weights_f32.as_device_ptr(),
+                state.input_spikes.as_device_ptr(),
+                state.input_current.as_device_ptr(),
+                state.refractory.as_device_ptr(),
+                state.spikes_out.as_device_ptr(),
+                neuron_count as i32,
+                n_inputs as i32
+            ))
+            .map_err(|e| {
+                Self::ptx_launch_error(
+                    "gif_step_weighted",
+                    LaunchShape {
+                        grid,
+                        block: TEMPORAL_BLOCK_SIZE,
+                        shared_mem: shared_bytes,
+                    },
+                    Some(neuron_count),
+                    e,
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    fn launch_gif_step_f16(&self, neuron_count: usize) -> GpuResult<()> {
+        let state = self
+            .temporal_state
+            .as_ref()
+            .expect("temporal state checked above");
+        let n_inputs = state.n_inputs;
+        let weights_f16 = state
+            .weights_f16
+            .as_ref()
+            .ok_or_else(|| GpuError::MemoryError("f16 synapse buffer not initialised".into()))?;
+        let grid = Self::temporal_grid(neuron_count)?;
+        let shared_bytes = Self::temporal_shared_bytes(n_inputs)?;
+        let stream = self.cuda_stream().ok_or(GpuError::NoGpu)?;
+        ffi::launch_gif_step_weighted_f16(ffi::GifF16Launch {
+            stream,
+            grid_x: grid,
+            block_x: TEMPORAL_BLOCK_SIZE,
+            shared_bytes,
+            shared_mem_limit: state.shared_mem_limit,
+            buffers: ffi::GifF16Buffers {
+                membrane: state.membrane.as_device_ptr(),
+                adaptation: state.adaptation.as_device_ptr(),
+                weights: weights_f16.as_device_ptr(),
+                input_spikes: state.input_spikes.as_device_ptr(),
+                input_current: state.input_current.as_device_ptr(),
+                refractory: state.refractory.as_device_ptr(),
+                spikes_out: state.spikes_out.as_device_ptr(),
+            },
+            n_neurons: neuron_count as i32,
+            n_inputs: n_inputs as i32,
+        })?;
+        Ok(())
+    }
+
+    /// Zero resident GIF state (membrane, adaptation, spikes, inputs).
+    pub fn reset_temporal_state(&mut self) -> GpuResult<()> {
+        self.require_context_current()?;
+        if self.temporal_state.is_none() {
+            return Ok(());
+        }
+
+        let neuron_count = self
+            .temporal_state
+            .as_ref()
+            .expect("checked above")
+            .neuron_count;
+        if self.has_modules() {
+            self.reset_membrane_on_gpu(neuron_count)?;
+        } else {
+            self.temporal_state
+                .as_mut()
+                .expect("checked above")
+                .membrane
+                .zero_prefix(neuron_count)?;
+        }
+        self.zero_temporal_state_buffers()
+    }
+
+    fn reset_membrane_on_gpu(&self, neuron_count: usize) -> GpuResult<()> {
+        let reset_membrane = self.kernels()?.get_function("reset_membrane")?;
+        let grid = Self::temporal_grid(neuron_count)?;
+        let stream = self.cuda_stream().ok_or(GpuError::NoGpu)?;
+        let state = self.temporal_state.as_ref().expect("checked above");
+        unsafe {
+            launch!(reset_membrane<<<grid, TEMPORAL_BLOCK_SIZE, TEMPORAL_SHARED_MEM_BYTES, stream>>>(
+                state.membrane.as_device_ptr(),
+                neuron_count as i32,
+                0.0f32
+            ))
+            .map_err(|e| {
+                Self::ptx_launch_error(
+                    "reset_membrane",
+                    LaunchShape {
+                        grid,
+                        block: TEMPORAL_BLOCK_SIZE,
+                        shared_mem: TEMPORAL_SHARED_MEM_BYTES,
+                    },
+                    Some(neuron_count),
+                    e,
+                )
+            })?;
+        }
+        self.synchronize()
+    }
+
+    fn zero_temporal_state_buffers(&mut self) -> GpuResult<()> {
+        let state = self.temporal_state.as_mut().expect("checked above");
+        state.refractory.zero_prefix(state.neuron_count)?;
+        state.spikes_out.zero_prefix(state.neuron_count)?;
+        state.input_current.zero_prefix(state.neuron_count)?;
+        state.input_spikes.zero_prefix(state.n_inputs)?;
+        state.adaptation.zero_prefix(state.neuron_count)?;
+        Ok(())
+    }
+
+    /// Currently loaded synapse signature, if any.
+    pub fn synapse_signature(&self) -> Option<&str> {
+        self.temporal_state
+            .as_ref()
+            .and_then(|state| state.synapse_signature.as_deref())
+    }
+
+    fn build_temporal_state(neuron_count: usize, n_inputs: usize) -> GpuResult<TemporalState> {
+        let weight_size = neuron_count
+            .checked_mul(n_inputs)
+            .ok_or_else(|| GpuError::MemoryError("temporal synapse dimensions overflow".into()))?;
+        Ok(TemporalState {
+            neuron_count,
+            n_inputs,
+            shared_mem_limit: Self::temporal_shared_mem_limit()?,
+            membrane: GpuBuffer::<f32>::alloc(neuron_count)?,
+            refractory: GpuBuffer::<u32>::alloc(neuron_count)?,
+            spikes_out: GpuBuffer::<u32>::alloc(neuron_count)?,
+            input_current: GpuBuffer::<f32>::alloc(neuron_count)?,
+            input_spikes: GpuBuffer::<f32>::alloc(n_inputs)?,
+            adaptation: GpuBuffer::<f32>::alloc(neuron_count)?,
+            weights_f32: GpuBuffer::<f32>::alloc(weight_size)?,
+            weights_f16: None,
+            synapse_precision: SynapsePrecision::None,
+            synapse_signature: None,
+        })
+    }
+
+    fn validate_temporal_dimensions(neuron_count: usize, n_inputs: usize) -> GpuResult<()> {
+        let _ = Self::temporal_grid(neuron_count)?;
+        if neuron_count > i32::MAX as usize || n_inputs > i32::MAX as usize {
+            return Err(GpuError::LaunchFailed(format!(
+                "temporal dimensions exceed i32 kernel limits (neuron_count={neuron_count}, n_inputs={n_inputs})"
+            )));
+        }
+        Self::temporal_shared_bytes(n_inputs)?;
+        Ok(())
+    }
+
+    fn temporal_shared_bytes(n_inputs: usize) -> GpuResult<u32> {
+        let bytes = n_inputs.checked_mul(4).ok_or_else(|| {
+            GpuError::LaunchFailed("temporal shared-memory size overflows".into())
+        })?;
+        let bytes = u32::try_from(bytes).map_err(|_| {
+            GpuError::LaunchFailed(format!(
+                "temporal shared-memory size {bytes} exceeds u32 launch limit"
+            ))
+        })?;
+        Ok(bytes)
+    }
+
+    fn validate_temporal_shared_mem(n_inputs: usize) -> GpuResult<()> {
+        let bytes = Self::temporal_shared_bytes(n_inputs)?;
+        let limit = Self::temporal_shared_mem_limit()?;
+        if bytes > limit {
+            return Err(GpuError::LaunchFailed(format!(
+                "temporal shared-memory size {bytes} exceeds device opt-in limit {limit}; reduce n_inputs"
+            )));
+        }
+        Ok(())
+    }
+
+    fn temporal_shared_mem_limit() -> GpuResult<u32> {
+        let device = cust::device::Device::get_device(0)
+            .map_err(|e| GpuError::CudaError(format!("device query: {e:?}")))?;
+        let mut value = 0i32;
+        let result = unsafe {
+            cust::sys::cuDeviceGetAttribute(
+                &mut value as *mut i32,
+                cust::sys::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN,
+                device.as_raw(),
+            )
+        };
+        if result as i32 != 0 {
+            return Err(GpuError::CudaError(format!(
+                "cuDeviceGetAttribute shared-memory opt-in limit: {result:?}"
+            )));
+        }
+        u32::try_from(value)
+            .map_err(|_| GpuError::CudaError("shared-memory opt-in limit is negative".into()))
+    }
+
+    fn opt_in_gif_shared_mem(
+        function: &cust::function::Function<'_>,
+        shared_bytes: u32,
+    ) -> GpuResult<()> {
+        let value = i32::try_from(shared_bytes).map_err(|_| {
+            GpuError::LaunchFailed("temporal shared-memory size exceeds i32 opt-in limit".into())
+        })?;
+        let result = unsafe {
+            cust::sys::cuFuncSetAttribute(
+                function.to_raw(),
+                cust::sys::CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                value,
+            )
+        };
+        if result as i32 != 0 {
+            return Err(GpuError::CudaError(format!(
+                "cuFuncSetAttribute gif_step_weighted shared-memory opt-in: {result:?}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn require_state_neuron_count(state: &TemporalState, neuron_count: usize) -> GpuResult<()> {
+        if state.neuron_count != neuron_count {
+            return Err(GpuError::MemoryError(format!(
+                "temporal neuron_count mismatch: state has {}, requested {neuron_count}",
+                state.neuron_count
+            )));
+        }
+        Ok(())
+    }
+}

@@ -23,6 +23,31 @@ const KERNELS: &[(&str, &str)] = &[
     ("routing_selection.cu", "routing_selection_sm_120.ptx"),
 ];
 
+const FATBINS: &[(&str, &str)] = &[
+    ("spiking_network.cu", "spiking_network_sm_120.fatbin"),
+    ("vector_similarity.cu", "vector_similarity_sm_120.fatbin"),
+    ("satsolver.cu", "satsolver_sm_120.fatbin"),
+    ("ternary_gemm.cu", "ternary_gemm_sm_120.fatbin"),
+];
+
+struct NvccBuild<'a> {
+    nvcc: &'a Path,
+    cu_dir: &'a Path,
+    out_dir: &'a Path,
+    arch: &'a str,
+    ptx_version_override: Option<&'a str>,
+    is_blackwell: bool,
+}
+
+struct NvccCompile<'a> {
+    nvcc: &'a Path,
+    cu_dir: &'a Path,
+    source: &'a Path,
+    output: &'a Path,
+    arch: &'a str,
+    extra_args: &'a [String],
+}
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let cu_dir = manifest_dir.join("cu");
@@ -54,6 +79,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MYELIN_NVCC_THREADS");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=cu/common.cuh");
+    println!("cargo:rerun-if-changed=cu/myelin_shim.cu");
+    println!("cargo:rerun-if-changed=cu/myelin_shim.cuh");
     for &(cu_name, _) in KERNELS {
         println!("cargo:rerun-if-changed=cu/{cu_name}");
     }
@@ -78,19 +105,11 @@ fn main() {
         return;
     }
 
-    let nvcc = find_nvcc();
-    // Treat empty MYELIN_PTX_VERSION as unset (Some("") would write ".version ").
-    let ptx_version_override = env::var("MYELIN_PTX_VERSION")
-        .ok()
-        .filter(|v| !v.trim().is_empty());
-    let is_blackwell = arch.starts_with("sm_12") || arch.starts_with("compute_12");
-
-    let Some(nvcc_path) = nvcc else {
+    let Some(nvcc_path) = find_nvcc() else {
         panic!(
             "cuda feature is enabled but nvcc was not found. Install CUDA toolkit or set CUDA_NVCC."
         );
     };
-
     match nvcc_version(&nvcc_path) {
         Some(v) => {
             println!("cargo:warning=using nvcc: {v}");
@@ -99,37 +118,48 @@ fn main() {
         None => println!("cargo:warning=using nvcc at {}", nvcc_path.display()),
     }
 
+    compile_cuda_artifacts(&nvcc_path, &cu_dir, &out_dir, arch.as_str());
+}
+
+fn compile_cuda_artifacts(nvcc: &Path, cu_dir: &Path, out_dir: &Path, arch: &str) {
+    // Treat empty MYELIN_PTX_VERSION as unset (Some("") would write ".version ").
+    let ptx_version_override = env::var("MYELIN_PTX_VERSION")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let build = NvccBuild {
+        nvcc,
+        cu_dir,
+        out_dir,
+        arch,
+        ptx_version_override: ptx_version_override.as_deref(),
+        is_blackwell: arch.starts_with("sm_12") || arch.starts_with("compute_12"),
+    };
+
+    let emitted_ptx_version = compile_ptx_kernels(&build);
+    compile_fatbins(&build);
+    build_myelin_shim(nvcc, cu_dir, out_dir, arch);
+    emit_cuda_runtime_linking(nvcc);
+    println!("cargo:rustc-env=MYELIN_BUILD_CUDA_ARCH={arch}");
+    if let Some(version) = emitted_ptx_version {
+        println!("cargo:rustc-env=MYELIN_BUILD_PTX_VERSION={version}");
+    }
+}
+
+fn compile_ptx_kernels(build: &NvccBuild<'_>) -> Option<String> {
     let mut emitted_ptx_version = None;
     for &(cu_name, ptx_name) in KERNELS {
-        let source = cu_dir.join(cu_name);
-        let output = out_dir.join(ptx_name);
-        compile_to_ptx(&nvcc_path, &cu_dir, &source, &output, &arch);
-        // sm_120 + PTX < 9.2 is invalid. Explicit overrides are applied for
-        // non-Blackwell arches; on Blackwell, clamp any override below the floor.
-        if let Some(ref ver) = ptx_version_override {
-            let effective = if is_blackwell && ptx_version_less(ver, DEFAULT_REAL_PTX_VERSION) {
-                println!(
-                    "cargo:warning=MYELIN_PTX_VERSION={ver} is below {DEFAULT_REAL_PTX_VERSION} for {arch}; clamping"
-                );
-                DEFAULT_REAL_PTX_VERSION
-            } else {
-                ver.as_str()
-            };
-            patch_ptx_version_any(&output, effective);
-            println!(
-                "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx={effective} [override])"
-            );
-        } else if is_blackwell {
-            // Leave nvcc's header when already high enough; raise only if lower.
-            ensure_min_ptx_version(&output, DEFAULT_REAL_PTX_VERSION);
-            println!(
-                "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx>={DEFAULT_REAL_PTX_VERSION})"
-            );
-        } else {
-            println!(
-                "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx=nvcc-default)"
-            );
-        }
+        let source = build.cu_dir.join(cu_name);
+        let output = build.out_dir.join(ptx_name);
+        let extra_args = nvcc_feature_defines(cu_name);
+        compile_to_ptx(&NvccCompile {
+            nvcc: build.nvcc,
+            cu_dir: build.cu_dir,
+            source: &source,
+            output: &output,
+            arch: build.arch,
+            extra_args: &extra_args,
+        });
+        apply_ptx_version_policy(&output, cu_name, ptx_name, build);
         if let Some(version) = read_ptx_version(&output) {
             if let Some(previous) = emitted_ptx_version.as_deref() {
                 assert_eq!(
@@ -141,9 +171,59 @@ fn main() {
             }
         }
     }
-    println!("cargo:rustc-env=MYELIN_BUILD_CUDA_ARCH={arch}");
-    if let Some(version) = emitted_ptx_version {
-        println!("cargo:rustc-env=MYELIN_BUILD_PTX_VERSION={version}");
+    emitted_ptx_version
+}
+
+fn apply_ptx_version_policy(output: &Path, cu_name: &str, ptx_name: &str, build: &NvccBuild<'_>) {
+    // sm_120 + PTX < 9.2 is invalid. Explicit overrides are applied for
+    // non-Blackwell arches; on Blackwell, clamp any override below the floor.
+    if let Some(ver) = build.ptx_version_override {
+        let effective = if build.is_blackwell && ptx_version_less(ver, DEFAULT_REAL_PTX_VERSION) {
+            println!(
+                "cargo:warning=MYELIN_PTX_VERSION={ver} is below {DEFAULT_REAL_PTX_VERSION} for {}; clamping",
+                build.arch
+            );
+            DEFAULT_REAL_PTX_VERSION
+        } else {
+            ver
+        };
+        patch_ptx_version_any(output, effective);
+        println!(
+            "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={}, ptx={effective} [override])",
+            build.arch
+        );
+    } else if build.is_blackwell {
+        // Leave nvcc's header when already high enough; raise only if lower.
+        ensure_min_ptx_version(output, DEFAULT_REAL_PTX_VERSION);
+        println!(
+            "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={}, ptx>={DEFAULT_REAL_PTX_VERSION})",
+            build.arch
+        );
+    } else {
+        println!(
+            "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={}, ptx=nvcc-default)",
+            build.arch
+        );
+    }
+}
+
+fn compile_fatbins(build: &NvccBuild<'_>) {
+    for &(cu_name, fatbin_name) in FATBINS {
+        let source = build.cu_dir.join(cu_name);
+        let output = build.out_dir.join(fatbin_name);
+        let extra_args = nvcc_feature_defines(cu_name);
+        compile_to_fatbin(&NvccCompile {
+            nvcc: build.nvcc,
+            cu_dir: build.cu_dir,
+            source: &source,
+            output: &output,
+            arch: build.arch,
+            extra_args: &extra_args,
+        });
+        println!(
+            "cargo:warning=compiled {cu_name} -> {fatbin_name} ({} SASS + PTX fallback)",
+            build.arch
+        );
     }
 }
 
@@ -251,7 +331,7 @@ fn find_nvcc() -> Option<PathBuf> {
     if let Ok(path) = env::var("CUDA_NVCC") {
         let p = PathBuf::from(path);
         if is_nvcc_binary(&p) {
-            return Some(p);
+            return Some(resolve_nvcc_absolute(&p));
         }
     }
 
@@ -259,17 +339,36 @@ fn find_nvcc() -> Option<PathBuf> {
         if let Ok(root) = env::var(root_var) {
             let p = PathBuf::from(root).join("bin").join(exe_name("nvcc"));
             if is_nvcc_binary(&p) {
-                return Some(p);
+                return Some(resolve_nvcc_absolute(&p));
             }
         }
     }
 
     let candidate = PathBuf::from(exe_name("nvcc"));
     if is_nvcc_binary(&candidate) {
-        Some(candidate)
+        Some(resolve_nvcc_absolute(&candidate))
     } else {
         None
     }
+}
+
+/// Prefer an absolute `nvcc` path so `parent()/parent()` can yield `lib64`.
+fn resolve_nvcc_absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    if let Some(found) = which_on_path(path.as_os_str()) {
+        return found;
+    }
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn which_on_path(bin: &std::ffi::OsStr) -> Option<PathBuf> {
+    let path_var = env::var_os("PATH")?;
+    env::split_paths(&path_var).find_map(|dir| {
+        let candidate = dir.join(bin);
+        candidate.is_file().then_some(candidate)
+    })
 }
 
 fn is_nvcc_binary(path: &Path) -> bool {
@@ -310,60 +409,240 @@ fn nvcc_version(nvcc: &Path) -> Option<String> {
     })
 }
 
-fn compile_to_ptx(nvcc: &Path, cu_dir: &Path, source: &Path, output: &Path, arch: &str) {
+fn nvcc_feature_defines(_cu_name: &str) -> Vec<String> {
+    Vec::new()
+}
+
+fn nvcc_threads() -> usize {
     let threads_raw = env::var("MYELIN_NVCC_THREADS").unwrap_or_else(|_| "0".to_string());
-    let threads = threads_raw.parse::<usize>().unwrap_or_else(|_| {
+    threads_raw.parse::<usize>().unwrap_or_else(|_| {
         panic!("MYELIN_NVCC_THREADS must be a non-negative integer, got \"{threads_raw}\"")
+    })
+}
+
+// Flags:
+//   -std=c++17                keep the Edison host front-end in C++17 mode so
+//                             libstdc++ 16's C++23 paths aren't parsed.
+//   --expt-relaxed-constexpr  allow device-side relaxed constexpr.
+//   -Xcompiler -fno-builtin   pass -fno-builtin to the host compiler so nvcc
+//                             doesn't misread host libm builtins as device
+//                             intrinsics. MSVC would need /Oi- instead.
+fn append_nvcc_compile_args(
+    cmd: &mut Command,
+    cu_dir: &Path,
+    output: &Path,
+    source: &Path,
+    extra_args: &[String],
+) {
+    cmd.arg("-O3")
+        .arg("--use_fast_math")
+        .arg("--restrict")
+        .arg("--threads")
+        .arg(nvcc_threads().to_string());
+    nvcc_common_host_flags(cmd);
+    cmd.arg("-I").arg(cu_dir).arg("-o").arg(output).arg(source);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+}
+
+fn compile_to_ptx(request: &NvccCompile<'_>) {
+    let mut cmd = Command::new(request.nvcc);
+    cmd.arg("-ptx").arg(format!("-arch={}", request.arch));
+    append_nvcc_compile_args(
+        &mut cmd,
+        request.cu_dir,
+        request.output,
+        request.source,
+        request.extra_args,
+    );
+
+    let status = cmd.status().unwrap_or_else(|e| {
+        panic!(
+            "Failed to invoke nvcc for {}: {e}",
+            request.source.display()
+        )
     });
 
-    // Flags:
-    //   -std=c++17                      keep the Edison host front-end in C++17
-    //                                    mode so libstdc++ 16's C++23 paths aren't
-    //                                    parsed (avoids the type_traits errors
-    //                                    seen on GCC 16 / nvcc 13.2 hosts).
-    //   --expt-relaxed-constexpr        allow device-side relaxed constexpr.
-    //   -Xcompiler -fno-builtin         pass -fno-builtin to the host compiler
-    //                                    (GCC/Clang) so nvcc doesn't misread
-    //                                    host libm builtins as device intrinsics.
-    //                                    On MSVC the equivalent is /Oi-, but the
-    //                                    CI only targets Linux + the
-    //                                    self-hosted runner is Linux, so this
-    //                                    is fine. Add an MSVC branch here if
-    //                                    Windows CUDA builds become supported.
+    if !status.success() {
+        panic!("nvcc failed to compile {}", request.source.display());
+    }
+
+    assert!(
+        request.output.exists(),
+        "nvcc completed but did not emit {}",
+        request.output.display()
+    );
+}
+
+fn arch_gencode_parts(arch: &str) -> (String, String) {
+    let digits = arch
+        .strip_prefix("sm_")
+        .or_else(|| arch.strip_prefix("compute_"))
+        .unwrap_or_else(|| {
+            panic!("MYELIN_CUDA_ARCH must look like sm_120 or compute_120, got \"{arch}\"")
+        });
+    (format!("compute_{digits}"), format!("sm_{digits}"))
+}
+
+fn compile_to_fatbin(request: &NvccCompile<'_>) {
+    let (compute, sm) = arch_gencode_parts(request.arch);
+
+    let mut cmd = Command::new(request.nvcc);
+    cmd.arg("-fatbin")
+        .arg(format!("-gencode=arch={compute},code={sm}"))
+        .arg(format!("-gencode=arch={compute},code={compute}"));
+    append_nvcc_compile_args(
+        &mut cmd,
+        request.cu_dir,
+        request.output,
+        request.source,
+        request.extra_args,
+    );
+
+    let status = cmd.status().unwrap_or_else(|e| {
+        panic!(
+            "Failed to invoke nvcc fatbin for {}: {e}",
+            request.source.display()
+        )
+    });
+    if !status.success() {
+        panic!("nvcc failed to fatbin {}", request.source.display());
+    }
+    assert!(
+        request.output.exists(),
+        "nvcc completed but did not emit {}",
+        request.output.display()
+    );
+}
+
+fn nvcc_common_host_flags(cmd: &mut Command) {
+    cmd.arg("-std=c++17")
+        .arg("-D__STRICT_ANSI__")
+        .arg("--allow-unsupported-compiler")
+        .arg("--expt-relaxed-constexpr");
+    if cfg!(unix) {
+        cmd.arg("-Xcompiler").arg("-fno-builtin");
+    }
+}
+
+fn build_myelin_shim(nvcc: &Path, cu_dir: &Path, out_dir: &Path, arch: &str) {
+    let source = cu_dir.join("myelin_shim.cu");
+    let object = out_dir.join("myelin_shim.o");
+    let threads = nvcc_threads();
+
     let mut cmd = Command::new(nvcc);
-    cmd.arg("-ptx")
+    cmd.arg("-c")
         .arg(format!("-arch={arch}"))
         .arg("-O3")
         .arg("--use_fast_math")
         .arg("--restrict")
         .arg("--threads")
-        .arg(threads.to_string())
-        .arg("-std=c++17")
-        .arg("-D__STRICT_ANSI__")
-        .arg("--allow-unsupported-compiler")
-        .arg("--expt-relaxed-constexpr")
-        .arg("-I")
+        .arg(threads.to_string());
+    nvcc_common_host_flags(&mut cmd);
+    cmd.arg("-I")
         .arg(cu_dir)
+        .arg("-Xcompiler")
+        .arg("-fPIC")
         .arg("-o")
-        .arg(output)
-        .arg(source);
-    if cfg!(unix) {
-        cmd.arg("-Xcompiler").arg("-fno-builtin");
-    }
+        .arg(&object)
+        .arg(&source);
 
     let status = cmd
         .status()
-        .unwrap_or_else(|e| panic!("Failed to invoke nvcc for {}: {e}", source.display()));
-
+        .unwrap_or_else(|e| panic!("Failed to invoke nvcc for myelin_shim.cu: {e}"));
     if !status.success() {
-        panic!("nvcc failed to compile {}", source.display());
+        panic!("nvcc failed to compile myelin_shim.cu");
     }
 
-    assert!(
-        output.exists(),
-        "nvcc completed but did not emit {}",
-        output.display()
-    );
+    cc::Build::new()
+        .cpp(true)
+        .object(&object)
+        .compile("myelin_shim");
+    println!("cargo:warning=compiled myelin_shim.cu → libmyelin_shim.a");
+}
+
+fn emit_cuda_runtime_linking(nvcc: &Path) {
+    for search_dir in cuda_library_search_paths(nvcc) {
+        println!("cargo:rustc-link-search=native={}", search_dir.display());
+    }
+    println!("cargo:rustc-link-lib=dylib=cudart");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
+}
+
+fn cuda_library_search_paths(nvcc: &Path) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = libcudart_search_dir(nvcc).into_iter().collect();
+    let env_roots = ["CUDA_HOME", "CUDA_PATH"]
+        .into_iter()
+        .filter_map(|name| env::var(name).ok())
+        .map(PathBuf::from);
+    let nvcc_root = nvcc
+        .parent()
+        .and_then(|bin| bin.parent())
+        .map(Path::to_path_buf);
+    for root in env_roots.chain(nvcc_root) {
+        candidates.extend(cuda_library_dirs(&root));
+    }
+    candidates.extend([
+        PathBuf::from("/usr/local/cuda/lib64"),
+        PathBuf::from("/usr/local/cuda/lib"),
+        PathBuf::from("/usr/lib/x86_64-linux-gnu"),
+    ]);
+    dedupe_existing_paths(candidates)
+}
+
+fn cuda_library_dirs(root: &Path) -> [PathBuf; 3] {
+    [
+        root.join("lib64"),
+        root.join("lib"),
+        root.join("targets").join("x86_64-linux").join("lib"),
+    ]
+}
+
+fn dedupe_existing_paths(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        if candidate.exists() && !deduped.iter().any(|existing| existing == &candidate) {
+            deduped.push(candidate);
+        }
+    }
+    deduped
+}
+
+fn libcudart_search_dir(nvcc: &Path) -> Option<PathBuf> {
+    libcudart_names().iter().find_map(|name| {
+        nvcc_print_file_name(nvcc, name).and_then(|printed| search_dir_from_printed(&printed))
+    })
+}
+
+fn libcudart_names() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["cudart.lib", "libcudart.lib"]
+    } else {
+        &["libcudart.so", "libcudart.so.13", "libcudart.so.12"]
+    }
+}
+
+fn nvcc_print_file_name(nvcc: &Path, name: &str) -> Option<String> {
+    let out = Command::new(nvcc)
+        .arg(format!("--print-file-name={name}"))
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!printed.is_empty() && printed != name).then_some(printed)
+}
+
+fn search_dir_from_printed(printed: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(printed);
+    if path.is_file() {
+        return path.parent().map(Path::to_path_buf);
+    }
+    path.is_dir().then_some(path)
 }
 
 fn emit_stub_ptx(out_dir: &Path) {

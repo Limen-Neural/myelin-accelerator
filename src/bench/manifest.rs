@@ -275,34 +275,42 @@ fn capture_cargo_profile_fingerprint() -> Option<String> {
 fn cargo_profile_fingerprint_for_executable(executable: &Path) -> Option<String> {
     let artifact_hash = cargo_artifact_hash(executable)?;
     let artifact_dir = executable.parent()?;
-    let profile_dir = match artifact_dir.file_name().and_then(|name| name.to_str()) {
-        Some("deps" | "examples") => artifact_dir.parent()?,
-        _ => artifact_dir,
-    };
-    let fingerprint_dir = profile_dir
-        .join(".fingerprint")
-        .join(format!("{}-{artifact_hash}", env!("CARGO_PKG_NAME")));
-    let entries = std::fs::read_dir(fingerprint_dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(bytes) = std::fs::read(path) else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-            continue;
-        };
-        if let Some(profile) = value.get("profile") {
-            return match profile {
-                serde_json::Value::String(value) => Some(value.clone()),
-                serde_json::Value::Number(value) => Some(value.to_string()),
-                _ => None,
-            };
+    // Cargo can place test executables under a build script's `out/` directory
+    // when native link inputs are involved, so search upward for the profile's
+    // `.fingerprint` directory instead of assuming `deps/` or `examples/`.
+    for ancestor in artifact_dir.ancestors() {
+        let fingerprint_dir = ancestor
+            .join(".fingerprint")
+            .join(format!("{}-{artifact_hash}", env!("CARGO_PKG_NAME")));
+        if let Some(profile) = profile_from_fingerprint_dir(&fingerprint_dir) {
+            return profile;
         }
     }
     None
+}
+
+fn profile_from_fingerprint_dir(dir: &Path) -> Option<Option<String>> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        if let Some(profile) = profile_from_fingerprint_file(&entry.path()) {
+            return Some(profile);
+        }
+    }
+    None
+}
+
+fn profile_from_fingerprint_file(path: &Path) -> Option<Option<String>> {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let value = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+    let profile = value.get("profile")?;
+    Some(match profile {
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    })
 }
 
 fn cargo_artifact_hash(executable: &Path) -> Option<String> {
@@ -926,6 +934,84 @@ mod tests {
         assert_eq!(
             cargo_profile_fingerprint_for_executable(&top_level).as_deref(),
             Some("123456789")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cargo_profile_fingerprint_resolves_build_out_dir_artifact() {
+        let dir = std::env::temp_dir().join(format!(
+            "myelin-cargo-profile-fingerprint-out-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let out = dir.join("debug/build/myelin-accelerator/0123456789abcdef/out");
+        let fingerprint = dir.join(format!(
+            "debug/.fingerprint/{}-0123456789abcdef",
+            env!("CARGO_PKG_NAME")
+        ));
+        std::fs::create_dir_all(&out).expect("build out directory");
+        std::fs::create_dir_all(&fingerprint).expect("fingerprint directory");
+        std::fs::write(
+            fingerprint.join("test-lib-myelin_accelerator.json"),
+            br#"{"profile":987654321}"#,
+        )
+        .expect("fingerprint JSON");
+
+        let executable = out.join("myelin_accelerator-0123456789abcdef");
+        assert_eq!(
+            cargo_profile_fingerprint_for_executable(&executable).as_deref(),
+            Some("987654321")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cargo_profile_fingerprint_does_not_fall_through_invalid_profile() {
+        let dir = std::env::temp_dir().join(format!(
+            "myelin-cargo-profile-fingerprint-invalid-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let out = dir.join("debug/build/myelin-accelerator/0123456789abcdef/out");
+        let invalid_fingerprint = out.join(format!(
+            ".fingerprint/{}-0123456789abcdef",
+            env!("CARGO_PKG_NAME")
+        ));
+        let ancestor_fingerprint = dir.join(format!(
+            "debug/.fingerprint/{}-0123456789abcdef",
+            env!("CARGO_PKG_NAME")
+        ));
+        std::fs::create_dir_all(&out).expect("artifact directory");
+        std::fs::create_dir_all(&invalid_fingerprint).expect("invalid fingerprint directory");
+        std::fs::create_dir_all(&ancestor_fingerprint).expect("ancestor fingerprint directory");
+        std::fs::write(
+            out.join("myelin_accelerator-0123456789abcdef"),
+            b"synthetic",
+        )
+        .expect("synthetic executable");
+        std::fs::write(
+            invalid_fingerprint.join("bad-profile.json"),
+            br#"{"profile":null}"#,
+        )
+        .expect("invalid fingerprint JSON");
+        std::fs::write(
+            ancestor_fingerprint.join("good-profile.json"),
+            br#"{"profile":123456789}"#,
+        )
+        .expect("ancestor fingerprint JSON");
+
+        assert_eq!(
+            cargo_profile_fingerprint_for_executable(
+                &out.join("myelin_accelerator-0123456789abcdef")
+            ),
+            None
         );
         let _ = std::fs::remove_dir_all(dir);
     }

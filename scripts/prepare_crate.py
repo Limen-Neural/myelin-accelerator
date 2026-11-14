@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Raul Montoya Cardenas
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Inspect and exercise a v0.2.0 Cargo candidate; never tag or publish it.
+"""Inspect and exercise the Cargo candidate in this checkout; never tag or publish it.
 
 Requires Python 3.11.4+ for tomllib and tarfile's safe extraction filter.
 """
@@ -27,11 +27,18 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.2.0"
 CRATE_NAME = "myelin-accelerator"
-ARCHIVE_ROOT = f"{CRATE_NAME}-{VERSION}"
-AUTHOR = "Raul Cardenas Montoya"
 MANIFEST_NAME = "Cargo.toml"
+AUTHOR = "Raul Cardenas Montoya"
+
+
+def _package_version() -> str:
+    manifest = tomllib.loads((ROOT / MANIFEST_NAME).read_text(encoding="utf-8"))
+    return manifest["package"]["version"]
+
+
+VERSION = _package_version()
+ARCHIVE_ROOT = f"{CRATE_NAME}-{VERSION}"
 GIT = shutil.which("git")
 REQUIRED_PATHS = frozenset(
     {
@@ -193,10 +200,12 @@ def check_extracted_crate(unpacked: Path, context: RunContext) -> None:
 
 def write_consumer(consumer: Path) -> None:
     (consumer / "src").mkdir(parents=True)
+    artifact_path = f"../artifact/{ARCHIVE_ROOT}"
     (consumer / MANIFEST_NAME).write_text(
         "[package]\nname = \"myelin-release-consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n"
         "[features]\ncuda = [\"myelin-accelerator/cuda\"]\n"
-        "[dependencies]\nmyelin-accelerator = { path = \"../artifact/myelin-accelerator-0.2.0\" }\n",
+        "[dependencies]\n"
+        f"myelin-accelerator = {{ path = '{artifact_path}' }}\n",
         encoding="utf-8",
     )
     (consumer / "src" / "main.rs").write_text(
@@ -239,7 +248,7 @@ def validate_candidate(parser: argparse.ArgumentParser, candidate_sha: str) -> s
 
 
 def output_directory(parser: argparse.ArgumentParser, requested: Path | None) -> Path:
-    output = (requested or Path(tempfile.mkdtemp(prefix="myelin-v0.2.0-prep-"))).resolve()
+    output = (requested or Path(tempfile.mkdtemp(prefix="myelin-prep-"))).resolve()
     if output == ROOT or ROOT in output.parents:
         parser.error("--output-dir must be outside the repository")
     if requested:

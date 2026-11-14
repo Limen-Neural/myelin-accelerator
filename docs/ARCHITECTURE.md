@@ -13,7 +13,7 @@ only — do not track this crate under personal `rmems/*` remotes or deps.
 ## One-line mission
 
 **Low-level, reusable GPU compute for neuromorphic / routing / SAT workloads:**
-first-party CUDA sources in `cu/` (compiled to PTX), safe Rust FFI, device memory helpers, and a
+first-party CUDA sources in `cu/` (compiled to fatbin + PTX), safe Rust FFI, device memory helpers, and a
 local quality/benchmark harness. Not a research orchestrator.
 
 ---
@@ -23,7 +23,7 @@ local quality/benchmark harness. Not a research orchestrator.
 | Area | Examples |
 |------|----------|
 | CUDA kernels | `cu/*.cu`, shared headers (`cu/common.cuh`), `sm_120`-tuned reductions |
-| PTX build path | `build.rs` (`nvcc -ptx`), CMake `cuda_kernels` target, embedded PTX |
+| PTX / fatbin build path | `build.rs` (`nvcc -ptx` sidecar + `-fatbin` SASS with PTX fallback), CMake `cuda_kernels` target, embedded images |
 | Safe GPU FFI | `GpuContext`, `KernelModule`, `GpuBuffer`, launch wrappers |
 | Feature gates | `cuda` (cust + nvtx), `bench` (example harness flag); manifest schema lives in `src/bench` |
 | CPU-safe stub | `src/gpu_stub.rs` when `cuda` is off (CI / sandboxes) |
@@ -74,7 +74,7 @@ own scope decision; it does not make the surrounding experiment publishable.
 
 | Consumer | Typical dependency |
 |----------|-------------------|
-| `corinth-canal` | Generic routing and adjusted-score selection; stay out of experiment orchestration |
+| `corinth-canal` | Generic routing, adjusted-score selection, and temporal GPU primitives; stay out of experiment orchestration |
 | SNN libraries / Spikenaut-class stacks | Poisson encode, LIF step, rate stats, STDP-style updates when exposed |
 | Telemetry / profiling experiments | Kernel launches + nvtx ranges; host only aggregates results |
 | Quantization prototypes (binary / ternary) | Packed layouts + future GEMV/GEMM kernels; host packing already here |
@@ -93,7 +93,8 @@ paths.
 myelin-accelerator/
 ├── cu/                          # First-party CUDA device sources
 │   ├── common.cuh
-│   ├── spiking_network.cu       # Poisson, LIF, STDP, reduce passes
+│   ├── spiking_network.cu       # Poisson, LIF, GIF, STDP, reduce
+│   ├── myelin_shim.cu / .cuh    # C-ABI launch for f16 GIF (`cuda`)
 │   ├── vector_similarity.cu     # Cosine batched + top-k routing
 │   ├── satsolver.cu             # Parallel SAT walkers + reduces
 │   ├── ternary_gemm.cu          # Group-scaled ternary GEMV / GEMM
@@ -104,16 +105,19 @@ myelin-accelerator/
 │   ├── capability.rs            # Probe types, decision table, sanitizer
 │   ├── error.rs                 # GpuError / GpuResult (CUDA + stub)
 │   ├── bitpacking.rs            # Host binary/ternary pack/unpack + scales/ref
+│   ├── gif.rs                   # GIF constants + CPU refs
+│   ├── launch_hook.rs           # Consumer-installed launch-failure callback
 │   ├── routing.rs               # Routing contract, CPU reference, analytical model
 │   ├── oracle.rs                # Scalar CPU oracles + seeded compare helpers
 │   ├── gpu_stub.rs              # CPU-safe stand-ins (no cuda feature)
 │   └── gpu/                     # Real CUDA path (feature = "cuda")
 │       ├── mod.rs               # Internal module tree + re-exports
 │       ├── context.rs           # Device / primary context
-│       ├── kernel.rs            # PTX embed + Module/Function map
+│       ├── kernel.rs            # Fatbin embed + PTX fallback + Function map
+│       ├── ffi.rs               # C ABI wrapper for myelin_shim (`cuda`)
 │       ├── memory.rs            # GpuBuffer
 │       ├── error.rs             # GpuError / GpuResult
-│       └── accelerator.rs       # High-level launch wrappers
+│       └── accelerator.rs       # High-level launch wrappers; GIF TemporalState
 ├── examples/benchmark.rs        # Optional bench harness (feature = "bench")
 ├── tests/fixtures/bench/        # Sanitized manifest + classification fixtures
 ├── tests/fixtures/snn/          # Pinned SNN model fixtures (workload-only, v0.2.0)
@@ -130,8 +134,8 @@ myelin-accelerator/
 
 | Feature | Effect |
 |---------|--------|
-| *(default empty)* | Stub GPU API; no `nvcc` required |
-| `cuda` | Real `src/gpu/*`, `cust`, optional `nvtx` profiling ranges |
+| *(default empty)* | Stub GPU API; no `nvcc` required; GIF host refs + fail-closed temporal stubs |
+| `cuda` | Real `src/gpu/*`, `cust`, optional `nvtx` profiling ranges, GIF device kernels + `myelin_shim` |
 | `bench` | Example `required-features` flag so existing `--features bench` commands stay valid |
 
 ---
@@ -147,12 +151,14 @@ Re-exported from `src/lib.rs` (names available with or without `cuda` via stub):
 | `GpuAccelerator` | Primary entry: construct, readiness, kernel launches |
 | `GpuContext` | Context init / presence |
 | `GpuBuffer` | Device buffer helper |
-| `KernelModule` | Loaded PTX modules + `get_function` |
+| `KernelModule` | Loaded fatbin/PTX modules + `get_function` |
 | `GpuError` | Error type re-exported at the crate root |
+| `set_launch_failure_hook` | Consumer-installed launch-failure reporter (no `sentry` dep) |
 | `probe_capabilities` / `CapabilityReport` | Typed pre-launch probe (build, runtime, device, CC, kernels, backend) |
 | `ExecutionPolicy` | `PreferGpu` (recorded CPU fallback) or `RequireGpu` (fail closed) |
 | `FallbackReason` / `FallbackRecord` | Stable reason codes + selected implementation |
 | `bitpacking` module | Host packing APIs (`pack_ternary`, `pack_binary`, …) |
+| `gif` module | GIF constants and CPU reference step |
 | `oracle` module | Named CPU oracles + seed/shape mismatch reporting |
 | `bench` module | Manifest schema, redaction, median/MAD stats, opt-in regression budgets |
 
@@ -189,12 +195,14 @@ executing reduced kernels without a record.
 
 These are the **ergonomic** wrappers currently implemented:
 
-- Lifecycle: `new` (PreferGpu), `require_gpu` / `with_policy`, `is_ready`, `capabilities`, `selected_backend`, `fallback`, `kernels`, `synchronize`
+- Lifecycle: `new` (PreferGpu), `require_gpu` / `with_policy`, `is_ready` (context+stream), `kernels_ready`, `capabilities`, `selected_backend`, `fallback`, `kernels` (returns `ModuleLoadFailed` rather than `NoGpu` when a context exists but fatbin/PTX did not load), `synchronize`
 - SAT: `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
 - Spiking: `poisson_encode` / `_async`
 - Plasticity: `stdp_update` / `_async` (weight and trace kernels in stream order)
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
 - Routing and selection: `routing_softmax`, `routing_top_k`, `routing_entropy_reduce`, `adjusted_argmax`, `adjusted_argmax_single_block`, `fused_routing_select`, each with `_async` (see [ROUTING.md](ROUTING.md))
+
+- GIF temporal (device kernels under `cuda`; stub fail-closed without it): `ensure_temporal_state(neuron_count, n_inputs)`, `gif_step_weighted_tick`, `reset_temporal_state`, `load_synapse_weights`, `load_synapse_weights_named`, `load_synapse_weights_f16_registered`, `synapse_signature`, `temporal_spikes_to_vec`, `temporal_membrane_to_vec`, `temporal_adaptation_to_vec`, `upload_temporal_input_spikes`, `upload_temporal_input_current`
 
 Scalar CPU oracles for the Poisson and ternary wrappers, plus
 `cosine_similarity_batched`, `lif_step`, and `lif_step_weighted` (loaded, not
@@ -210,7 +218,7 @@ consumers share.
 
 | PTX module | Symbols |
 |------------|---------|
-| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `spike_rate`, `reset_membrane`, `stdp_update_weights`, `stdp_update_traces`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` |
+| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `gif_step_weighted`, `gif_step_weighted_f16`, `spike_rate`, `reset_membrane`, `stdp_update_weights`, `stdp_update_traces`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` |
 | `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` |
 | `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass1`, `satsolver_best_reduce_pass2` |
 | `ternary_gemm` | `ternary_gemv`, `ternary_gemm` |
@@ -310,7 +318,7 @@ an inconsistent per-kernel clamp.
 
 | Path | Purpose |
 |------|---------|
-| CPU CI | `cargo test --locked`, `cargo build --no-default-features` |
+| CPU CI | `cargo test --locked`, `cargo build --locked --no-default-features` |
 | GPU local / self-hosted | `cargo test --features cuda -- --ignored`, benchmark example |
 | CLion | CMake CXX-only + `nvcc -ptx` custom target — **not** CMake native `CUDA` language |
 
