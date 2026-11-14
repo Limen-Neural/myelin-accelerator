@@ -1094,7 +1094,11 @@ impl GpuAccelerator {
         Ok(())
     }
 
-    fn zero_output_prefix(&self, output: &mut GpuBuffer<f32>, count: usize) -> GpuResult<()> {
+    pub(crate) fn zero_output_prefix(
+        &self,
+        output: &mut GpuBuffer<f32>,
+        count: usize,
+    ) -> GpuResult<()> {
         let stream = self
             .stream
             .as_ref()
