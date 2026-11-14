@@ -113,7 +113,6 @@ impl GpuAccelerator {
     // without simplifying the launch. Allow the clippy lint.
     #[allow(clippy::too_many_arguments)]
     // @codescene(disable:"Excess Number of Function Arguments")
-    // qlty-ignore: qlty:function-parameters
     pub fn satsolver_aux_reduce_best(
         &self,
         assignment: &GpuBuffer<u8>,
@@ -152,7 +151,6 @@ impl GpuAccelerator {
     // without simplifying the launch. Allow the clippy lint.
     #[allow(clippy::too_many_arguments)]
     // @codescene(disable:"Excess Number of Function Arguments", disable:"Large Method")
-    // qlty-ignore: qlty:function-parameters
     pub fn satsolver_aux_reduce_best_async(
         &self,
         assignment: &GpuBuffer<u8>,

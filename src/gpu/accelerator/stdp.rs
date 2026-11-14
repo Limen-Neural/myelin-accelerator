@@ -26,7 +26,6 @@ impl GpuAccelerator {
     /// an error can still leave weights or traces partially updated.
     #[allow(clippy::too_many_arguments)]
     // @codescene(disable:"Excess Number of Function Arguments")
-    // qlty-ignore: qlty:function-parameters
     pub fn stdp_update(
         &self,
         weights: &mut GpuBuffer<f32>,
@@ -62,7 +61,6 @@ impl GpuAccelerator {
     /// before reusing the buffers, and do not assume an atomic update.
     #[allow(clippy::too_many_arguments)]
     // @codescene(disable:"Excess Number of Function Arguments")
-    // qlty-ignore: qlty:function-parameters
     pub fn stdp_update_async(
         &self,
         weights: &mut GpuBuffer<f32>,
@@ -166,7 +164,6 @@ impl GpuAccelerator {
 
     #[allow(clippy::too_many_arguments)]
     // @codescene(disable:"Excess Number of Function Arguments")
-    // qlty-ignore: qlty:function-parameters
     fn validate_stdp_buffers(
         weights: &GpuBuffer<f32>,
         pre_spikes: &GpuBuffer<f32>,

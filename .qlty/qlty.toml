@@ -1,0 +1,16 @@
+config_version = "0"
+
+[[source]]
+name = "default"
+default = true
+
+# The moved CUDA kernel ABI wrappers intentionally mirror many-argument device
+# launch signatures; restructuring them would change the public GPU API.
+[[triage]]
+match.rules = ["qlty:function-parameters"]
+match.file_patterns = [
+  "src/gpu/accelerator/stdp.rs",
+  "src/gpu/accelerator/satsolver.rs",
+  "src/gpu/accelerator/ternary.rs",
+]
+set.ignored = true
