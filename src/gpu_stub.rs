@@ -9,7 +9,7 @@ use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
 pub use crate::error::{GpuError, GpuResult};
 use crate::routing::{
     FusedRoutingInputs, FusedRoutingOutputs, RoutingParams, RoutingScoreKind, RoutingShape,
-    validate_entropy_buffers, validate_fused_buffers, validate_selection_buffers,
+    SelectionInputs, validate_entropy_buffers, validate_fused_buffers, validate_selection_buffers,
     validate_softmax_buffers, validate_top_k_buffers,
 };
 
@@ -455,7 +455,13 @@ impl GpuAccelerator {
         selected_score: &mut GpuBuffer<f32>,
         scale: f32,
     ) -> GpuResult<()> {
-        Self::validate_selection(state, adaptation, selected_index, selected_score, scale)?;
+        let inputs = SelectionInputs {
+            state,
+            adaptation,
+            selected_index: &*selected_index,
+            selected_score: &*selected_score,
+        };
+        validate_selection_buffers(&inputs, scale)?;
         Err(self.unavailable_error())
     }
 
@@ -507,17 +513,6 @@ impl GpuAccelerator {
         };
         validate_fused_buffers(&inputs, outputs, params)?;
         Err(self.unavailable_error())
-    }
-
-    fn validate_selection(
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        selected_index: &GpuBuffer<u32>,
-        selected_score: &GpuBuffer<f32>,
-        scale: f32,
-    ) -> GpuResult<()> {
-        validate_selection_buffers(state, adaptation, selected_index, selected_score, scale)?;
-        Ok(())
     }
 
     pub fn synchronize(&self) -> GpuResult<()> {

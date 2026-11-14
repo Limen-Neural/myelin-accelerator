@@ -6,8 +6,8 @@ use crate::gpu::error::GpuResult;
 use crate::gpu::memory::GpuBuffer;
 use crate::routing::{
     FusedRoutingInputs, FusedRoutingOutputs, ROUTING_BLOCK_SIZE, RoutingParams, RoutingScoreKind,
-    RoutingShape, validate_entropy_buffers, validate_fused_buffers, validate_softmax_buffers,
-    validate_top_k_buffers,
+    RoutingShape, SelectionInputs, validate_entropy_buffers, validate_fused_buffers,
+    validate_softmax_buffers, validate_top_k_buffers,
 };
 use cust::launch;
 
@@ -232,13 +232,13 @@ impl GpuAccelerator {
         selected_score: &mut GpuBuffer<f32>,
         scale: f32,
     ) -> GpuResult<()> {
-        let n = crate::routing::validate_selection_buffers(
+        let inputs = SelectionInputs {
             state,
             adaptation,
-            selected_index,
-            selected_score,
-            scale,
-        )?;
+            selected_index: &*selected_index,
+            selected_score: &*selected_score,
+        };
+        let n = crate::routing::validate_selection_buffers(&inputs, scale)?;
         let kernels = self.kernels()?;
         let pass1 = kernels.get_function("adjusted_argmax_pass1")?;
         let pass2 = kernels.get_function("indexed_argmax_reduce_pass2")?;
@@ -306,13 +306,13 @@ impl GpuAccelerator {
         selected_score: &mut GpuBuffer<f32>,
         scale: f32,
     ) -> GpuResult<()> {
-        let n = crate::routing::validate_selection_buffers(
+        let inputs = SelectionInputs {
             state,
             adaptation,
-            selected_index,
-            selected_score,
-            scale,
-        )?;
+            selected_index: &*selected_index,
+            selected_score: &*selected_score,
+        };
+        let n = crate::routing::validate_selection_buffers(&inputs, scale)?;
         let kernels = self.kernels()?;
         let func = kernels.get_function("adjusted_argmax_single_block")?;
         let stream = self.ready_stream()?;

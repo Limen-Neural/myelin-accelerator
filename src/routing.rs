@@ -257,14 +257,23 @@ pub(crate) fn validate_fused_buffers(
     Ok(())
 }
 
+/// Borrowed adjusted-selection buffers checked before launch.
+pub(crate) struct SelectionInputs<'a> {
+    pub(crate) state: &'a GpuBuffer<f32>,
+    pub(crate) adaptation: &'a GpuBuffer<f32>,
+    pub(crate) selected_index: &'a GpuBuffer<u32>,
+    pub(crate) selected_score: &'a GpuBuffer<f32>,
+}
+
 /// Validate adjusted-score selection buffers and return the kernel `n`.
 pub(crate) fn validate_selection_buffers(
-    state: &GpuBuffer<f32>,
-    adaptation: &GpuBuffer<f32>,
-    selected_index: &GpuBuffer<u32>,
-    selected_score: &GpuBuffer<f32>,
+    inputs: &SelectionInputs<'_>,
     scale: f32,
 ) -> GpuResult<i32> {
+    let state = inputs.state;
+    let adaptation = inputs.adaptation;
+    let selected_index = inputs.selected_index;
+    let selected_score = inputs.selected_score;
     validate_scale(scale)?;
     if state.len() != adaptation.len() {
         return Err(GpuError::invalid_input(format!(
