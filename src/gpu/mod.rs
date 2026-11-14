@@ -10,6 +10,7 @@ pub mod context;
 pub mod error;
 pub mod kernel;
 pub mod memory;
+pub(crate) mod routing_ops;
 
 pub use crate::capability::{
     Backend, CapabilityFacts, CapabilityReport, ComputeCapability, ExecutionPolicy, FallbackReason,
