@@ -6,11 +6,10 @@
 //
 //  Kernels exported (name-exact for PTX symbol lookup in kernel.rs):
 //    poisson_encode       — rate-coded Poisson spike train
-//    project_snapshot_current — project 4-channel snapshot to per-neuron current (MYELIN_SAAQ)
 //    lif_step             — LIF neuron step (unweighted)
 //    lif_step_weighted    — LIF step with synaptic weight matrix
-//    gif_step_weighted    — GIF step with adaptation, dynamic threshold, f32 synapses (MYELIN_SAAQ)
-//    gif_step_weighted_f16 — GIF step with f16 synapses via myelin_shim (MYELIN_SAAQ)
+//    gif_step_weighted    — GIF step with adaptation, dynamic threshold, f32 synapses
+//    gif_step_weighted_f16 — GIF step with f16 synapses via myelin_shim
 //    spike_rate           — windowed firing-rate estimator
 //    reset_membrane       — reset membrane to resting potential
 //    stdp_update_weights  — spike-timing-dependent weight update
@@ -19,8 +18,6 @@
 //    membrane_dv_dt_reduce_pass1 — per-block reduction of |dv/dt|
 //    routing_entropy_reduce_pass1 — per-block reduction of routing entropy
 //    latent_reduce_pass2          — final reduction of pass1 partials
-//    saaq_find_best_walker        — SAAQ pass 1 argmax; one partial winner per block (MYELIN_SAAQ)
-//    saaq_reduce_partials_f16     — SAAQ pass 2 over block partials; one u32 winner (MYELIN_SAAQ)
 //
 //  Parameters follow the 16-neuron / 16-channel architecture in
 //  neuro-spike-core/src/snn/engine.rs.
@@ -36,8 +33,7 @@
 #define LIF_RESET        0.0f    // reset potential after spike
 #define LIF_REFRACT_TICK 2       // integer ticks of absolute refractory period
 
-#ifdef MYELIN_SAAQ
-// ── GIF model constants (match SparseGifHiddenLayer / corinth-canal) ──
+// ── GIF model constants ──
 #define GIF_LEAK             0.92f
 #define GIF_DRIVE_SCALE      0.75f
 #define GIF_THRESHOLD_BASE   0.65f
@@ -45,10 +41,6 @@
 #define GIF_ADAPTATION_DECAY 0.94f
 #define GIF_RESET_RATIO      0.35f
 #define GIF_ADAPTATION_TERM  0.05f
-#endif
-
-// Inactive-lane SAAQ score. Must match `SAAQ_SCORE_SENTINEL` in src/gif.rs.
-#define SAAQ_SCORE_SENTINEL (-INFINITY)
 
 // ── STDP constants (match stdp.rs) ───────────────────────────────
 #define STDP_A_PLUS   0.01f
@@ -93,61 +85,6 @@ void poisson_encode(
 }
 
 // ════════════════════════════════════════════════════════════════════
-#ifdef MYELIN_SAAQ
-//  project_snapshot_current
-//
-//  Lightweight projection kernel that maps a 4-channel telemetry snapshot
-//  into per-neuron external current for the LIF/GIF step.
-//
-//  Params
-//    snapshot      [4]         — gpu_temp, gpu_power, cpu_temp, cpu_power
-//    input_current [n_neurons] — projected per-neuron current (output)
-//    n_neurons
-// ════════════════════════════════════════════════════════════════════
-extern "C" __global__
-void project_snapshot_current(
-    const float* __restrict__ snapshot,
-    float* __restrict__ input_current,
-    int n_neurons)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n_neurons) return;
-
-    float gpu_temp_c = snapshot[0];
-    float gpu_power_w = snapshot[1];
-    float cpu_temp_c = snapshot[2];
-    float cpu_power_w = snapshot[3];
-
-    float temp_norm = fmaxf(-1.0f, fminf(1.0f, (gpu_temp_c - 60.0f) / 30.0f));
-    float gpu_power_norm = fmaxf(-1.0f, fminf(1.0f, (gpu_power_w - 220.0f) / 220.0f));
-    float cpu_temp_norm = fmaxf(-1.0f, fminf(1.0f, (cpu_temp_c - 60.0f) / 30.0f));
-    float cpu_power_norm = fmaxf(-1.0f, fminf(1.0f, (cpu_power_w - 120.0f) / 120.0f));
-
-    float channel;
-    switch (tid & 3) {
-        case 0:
-            channel = temp_norm;
-            break;
-        case 1:
-            channel = gpu_power_norm;
-            break;
-        case 2:
-            channel = cpu_temp_norm;
-            break;
-        default:
-            channel = cpu_power_norm;
-            break;
-    }
-
-    unsigned int phase_seed = (unsigned int)tid * 1664525u + 1013904223u;
-    float phase = ((phase_seed >> 8) & 1023u) / 1023.0f;
-    float jitter = (phase - 0.5f) * 0.25f;
-
-    float drive = 0.9f + channel * 0.45f + jitter;
-    input_current[tid] = fmaxf(0.0f, drive);
-}
-#endif
-
 // ════════════════════════════════════════════════════════════════════
 //  lif_step
 //
@@ -254,7 +191,6 @@ void lif_step_weighted(
     spikes_out[tid] = spike;
 }
 
-#ifdef MYELIN_SAAQ
 // ════════════════════════════════════════════════════════════════════
 //  gif_step_weighted
 //
@@ -266,8 +202,7 @@ void lif_step_weighted(
 //  on spike: adaptation += 1.0, soft-reset membrane.
 //
 //  Uses shared memory for the input_spikes tile. Refractory is respected.
-//  Per-neuron `input_current` (from `project_snapshot_current`) is added
-//  after the synaptic drive so telemetry projection affects GIF dynamics.
+//  Per-neuron `input_current` is added after the synaptic drive.
 //
 //  Params
 //    membrane      [n_neurons]              — read-write membrane potential
@@ -388,7 +323,6 @@ void gif_step_weighted_f16(
     membrane[tid]   = v;
     spikes_out[tid] = spike;
 }
-#endif
 
 // ════════════════════════════════════════════════════════════════════
 //  spike_rate
@@ -723,116 +657,3 @@ void latent_reduce_pass2(
         }
     }
 }
-
-#ifdef MYELIN_SAAQ
-// ════════════════════════════════════════════════════════════════════
-//  saaq_find_best_walker
-//
-//  On-device SAAQ (Spiking Activity and Adaptive Quantization) pass 1.
-//  score = membrane[tid] - (adaptation_scale * adaptation[tid])
-//  Emits one winning (score, walker) pair per block.
-//
-//  Production launch for 2048 neurons: <<<8, 256>>>.
-//  Tie-break: higher score wins; equal scores keep the lower walker index.
-// ════════════════════════════════════════════════════════════════════
-extern "C" __global__
-__launch_bounds__(256)
-void saaq_find_best_walker(
-    const float* __restrict__ membrane,
-    const float* __restrict__ adaptation,
-    float* __restrict__ partial_scores,
-    unsigned int* __restrict__ partial_walkers,
-    int n_neurons,
-    float adaptation_scale)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-
-    float my_score = SAAQ_SCORE_SENTINEL;
-    int my_walker = 0;
-
-    if (tid < n_neurons) {
-        float score = membrane[tid] - (adaptation_scale * adaptation[tid]);
-        my_score = score;
-        my_walker = tid;
-    }
-
-    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
-        float other_score = __shfl_down_sync(0xffffffffu, my_score, offset);
-        int other_walker = __shfl_down_sync(0xffffffffu, my_walker, offset);
-        if (other_score > my_score || (other_score == my_score && other_walker < my_walker)) {
-            my_score = other_score;
-            my_walker = other_walker;
-        }
-    }
-
-    int lane = threadIdx.x & (WARP_SIZE - 1);
-    int warp_id = threadIdx.x / WARP_SIZE;
-    int n_warps = (blockDim.x + WARP_SIZE - 1) / WARP_SIZE;
-
-    __shared__ float s_scores[32];
-    __shared__ int s_walkers[32];
-
-    if (lane == 0) {
-        s_scores[warp_id] = my_score;
-        s_walkers[warp_id] = my_walker;
-    }
-    __syncthreads();
-
-    if (warp_id == 0) {
-        float bscore = (threadIdx.x < n_warps) ? s_scores[lane] : SAAQ_SCORE_SENTINEL;
-        int bwalker = (threadIdx.x < n_warps) ? s_walkers[lane] : 0;
-
-        for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
-            float other_score = __shfl_down_sync(0xffffffffu, bscore, offset);
-            int other_walker = __shfl_down_sync(0xffffffffu, bwalker, offset);
-            if (other_score > bscore || (other_score == bscore && other_walker < bwalker)) {
-                bscore = other_score;
-                bwalker = other_walker;
-            }
-        }
-
-        if (threadIdx.x == 0) {
-            partial_scores[blockIdx.x] = bscore;
-            partial_walkers[blockIdx.x] = (unsigned int)bwalker;
-        }
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-//  saaq_reduce_partials_f16
-//
-//  SAAQ pass 2: reduce per-block partial winners to one global walker.
-//  Launch <<<1, 32>>>; lanes >= n_partials are masked with SAAQ_SCORE_SENTINEL
-//  (-inf). n_partials must be <= 32.
-// ════════════════════════════════════════════════════════════════════
-extern "C" __global__
-__launch_bounds__(32)
-void saaq_reduce_partials_f16(
-    const float* __restrict__ partial_scores,
-    const unsigned int* __restrict__ partial_walkers,
-    unsigned int* __restrict__ best_walker_out,
-    int n_partials)
-{
-    int lane = threadIdx.x;
-    float my_score = SAAQ_SCORE_SENTINEL;
-    int my_walker = 0;
-
-    if (lane < n_partials) {
-        my_score = partial_scores[lane];
-        my_walker = (int)partial_walkers[lane];
-    }
-
-    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
-        float other_score = __shfl_down_sync(0xffffffffu, my_score, offset);
-        int other_walker = __shfl_down_sync(0xffffffffu, my_walker, offset);
-        if (other_score > my_score || (other_score == my_score && other_walker < my_walker)) {
-            my_score = other_score;
-            my_walker = other_walker;
-        }
-    }
-
-    if (lane == 0) {
-        best_walker_out[0] = (unsigned int)my_walker;
-    }
-}
-#endif

@@ -14,7 +14,7 @@ use std::sync::{Arc, RwLock};
 pub enum LaunchType {
     /// Fatbin/SASS load or `cust::launch!` PTX path.
     PtxFatbin,
-    /// Blackwell-critical F16 GIF / SAAQ path via the C ABI shim.
+    /// Blackwell-critical F16 GIF path via the C ABI shim.
     CAbiShim,
 }
 

@@ -8,7 +8,6 @@
 pub mod accelerator;
 pub mod context;
 pub mod error;
-#[cfg(feature = "saaq")]
 pub(crate) mod ffi;
 pub mod kernel;
 pub mod memory;

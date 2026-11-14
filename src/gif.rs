@@ -1,13 +1,10 @@
 // Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! GIF / SAAQ host reference matching `cu/spiking_network.cu`.
+//! GIF host reference matching `cu/spiking_network.cu`.
 //!
-//! Experimental: compiled only with `--features saaq`. Not part of the
-//! default / crates.io Tier-1 public API.
-//!
-//! These constants and CPU kernels are the numerical reference for
-//! corinth-canal parity tests and for LIM-955 fusion work.
+//! These constants and CPU kernels are the numerical reference for GPU
+//! temporal-state parity tests.
 
 /// Membrane leak per GIF tick (`GIF_LEAK` in `spiking_network.cu`).
 pub const GIF_LEAK: f32 = 0.92;
@@ -27,55 +24,22 @@ pub const GIF_ADAPTATION_TERM: f32 = 0.05;
 pub const LIF_RESET: f32 = 0.0;
 /// Absolute refractory ticks (`LIF_REFRACT_TICK`).
 pub const LIF_REFRACT_TICK: u32 = 2;
-/// Threads per GIF/SAAQ block (matches the CUDA launch).
+/// Threads per GIF block (matches the CUDA launch).
 pub const GIF_BLOCK_SIZE: u32 = 256;
-/// `saaq_reduce_partials_f16` is a single 32-thread warp.
-pub const SAAQ_MAX_BLOCKS: u32 = 32;
-/// Inactive-lane SAAQ score (`SAAQ_SCORE_SENTINEL` in `spiking_network.cu`).
-pub const SAAQ_SCORE_SENTINEL: f32 = f32::NEG_INFINITY;
 
-/// Grid.x for GIF/SAAQ launches. Rejects counts that would wrap `u32` or
-/// exceed the pass-2 warp (`SAAQ_MAX_BLOCKS`).
-pub fn gif_saaq_grid(neuron_count: usize) -> Result<u32, String> {
-    let max_neurons = (SAAQ_MAX_BLOCKS as usize).saturating_mul(GIF_BLOCK_SIZE as usize);
+/// Grid.x for GIF launches. Rejects empty counts and counts that would wrap
+/// `u32` when divided into blocks.
+pub fn gif_grid(neuron_count: usize) -> Result<u32, String> {
     if neuron_count == 0 {
         return Err("temporal state requires neuron_count > 0".into());
     }
-    if neuron_count > max_neurons {
+    let blocks = (neuron_count as u128).div_ceil(GIF_BLOCK_SIZE as u128);
+    if blocks > u32::MAX as u128 {
         return Err(format!(
-            "temporal grid exceeds SAAQ pass-2 cap of {SAAQ_MAX_BLOCKS} blocks \
-             (max {max_neurons} neurons at {GIF_BLOCK_SIZE} threads; requested {neuron_count})"
+            "temporal grid exceeds u32 block limit (requested {neuron_count} neurons)"
         ));
     }
-    Ok((neuron_count as u32).div_ceil(GIF_BLOCK_SIZE).max(1))
-}
-
-/// Four telemetry channels consumed by [`project_snapshot_current`].
-///
-/// Channel order matches the CUDA kernel: gpu temperature, gpu power,
-/// cpu temperature, cpu power.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct SnapshotChannels {
-    /// GPU temperature in Celsius.
-    pub gpu_temp_c: f32,
-    /// GPU power in watts.
-    pub gpu_power_w: f32,
-    /// CPU Tctl temperature in Celsius.
-    pub cpu_tctl_c: f32,
-    /// CPU package power in watts.
-    pub cpu_package_power_w: f32,
-}
-
-impl SnapshotChannels {
-    /// Pack channels in CUDA kernel order.
-    pub fn as_array(self) -> [f32; 4] {
-        [
-            self.gpu_temp_c,
-            self.gpu_power_w,
-            self.cpu_tctl_c,
-            self.cpu_package_power_w,
-        ]
-    }
+    Ok(blocks.max(1) as u32)
 }
 
 /// Host GIF step matching `gif_step_weighted`.
@@ -135,94 +99,9 @@ pub fn gif_step_weighted(
     }
 }
 
-/// Host SAAQ argmax matching `saaq_find_best_walker` + `saaq_reduce_partials_f16`.
-///
-/// Score is `membrane[i] - adaptation_scale * adaptation[i]`. Ties keep the
-/// lower walker index.
-pub fn saaq_find_best_walker(membrane: &[f32], adaptation: &[f32], adaptation_scale: f32) -> u32 {
-    assert_eq!(membrane.len(), adaptation.len());
-    assert!(!membrane.is_empty());
-
-    let mut best_score = SAAQ_SCORE_SENTINEL;
-    let mut best_walker = 0u32;
-    for (i, (&v, &a)) in membrane.iter().zip(adaptation.iter()).enumerate() {
-        let score = v - adaptation_scale * a;
-        if score > best_score || (score == best_score && (i as u32) < best_walker) {
-            best_score = score;
-            best_walker = i as u32;
-        }
-    }
-    best_walker
-}
-
-/// Host snapshot projection matching `project_snapshot_current`.
-pub fn project_snapshot_current(snapshot: SnapshotChannels, n_neurons: usize) -> Vec<f32> {
-    let snap = snapshot.as_array();
-    let temp_norm = ((snap[0] - 60.0) / 30.0).clamp(-1.0, 1.0);
-    let gpu_power_norm = ((snap[1] - 220.0) / 220.0).clamp(-1.0, 1.0);
-    let cpu_temp_norm = ((snap[2] - 60.0) / 30.0).clamp(-1.0, 1.0);
-    let cpu_power_norm = ((snap[3] - 120.0) / 120.0).clamp(-1.0, 1.0);
-
-    (0..n_neurons)
-        .map(|tid| {
-            let channel = match tid & 3 {
-                0 => temp_norm,
-                1 => gpu_power_norm,
-                2 => cpu_temp_norm,
-                _ => cpu_power_norm,
-            };
-            let phase_seed = (tid as u32)
-                .wrapping_mul(1_664_525)
-                .wrapping_add(1_013_904_223);
-            let phase = ((phase_seed >> 8) & 1023) as f32 / 1023.0;
-            let jitter = (phase - 0.5) * 0.25;
-            (0.9 + channel * 0.45 + jitter).max(0.0)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Corinth `test_saaq_two_pass_reduction_selects_global_best_and_tie_breaks`
-    /// fixture: 8×256 = 2048 neurons, winner at block 5 lane 9.
-    #[test]
-    fn corinth_saaq_fixture_selects_global_best() {
-        const N: usize = 8 * 256;
-        let mut membrane = vec![0.0f32; N];
-        let adaptation = vec![0.0f32; N];
-        membrane[17] = 2.0;
-        membrane[5 * 256 + 9] = 4.5;
-        assert_eq!(
-            saaq_find_best_walker(&membrane, &adaptation, GIF_ADAPTATION_SCALE),
-            (5 * 256 + 9) as u32
-        );
-    }
-
-    /// Same corinth fixture: equal scores keep the lower walker index.
-    #[test]
-    fn corinth_saaq_fixture_tie_breaks_lower_index() {
-        const N: usize = 8 * 256;
-        let mut membrane = vec![0.0f32; N];
-        let adaptation = vec![0.0f32; N];
-        membrane[11] = 3.0;
-        membrane[3 * 256 + 4] = 3.0;
-        assert_eq!(
-            saaq_find_best_walker(&membrane, &adaptation, GIF_ADAPTATION_SCALE),
-            11
-        );
-    }
-
-    #[test]
-    fn saaq_penalises_adaptation() {
-        let membrane = [1.0f32, 1.0];
-        let adaptation = [0.0f32, 5.0];
-        assert_eq!(
-            saaq_find_best_walker(&membrane, &adaptation, GIF_ADAPTATION_SCALE),
-            0
-        );
-    }
 
     #[test]
     fn gif_step_fires_and_adapts() {
@@ -279,24 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_projection_is_non_negative_and_channel_periodic() {
-        let snap = SnapshotChannels {
-            gpu_temp_c: 90.0,
-            gpu_power_w: 440.0,
-            cpu_tctl_c: 90.0,
-            cpu_package_power_w: 240.0,
-        };
-        let out = project_snapshot_current(snap, 8);
-        assert_eq!(out.len(), 8);
-        assert!(out.iter().all(|&v| v >= 0.0));
-        // Saturated norms → every channel is 1.0, so variation is jitter only.
-        let max = out.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let min = out.iter().copied().fold(f32::INFINITY, f32::min);
-        assert!(max - min < 0.3);
-    }
-
-    #[test]
-    fn gif_step_adds_projected_input_current() {
+    fn gif_step_adds_input_current() {
         let mut membrane = vec![0.0f32];
         let mut adaptation = vec![0.0f32];
         let weights = vec![0.0f32];
@@ -321,15 +183,14 @@ mod tests {
     }
 
     #[test]
-    fn gif_saaq_grid_rejects_zero_and_u32_wrap() {
-        assert!(gif_saaq_grid(0).is_err());
-        assert_eq!(gif_saaq_grid(1).unwrap(), 1);
-        assert_eq!(gif_saaq_grid(GIF_BLOCK_SIZE as usize).unwrap(), 1);
-        assert_eq!(gif_saaq_grid(GIF_BLOCK_SIZE as usize + 1).unwrap(), 2);
-        let max = (SAAQ_MAX_BLOCKS as usize) * (GIF_BLOCK_SIZE as usize);
-        assert_eq!(gif_saaq_grid(max).unwrap(), SAAQ_MAX_BLOCKS);
-        assert!(gif_saaq_grid(max + 1).is_err());
-        assert!(gif_saaq_grid(u32::MAX as usize + 1).is_err());
-        assert!(gif_saaq_grid(usize::MAX).is_err());
+    fn gif_grid_rejects_zero_and_u32_wrap() {
+        assert!(gif_grid(0).is_err());
+        assert_eq!(gif_grid(1).unwrap(), 1);
+        assert_eq!(gif_grid(GIF_BLOCK_SIZE as usize).unwrap(), 1);
+        assert_eq!(gif_grid(GIF_BLOCK_SIZE as usize + 1).unwrap(), 2);
+        let max = (u32::MAX as usize) * (GIF_BLOCK_SIZE as usize);
+        assert_eq!(gif_grid(max).unwrap(), u32::MAX);
+        assert!(gif_grid(max + 1).is_err());
+        assert!(gif_grid(usize::MAX).is_err());
     }
 }

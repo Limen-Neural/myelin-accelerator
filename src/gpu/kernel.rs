@@ -13,9 +13,9 @@
 //  path also fails we re-run cuModuleLoadDataEx with CU_JIT_LOG_VERBOSE
 //  and capture CU_JIT_ERROR_LOG_BUFFER / CU_JIT_INFO_LOG_BUFFER.
 //
-//  The Blackwell-critical F16 GIF and SAAQ paths (feature `saaq`) launch
-//  through the C ABI shim in ffi.rs; their symbols are still registered here
-//  so consumers can profile the unfused baseline via get_function.
+//  The F16 GIF path launches through the C ABI shim in ffi.rs; kernel
+//  symbols remain registered here so consumers can profile the baseline via
+//  get_function.
 // ════════════════════════════════════════════════════════════════════
 
 use crate::capability::KernelAvailability;
@@ -48,25 +48,8 @@ static TERNARY_GEMM_FATBIN: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/ternary_gemm_sm_120.fatbin"));
 static TERNARY_GEMM_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/ternary_gemm_sm_120.ptx"));
 
-#[cfg(not(feature = "saaq"))]
 const SPIKING_KERNELS: &[&str] = &[
     "poisson_encode",
-    "lif_step",
-    "lif_step_weighted",
-    "spike_rate",
-    "reset_membrane",
-    "stdp_update_weights",
-    "stdp_update_traces",
-    "neuro_bias_logits",
-    "membrane_dv_dt_reduce_pass1",
-    "routing_entropy_reduce_pass1",
-    "latent_reduce_pass2",
-];
-
-#[cfg(feature = "saaq")]
-const SPIKING_KERNELS: &[&str] = &[
-    "poisson_encode",
-    "project_snapshot_current",
     "lif_step",
     "lif_step_weighted",
     "gif_step_weighted",
@@ -79,8 +62,6 @@ const SPIKING_KERNELS: &[&str] = &[
     "membrane_dv_dt_reduce_pass1",
     "routing_entropy_reduce_pass1",
     "latent_reduce_pass2",
-    "saaq_find_best_walker",
-    "saaq_reduce_partials_f16",
 ];
 
 const VECTOR_SIMILARITY_KERNELS: &[&str] =
@@ -370,11 +351,8 @@ mod tests {
 
         assert!(kernels.get_function("cosine_similarity_batched").is_ok());
         assert!(kernels.get_function("lif_step").is_ok());
-        #[cfg(feature = "saaq")]
-        {
-            assert!(kernels.get_function("gif_step_weighted").is_ok());
-            assert!(kernels.get_function("saaq_find_best_walker").is_ok());
-        }
+        assert!(kernels.get_function("gif_step_weighted").is_ok());
+        assert!(kernels.get_function("gif_step_weighted_f16").is_ok());
         assert!(kernels.get_function("satsolver_step").is_ok());
         assert!(kernels.get_function("ternary_gemv").is_ok());
         assert!(kernels.get_function("ternary_gemm").is_ok());

@@ -108,17 +108,6 @@ fn bitpacking_ternary_gemm_ref_matches_gemv_columns() {
     }
 }
 
-#[cfg(feature = "saaq")]
-#[test]
-fn saaq_feature_exports_gif_surface() {
-    use myelin_accelerator::gif::{GIF_LEAK, SnapshotChannels, saaq_find_best_walker};
-    let _ = SnapshotChannels::default();
-    let _ = GIF_LEAK;
-    let membrane = [1.0f32, 0.5];
-    let adaptation = [0.0f32, 0.0];
-    assert_eq!(saaq_find_best_walker(&membrane, &adaptation, 0.22), 0);
-}
-
 #[cfg(not(feature = "cuda"))]
 mod stub_contract {
     use myelin_accelerator::{
@@ -279,13 +268,10 @@ mod stub_contract {
                 .is_err()
         );
 
-        #[cfg(feature = "saaq")]
-        {
-            let mut acc = GpuAccelerator::new();
-            assert!(acc.ensure_temporal_state(8).is_err());
-            assert!(acc.gif_step_weighted_tick(8).is_err());
-            assert!(acc.synapse_signature().is_none());
-        }
+        let mut acc = GpuAccelerator::new();
+        assert!(acc.ensure_temporal_state(8).is_err());
+        assert!(acc.gif_step_weighted_tick(8).is_err());
+        assert!(acc.synapse_signature().is_none());
     }
 
     /// The CPU stub stays fail-closed for empty Poisson requests on both entry

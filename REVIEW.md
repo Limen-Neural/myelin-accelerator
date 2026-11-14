@@ -27,11 +27,9 @@ runner can drive everything:
 | CTest name                       | What it runs                                                   |
 |-----------------------------------|-----------------------------------------------------------------|
 | `cargo_tests`                     | `cargo test --locked`                                            |
-| `cargo_tests_saaq`                | `cargo test --locked --features saaq`                            |
 | `cargo_build_no_default_features` | `cargo build --locked --no-default-features`                     |
 | `cargo_fmt_check`                 | `cargo fmt --check`                                              |
 | `cargo_clippy_no_default`         | `cargo clippy --locked --no-default-features --tests -- -D warnings` |
-| `cargo_clippy_saaq`               | `cargo clippy --locked --features saaq --tests -- -D warnings`   |
 | `cargo_build_bench_example`       | `cargo build --locked --features bench --example benchmark`      |
 | `cuda_kernel_build`               | Builds the `cuda_kernels` target (PTX compile)                   |
 
@@ -159,11 +157,11 @@ kernels validated end-to-end.”
 
 | Path | When CUDA is used | Typical commands |
 |------|-------------------|------------------|
-| **A. CPU-safe** | **Never** — stub / no `nvcc` | `cargo test --locked`, `cargo test --locked --features saaq`, `cargo build --locked --no-default-features`, `cargo clippy --locked --no-default-features --tests`, `cargo clippy --locked --features saaq --tests`, `cargo build --locked --features bench --example benchmark` |
+| **A. CPU-safe** | **Never** — stub / no `nvcc` | `cargo test --locked`, `cargo build --locked --no-default-features`, `cargo clippy --locked --no-default-features --tests`, `cargo build --locked --features bench --example benchmark` |
 | **B. GPU / CUDA** | Only with **`--features cuda`** (or `bench,cuda`) | See minimal/extended GPU sections below |
 
 - Default Cargo features are **empty**. Omitting `cuda` is intentional for CI and sandboxes.
-- Experimental GIF/SAAQ is **`--features saaq`**, not on `default`, and does not compile `myelin_shim` unless `cuda` is also on.
+- GIF temporal device kernels and `myelin_shim` are part of **`--features cuda`**; the default build keeps GIF host refs and fail-closed temporal stubs.
 - Seeing `cuda feature not enabled; wrote stub PTX files` after path A is **success**, not a bug.
 - `--features bench` alone still uses the stub GPU API; GPU kernel rows need **`bench,cuda`**.
 
@@ -425,7 +423,7 @@ that checkout running `drop(GpuAccelerator::require_gpu().unwrap())`
 reproduced **exit 99 / 8 errors**. The new lifecycle suite before the repair
 reported **154 errors**; its foreign-context scratch assertion also failed.
 This evidence addresses the v0.2.0 blocker #46 / LIM-1464; publication remains
-owned by LIM-1460. It does not qualify unrelated #47–#49 or deferred v0.3/SAAQ work.
+owned by LIM-1460. It does not qualify unrelated #47–#49 or deferred v0.3 work.
 
 ### Ownership and context contract
 

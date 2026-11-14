@@ -61,12 +61,11 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=cu/common.cuh");
     println!("cargo:rerun-if-changed=cu/myelin_shim.cu");
-    println!("cargo:rerun-if-changed=cu/myelin_shim.h");
+    println!("cargo:rerun-if-changed=cu/myelin_shim.cuh");
     for &(cu_name, _) in KERNELS {
         println!("cargo:rerun-if-changed=cu/{cu_name}");
     }
 
-    let saaq_feature_enabled = env::var("CARGO_FEATURE_SAAQ").is_ok();
     let opt_level = env::var("OPT_LEVEL").unwrap_or_else(|_| "unknown".to_string());
     println!("cargo:rustc-env=OPT_LEVEL={opt_level}");
     if let Some(version) = rustc_version() {
@@ -118,7 +117,7 @@ fn main() {
             &source,
             &output,
             &arch,
-            &nvcc_feature_defines(cu_name, saaq_feature_enabled),
+            &nvcc_feature_defines(cu_name),
         );
         // sm_120 + PTX < 9.2 is invalid. Explicit overrides are applied for
         // non-Blackwell arches; on Blackwell, clamp any override below the floor.
@@ -167,17 +166,13 @@ fn main() {
             &source,
             &output,
             &arch,
-            &nvcc_feature_defines(cu_name, saaq_feature_enabled),
+            &nvcc_feature_defines(cu_name),
         );
         println!("cargo:warning=compiled {cu_name} -> {fatbin_name} ({arch} SASS + PTX fallback)");
     }
 
-    if saaq_feature_enabled {
-        build_myelin_shim(&nvcc_path, &cu_dir, &out_dir, &arch);
-        emit_cuda_runtime_linking(&nvcc_path);
-    } else {
-        println!("cargo:warning=saaq feature off; skipped myelin_shim.cu and cudart link");
-    }
+    build_myelin_shim(&nvcc_path, &cu_dir, &out_dir, &arch);
+    emit_cuda_runtime_linking(&nvcc_path);
     println!("cargo:rustc-env=MYELIN_BUILD_CUDA_ARCH={arch}");
     if let Some(version) = emitted_ptx_version {
         println!("cargo:rustc-env=MYELIN_BUILD_PTX_VERSION={version}");
@@ -366,12 +361,8 @@ fn nvcc_version(nvcc: &Path) -> Option<String> {
     })
 }
 
-fn nvcc_feature_defines(cu_name: &str, saaq_feature_enabled: bool) -> Vec<String> {
-    let mut defines = Vec::new();
-    if saaq_feature_enabled && cu_name == "spiking_network.cu" {
-        defines.push("-DMYELIN_SAAQ".to_string());
-    }
-    defines
+fn nvcc_feature_defines(_cu_name: &str) -> Vec<String> {
+    Vec::new()
 }
 
 fn compile_to_ptx(
@@ -529,8 +520,7 @@ fn build_myelin_shim(nvcc: &Path, cu_dir: &Path, out_dir: &Path, arch: &str) {
         .arg("--threads")
         .arg(threads.to_string());
     nvcc_common_host_flags(&mut cmd);
-    cmd.arg("-DMYELIN_SAAQ")
-        .arg("-I")
+    cmd.arg("-I")
         .arg(cu_dir)
         .arg("-Xcompiler")
         .arg("-fPIC")

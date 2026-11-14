@@ -1,8 +1,8 @@
 // Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#ifndef MYELIN_SHIM_H
-#define MYELIN_SHIM_H
+#ifndef MYELIN_SHIM_CUH
+#define MYELIN_SHIM_CUH
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,21 +23,8 @@ int myelin_launch_gif_step_weighted_f16(
     int n_neurons,
     int n_inputs);
 
-int myelin_launch_saaq_find_best_walker(
-    void* stream,
-    unsigned int grid_x,
-    unsigned int block_x,
-    unsigned int shared_bytes,
-    void* membrane,
-    void* adaptation,
-    void* partial_scores,
-    void* partial_walkers,
-    void* best_walker_out,
-    int n_neurons,
-    float adaptation_scale);
-
 #ifdef __cplusplus
 }
 #endif
 
-#endif  // MYELIN_SHIM_H
+#endif  // MYELIN_SHIM_CUH

@@ -45,9 +45,6 @@ jobs:
       - name: Clippy (no CUDA)
         run: cargo clippy --locked --no-default-features --tests -- -D warnings
 
-      - name: Clippy (experimental saaq, no CUDA)
-        run: cargo clippy --locked --features saaq --tests -- -D warnings
-
   # ── CPU-only tests & builds ────────────────────────────────────────────────
   cpu-checks:
     name: CPU checks
@@ -73,9 +70,6 @@ jobs:
 
       - name: Cargo test
         run: cargo test --locked
-
-      - name: Cargo test (experimental saaq)
-        run: cargo test --locked --features saaq
 
       - name: Crate archive boundary tests
         run: python3 -B -m unittest discover -s tests -p test_release_prep.py -v
@@ -179,15 +173,6 @@ jobs:
             fi
             echo "✓ $f (${size} bytes)"
           done
-          for kernel in project_snapshot_current gif_step_weighted gif_step_weighted_f16 \
-                        saaq_find_best_walker saaq_reduce_partials_f16; do
-            if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                "$ptx_dir/spiking_network_sm_120.ptx"; then
-              echo "::error::SAAQ/GIF kernel $kernel compiled without --features saaq"
-              exit 1
-            fi
-            echo "✓ spiking_network PTX has no $kernel (saaq off)"
-          done
 
       - name: Validate PTX kernel symbols
         shell: bash
@@ -195,50 +180,6 @@ jobs:
           set -euo pipefail
           ptx_dir="$(./scripts/ptx_out_dir.sh)"
           ./scripts/check_ptx_entries.sh "$ptx_dir" cloud
-
-      - name: Build (debug, features cuda,saaq)
-        shell: bash
-        run: |
-          source "$HOME/.cargo/env"
-          cargo build --locked --features cuda,saaq
-
-      - name: Clippy (features cuda,saaq)
-        shell: bash
-        run: |
-          source "$HOME/.cargo/env"
-          rustup component add clippy
-          cargo clippy --locked --features cuda,saaq --tests -- -D warnings
-
-      - name: Verify GIF/SAAQ PTX present with saaq
-        shell: bash
-        run: |
-          set -euo pipefail
-          ptx_dir=""
-          for candidate in target/debug/build/myelin-accelerator-*/out; do
-            [ -d "$candidate" ] || continue
-            ptx="$candidate/spiking_network_sm_120.ptx"
-            [ -f "$ptx" ] || continue
-            if grep -Eq '\.entry[[:space:]]+project_snapshot_current[[:space:]]*\(' "$ptx"; then
-              ptx_dir="$candidate"
-            fi
-          done
-          if [ -z "$ptx_dir" ]; then
-            echo "::error::Could not find cuda,saaq PTX OUT_DIR (missing SAAQ kernel entries)"
-            exit 1
-          fi
-          for kernel in project_snapshot_current gif_step_weighted gif_step_weighted_f16 \
-                        saaq_find_best_walker saaq_reduce_partials_f16; do
-            if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                "$ptx_dir/spiking_network_sm_120.ptx"; then
-              echo "✓ spiking_network PTX (saaq): $kernel"
-            else
-              echo "::error::Missing kernel entry with saaq: $kernel"
-              exit 1
-            fi
-          done
-          if [[ ! -f "$ptx_dir/libmyelin_shim.a" && ! -f "$ptx_dir/myelin_shim.o" ]]; then
-            echo "::warning::Did not find myelin_shim.o / libmyelin_shim.a in $ptx_dir (cc may place the archive under OUT_DIR parent)"
-          fi
 
       - name: Offline ptxas assemble (sm_120)
         shell: bash
@@ -309,26 +250,17 @@ jobs:
       - name: Build (debug)
         run: cargo build --locked --features cuda
 
-      - name: Build (debug, cuda+saaq)
-        run: cargo build --locked --features cuda,saaq
-
       - name: Build (release)
         run: cargo build --locked --features cuda --release
 
       - name: Clippy with CUDA feature
         run: cargo clippy --locked --features cuda --tests -- -D warnings
 
-      - name: Clippy with CUDA + saaq
-        run: cargo clippy --locked --features cuda,saaq --tests -- -D warnings
-
       - name: Test (debug, CUDA feature, non-ignored)
         run: cargo test --locked --features cuda
 
-      - name: Test (debug, CUDA + saaq, non-ignored)
-        run: cargo test --locked --features cuda,saaq
-
       - name: Test GPU goldens (ignored)
-        run: cargo test --locked --features cuda,saaq -- --ignored --nocapture --test-threads=1
+        run: cargo test --locked --features cuda -- --ignored --nocapture --test-threads=1
 
       - name: Compute Sanitizer accelerator and SNN fixture memcheck
         run: ./scripts/sanitize_lifecycle.sh
@@ -410,52 +342,6 @@ jobs:
             ./scripts/check_ptx_entries.sh "$ptx_dir" "$profile"
           done
           echo "All kernel entry points verified for both debug and release."
-          ptx_dir=""
-          for candidate in target/debug/build/myelin-accelerator-*/out; do
-            [ -d "$candidate" ] || continue
-            ptx="$candidate/spiking_network_sm_120.ptx"
-            [ -f "$ptx" ] || continue
-            if grep -Eq '\.entry[[:space:]]+project_snapshot_current[[:space:]]*\(' "$ptx"; then
-              ptx_dir="$candidate"
-            fi
-          done
-          if [ -z "$ptx_dir" ]; then
-            echo "::error::Could not find cuda,saaq debug PTX OUT_DIR (missing SAAQ kernel entries)"
-            exit 1
-          fi
-          for kernel in project_snapshot_current gif_step_weighted gif_step_weighted_f16 \
-                        saaq_find_best_walker saaq_reduce_partials_f16; do
-            if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                "$ptx_dir/spiking_network_sm_120.ptx"; then
-              echo "✓ debug (cuda,saaq) spiking_network: $kernel"
-            else
-              echo "::error::Missing SAAQ kernel entry in debug PTX: $kernel"
-              exit 1
-            fi
-          done
-          ptx_dir=""
-          for candidate in target/release/build/myelin-accelerator-*/out; do
-            [ -d "$candidate" ] || continue
-            ptx="$candidate/spiking_network_sm_120.ptx"
-            [ -f "$ptx" ] || continue
-            if ! grep -Eq '\.entry[[:space:]]+project_snapshot_current[[:space:]]*\(' "$ptx"; then
-              ptx_dir="$candidate"
-            fi
-          done
-          if [ -z "$ptx_dir" ]; then
-            echo "::error::Could not find cuda-only release PTX OUT_DIR"
-            exit 1
-          fi
-          for kernel in project_snapshot_current gif_step_weighted gif_step_weighted_f16 \
-                        saaq_find_best_walker saaq_reduce_partials_f16; do
-            if grep -Eq "\\.entry[[:space:]]+${kernel}[[:space:]]*\\(" \
-                "$ptx_dir/spiking_network_sm_120.ptx"; then
-              echo "::error::SAAQ/GIF kernel $kernel present in release PTX without saaq"
-              exit 1
-            fi
-            echo "✓ release (cuda only) has no $kernel"
-          done
-
       - name: Offline ptxas assemble (sm_120)
         shell: bash
         run: |

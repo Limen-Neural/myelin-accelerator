@@ -4,9 +4,8 @@
 // ════════════════════════════════════════════════════════════════════
 //  gpu/ffi.rs — C ABI shim wrappers for Blackwell-critical kernels
 //
-//  Compiled only with `--features saaq`. Most kernels still launch through
-//  fatbin/PTX in kernel.rs. The two latency-critical Blackwell GIF/SAAQ
-//  paths below launch through a linked CUDA shim so Rust can pass raw
+//  Most kernels launch through fatbin/PTX in kernel.rs. The latency-critical
+//  F16 GIF path launches through a linked CUDA shim so Rust can pass raw
 //  driver handles into a runtime `<<<>>>` call.
 // ════════════════════════════════════════════════════════════════════
 
@@ -33,19 +32,6 @@ unsafe extern "C" {
         n_inputs: i32,
     ) -> i32;
 
-    fn myelin_launch_saaq_find_best_walker(
-        stream: *mut c_void,
-        grid_x: u32,
-        block_x: u32,
-        shared_bytes: u32,
-        membrane: *mut c_void,
-        adaptation: *mut c_void,
-        partial_scores: *mut c_void,
-        partial_walkers: *mut c_void,
-        best_walker_out: *mut c_void,
-        n_neurons: i32,
-        adaptation_scale: f32,
-    ) -> i32;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -90,54 +76,6 @@ pub fn launch_gif_step_weighted_f16(
         ));
         report_c_abi_failure(
             "gif_step_weighted_f16",
-            grid_x,
-            block_x,
-            shared_bytes,
-            Some(n_neurons as usize),
-            &gpu_error,
-        );
-        Err(gpu_error)
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn launch_saaq_find_best_walker(
-    stream: &Stream,
-    grid_x: u32,
-    block_x: u32,
-    shared_bytes: u32,
-    membrane: DevicePointer<f32>,
-    adaptation: DevicePointer<f32>,
-    partial_scores: DevicePointer<f32>,
-    partial_walkers: DevicePointer<u32>,
-    best_walker_out: DevicePointer<u32>,
-    n_neurons: i32,
-    adaptation_scale: f32,
-) -> GpuResult<()> {
-    let code = unsafe {
-        myelin_launch_saaq_find_best_walker(
-            stream.as_inner().cast::<c_void>(),
-            grid_x,
-            block_x,
-            shared_bytes,
-            device_ptr_to_void(membrane),
-            device_ptr_to_void(adaptation),
-            device_ptr_to_void(partial_scores),
-            device_ptr_to_void(partial_walkers),
-            device_ptr_to_void(best_walker_out),
-            n_neurons,
-            adaptation_scale,
-        )
-    };
-
-    if code == 0 {
-        Ok(())
-    } else {
-        let gpu_error = GpuError::LaunchFailed(format!(
-            "myelin_launch_saaq_find_best_walker failed with CUDA runtime error code {code}"
-        ));
-        report_c_abi_failure(
-            "saaq_find_best_walker",
             grid_x,
             block_x,
             shared_bytes,

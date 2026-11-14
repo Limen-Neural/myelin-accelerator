@@ -23,8 +23,6 @@ set(CUDA_COMMON_FLAGS
         --expt-relaxed-constexpr
         -Xcompiler -fno-builtin)
 
-option(MYELIN_SAAQ "Compile experimental GIF/SAAQ kernels (-DMYELIN_SAAQ)" OFF)
-
 set(CU_SOURCES
         cu/satsolver.cu
         cu/spiking_network.cu
@@ -32,7 +30,7 @@ set(CU_SOURCES
         cu/ternary_gemm.cu)
 set(CU_HEADERS
         cu/common.cuh
-        cu/myelin_shim.h)
+        cu/myelin_shim.cuh)
 set(CU_SHIM
         cu/myelin_shim.cu)
 
@@ -42,9 +40,6 @@ foreach(cu_src ${CU_SOURCES})
     get_filename_component(cu_name ${cu_src} NAME_WE)
     set(ptx_out "${CMAKE_CURRENT_BINARY_DIR}/${cu_name}.ptx")
     set(EXTRA_NVCC_FLAGS "")
-    if(MYELIN_SAAQ AND cu_name STREQUAL "spiking_network")
-        set(EXTRA_NVCC_FLAGS -DMYELIN_SAAQ)
-    endif()
     add_custom_command(
             OUTPUT ${ptx_out}
             COMMAND ${CUDA_NVCC} ${CUDA_COMMON_FLAGS} ${EXTRA_NVCC_FLAGS}
@@ -96,10 +91,6 @@ add_test(NAME cargo_tests
         COMMAND cargo test --locked
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
-add_test(NAME cargo_tests_saaq
-        COMMAND cargo test --locked --features saaq
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-
 # Cargo build without default features (compile check)
 add_custom_target(cargo_build_no_defaults
         COMMAND cargo build --locked --no-default-features
@@ -126,17 +117,8 @@ add_custom_target(cargo_clippy
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Clippy (no default features)")
 
-add_custom_target(cargo_clippy_saaq
-        COMMAND cargo clippy --locked --features saaq --tests -- -D warnings
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        COMMENT "Clippy (experimental saaq feature)")
-
 add_test(NAME cargo_clippy_no_default
         COMMAND cargo clippy --locked --no-default-features --tests -- -D warnings
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-
-add_test(NAME cargo_clippy_saaq
-        COMMAND cargo clippy --locked --features saaq --tests -- -D warnings
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Bench example compile (covers the --features bench CI blind spot)
