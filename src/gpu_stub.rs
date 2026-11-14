@@ -8,9 +8,9 @@ pub use crate::capability::{
 use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
 pub use crate::error::{GpuError, GpuResult};
 use crate::routing::{
-    FusedRoutingOutputs, RoutingParams, RoutingScoreKind, RoutingShape, validate_entropy_buffers,
-    validate_fused_buffers, validate_selection_buffers, validate_softmax_buffers,
-    validate_top_k_buffers,
+    FusedRoutingInputs, FusedRoutingOutputs, RoutingParams, RoutingScoreKind, RoutingShape,
+    validate_entropy_buffers, validate_fused_buffers, validate_selection_buffers,
+    validate_softmax_buffers, validate_top_k_buffers,
 };
 
 pub(crate) fn host_facts() -> CapabilityFacts {
@@ -500,7 +500,12 @@ impl GpuAccelerator {
         outputs: &mut FusedRoutingOutputs,
         params: &RoutingParams,
     ) -> GpuResult<()> {
-        validate_fused_buffers(scores, state, adaptation, outputs, params)?;
+        let inputs = FusedRoutingInputs {
+            scores,
+            state,
+            adaptation,
+        };
+        validate_fused_buffers(&inputs, outputs, params)?;
         Err(self.unavailable_error())
     }
 

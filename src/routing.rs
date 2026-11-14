@@ -228,19 +228,24 @@ pub(crate) fn validate_entropy_buffers(
     Ok(matrix)
 }
 
+/// Borrowed fused-routing inputs checked together before launch.
+pub(crate) struct FusedRoutingInputs<'a> {
+    pub(crate) scores: &'a GpuBuffer<f32>,
+    pub(crate) state: &'a GpuBuffer<f32>,
+    pub(crate) adaptation: &'a GpuBuffer<f32>,
+}
+
 /// Check every buffer of a fused routing launch against `params`.
 pub(crate) fn validate_fused_buffers(
-    scores: &GpuBuffer<f32>,
-    state: &GpuBuffer<f32>,
-    adaptation: &GpuBuffer<f32>,
+    inputs: &FusedRoutingInputs<'_>,
     outputs: &FusedRoutingOutputs,
     params: &RoutingParams,
 ) -> GpuResult<()> {
     params.validate()?;
     let top_k_elements = params.top_k_elements()?;
-    expect_min_len("scores", scores.len(), params.score_elements()?)?;
-    expect_min_len("state", state.len(), params.n_nodes)?;
-    expect_min_len("adaptation", adaptation.len(), params.n_nodes)?;
+    expect_min_len("scores", inputs.scores.len(), params.score_elements()?)?;
+    expect_min_len("state", inputs.state.len(), params.n_nodes)?;
+    expect_min_len("adaptation", inputs.adaptation.len(), params.n_nodes)?;
     expect_min_len("top_k_indices", outputs.top_k_indices.len(), top_k_elements)?;
     if let Some(probabilities) = &outputs.top_k_probabilities {
         expect_min_len("top_k_probabilities", probabilities.len(), top_k_elements)?;

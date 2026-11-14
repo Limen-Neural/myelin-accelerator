@@ -5,8 +5,8 @@ use crate::gpu::accelerator::GpuAccelerator;
 use crate::gpu::error::GpuResult;
 use crate::gpu::memory::GpuBuffer;
 use crate::routing::{
-    FusedRoutingOutputs, ROUTING_BLOCK_SIZE, RoutingParams, RoutingScoreKind, RoutingShape,
-    validate_entropy_buffers, validate_fused_buffers, validate_softmax_buffers,
+    FusedRoutingInputs, FusedRoutingOutputs, ROUTING_BLOCK_SIZE, RoutingParams, RoutingScoreKind,
+    RoutingShape, validate_entropy_buffers, validate_fused_buffers, validate_softmax_buffers,
     validate_top_k_buffers,
 };
 use cust::launch;
@@ -361,7 +361,12 @@ impl GpuAccelerator {
         outputs: &mut FusedRoutingOutputs,
         params: &RoutingParams,
     ) -> GpuResult<()> {
-        validate_fused_buffers(scores, state, adaptation, outputs, params)?;
+        let inputs = FusedRoutingInputs {
+            scores,
+            state,
+            adaptation,
+        };
+        validate_fused_buffers(&inputs, outputs, params)?;
         let kernels = self.kernels()?;
         let pass1 = kernels.get_function("fused_routing_pass1")?;
         let pass2 = kernels.get_function("fused_routing_pass2")?;
