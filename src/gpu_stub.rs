@@ -8,7 +8,7 @@ pub use crate::capability::{
 use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
 pub use crate::error::{GpuError, GpuResult};
 use crate::routing::{
-    FusedRoutingOutputs, RoutingParams, RoutingScoreKind, validate_entropy_buffers,
+    FusedRoutingOutputs, RoutingParams, RoutingScoreKind, RoutingShape, validate_entropy_buffers,
     validate_fused_buffers, validate_selection_buffers, validate_softmax_buffers,
     validate_top_k_buffers,
 };
@@ -375,7 +375,8 @@ impl GpuAccelerator {
         n_routes: usize,
         _: RoutingScoreKind,
     ) -> GpuResult<()> {
-        validate_softmax_buffers(scores, probabilities, n_nodes, n_routes)?;
+        let shape = RoutingShape::new(n_nodes, n_routes)?;
+        validate_softmax_buffers(scores, probabilities, shape)?;
         Err(self.unavailable_error())
     }
 
@@ -400,7 +401,8 @@ impl GpuAccelerator {
         top_k: usize,
         _: RoutingScoreKind,
     ) -> GpuResult<()> {
-        validate_top_k_buffers(scores, top_k_indices, n_nodes, n_routes, top_k)?;
+        let shape = RoutingShape::new(n_nodes, n_routes)?;
+        validate_top_k_buffers(scores, top_k_indices, shape, top_k)?;
         Err(self.unavailable_error())
     }
 
@@ -429,7 +431,8 @@ impl GpuAccelerator {
         n_nodes: usize,
         n_routes: usize,
     ) -> GpuResult<()> {
-        validate_entropy_buffers(probabilities, entropy_sum, entropy_max, n_nodes, n_routes)?;
+        let shape = RoutingShape::new(n_nodes, n_routes)?;
+        validate_entropy_buffers(probabilities, entropy_sum, entropy_max, shape)?;
         Err(self.unavailable_error())
     }
 

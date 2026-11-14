@@ -5,7 +5,7 @@ use crate::gpu::accelerator::GpuAccelerator;
 use crate::gpu::error::GpuResult;
 use crate::gpu::memory::GpuBuffer;
 use crate::routing::{
-    FusedRoutingOutputs, ROUTING_BLOCK_SIZE, RoutingParams, RoutingScoreKind,
+    FusedRoutingOutputs, ROUTING_BLOCK_SIZE, RoutingParams, RoutingScoreKind, RoutingShape,
     validate_entropy_buffers, validate_fused_buffers, validate_softmax_buffers,
     validate_top_k_buffers,
 };
@@ -29,11 +29,13 @@ impl GpuAccelerator {
         n_routes: usize,
         score_kind: RoutingScoreKind,
     ) -> GpuResult<()> {
-        let launched =
-            self.routing_softmax_async(scores, probabilities, n_nodes, n_routes, score_kind);
-        let synchronized = self.synchronize();
-        launched?;
-        synchronized
+        self.finish_launch(self.routing_softmax_async(
+            scores,
+            probabilities,
+            n_nodes,
+            n_routes,
+            score_kind,
+        ))
     }
 
     /// Enqueue [`Self::routing_softmax`]; synchronize before using the buffers.
@@ -45,8 +47,8 @@ impl GpuAccelerator {
         n_routes: usize,
         score_kind: RoutingScoreKind,
     ) -> GpuResult<()> {
-        let (nodes, routes, elements) =
-            validate_softmax_buffers(scores, probabilities, n_nodes, n_routes)?;
+        let shape = RoutingShape::new(n_nodes, n_routes)?;
+        let (nodes, routes, elements) = validate_softmax_buffers(scores, probabilities, shape)?;
         let kernels = self.kernels()?;
         if elements == 0 {
             return Ok(());
@@ -81,11 +83,14 @@ impl GpuAccelerator {
         top_k: usize,
         score_kind: RoutingScoreKind,
     ) -> GpuResult<()> {
-        let launched =
-            self.routing_top_k_async(scores, top_k_indices, n_nodes, n_routes, top_k, score_kind);
-        let synchronized = self.synchronize();
-        launched?;
-        synchronized
+        self.finish_launch(self.routing_top_k_async(
+            scores,
+            top_k_indices,
+            n_nodes,
+            n_routes,
+            top_k,
+            score_kind,
+        ))
     }
 
     /// Enqueue [`Self::routing_top_k`]; synchronize before using the buffers.
@@ -98,8 +103,8 @@ impl GpuAccelerator {
         top_k: usize,
         score_kind: RoutingScoreKind,
     ) -> GpuResult<()> {
-        let (nodes, routes, _) =
-            validate_top_k_buffers(scores, top_k_indices, n_nodes, n_routes, top_k)?;
+        let shape = RoutingShape::new(n_nodes, n_routes)?;
+        let (nodes, routes, _) = validate_top_k_buffers(scores, top_k_indices, shape, top_k)?;
         let kernels = self.kernels()?;
         if n_nodes == 0 {
             return Ok(());
@@ -135,16 +140,13 @@ impl GpuAccelerator {
         n_nodes: usize,
         n_routes: usize,
     ) -> GpuResult<()> {
-        let launched = self.routing_entropy_reduce_async(
+        self.finish_launch(self.routing_entropy_reduce_async(
             probabilities,
             entropy_sum,
             entropy_max,
             n_nodes,
             n_routes,
-        );
-        let synchronized = self.synchronize();
-        launched?;
-        synchronized
+        ))
     }
 
     /// Enqueue [`Self::routing_entropy_reduce`]; synchronize before using the
@@ -157,8 +159,9 @@ impl GpuAccelerator {
         n_nodes: usize,
         n_routes: usize,
     ) -> GpuResult<()> {
+        let shape = RoutingShape::new(n_nodes, n_routes)?;
         let (nodes, routes, _) =
-            validate_entropy_buffers(probabilities, entropy_sum, entropy_max, n_nodes, n_routes)?;
+            validate_entropy_buffers(probabilities, entropy_sum, entropy_max, shape)?;
         let kernels = self.kernels()?;
         if n_nodes == 0 {
             self.zero_output_prefix(entropy_sum, 1)?;
@@ -210,11 +213,13 @@ impl GpuAccelerator {
         selected_score: &mut GpuBuffer<f32>,
         scale: f32,
     ) -> GpuResult<()> {
-        let launched =
-            self.adjusted_argmax_async(state, adaptation, selected_index, selected_score, scale);
-        let synchronized = self.synchronize();
-        launched?;
-        synchronized
+        self.finish_launch(self.adjusted_argmax_async(
+            state,
+            adaptation,
+            selected_index,
+            selected_score,
+            scale,
+        ))
     }
 
     /// Enqueue [`Self::adjusted_argmax`]; synchronize before using the buffers.
@@ -282,16 +287,13 @@ impl GpuAccelerator {
         selected_score: &mut GpuBuffer<f32>,
         scale: f32,
     ) -> GpuResult<()> {
-        let launched = self.adjusted_argmax_single_block_async(
+        self.finish_launch(self.adjusted_argmax_single_block_async(
             state,
             adaptation,
             selected_index,
             selected_score,
             scale,
-        );
-        let synchronized = self.synchronize();
-        launched?;
-        synchronized
+        ))
     }
 
     /// Enqueue [`Self::adjusted_argmax_single_block`]; synchronize before using
@@ -344,10 +346,9 @@ impl GpuAccelerator {
         outputs: &mut FusedRoutingOutputs,
         params: &RoutingParams,
     ) -> GpuResult<()> {
-        let launched = self.fused_routing_select_async(scores, state, adaptation, outputs, params);
-        let synchronized = self.synchronize();
-        launched?;
-        synchronized
+        self.finish_launch(
+            self.fused_routing_select_async(scores, state, adaptation, outputs, params),
+        )
     }
 
     /// Enqueue [`Self::fused_routing_select`]; synchronize before using the
@@ -414,6 +415,12 @@ impl GpuAccelerator {
             ))
         }
         .map_err(|e| Self::launch_error("fused_routing_pass2", e))
+    }
+
+    fn finish_launch(&self, launched: GpuResult<()>) -> GpuResult<()> {
+        let synchronized = self.synchronize();
+        launched?;
+        synchronized
     }
 
     /// Blocks covering `n_nodes`. Dimensions were checked against `i32::MAX`.

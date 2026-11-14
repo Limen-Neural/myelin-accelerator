@@ -159,23 +159,43 @@ pub(crate) fn expect_min_len(name: &str, actual: usize, minimum: usize) -> GpuRe
     Ok(())
 }
 
-/// Validated node/route dimensions and score-matrix element count.
+/// Validated node/route dimensions for a routing matrix.
+#[derive(Clone, Copy)]
+pub(crate) struct RoutingShape {
+    nodes: i32,
+    routes: i32,
+    n_nodes: usize,
+    n_routes: usize,
+}
+
+impl RoutingShape {
+    pub(crate) fn new(n_nodes: usize, n_routes: usize) -> GpuResult<Self> {
+        Ok(Self {
+            nodes: kernel_dimension("n_nodes", n_nodes)?,
+            routes: kernel_dimension("n_routes", n_routes)?,
+            n_nodes,
+            n_routes,
+        })
+    }
+
+    fn elements(&self, name: &str) -> GpuResult<usize> {
+        matrix_elements(name, self.n_nodes, self.n_routes)
+    }
+}
+
+/// Validated kernel dimensions and score-matrix element count.
 pub(crate) type RoutingMatrix = (i32, i32, usize);
 
-fn routing_matrix(name: &str, n_nodes: usize, n_routes: usize) -> GpuResult<RoutingMatrix> {
-    let nodes = kernel_dimension("n_nodes", n_nodes)?;
-    let routes = kernel_dimension("n_routes", n_routes)?;
-    let elements = matrix_elements(name, n_nodes, n_routes)?;
-    Ok((nodes, routes, elements))
+fn routing_matrix(name: &str, shape: RoutingShape) -> GpuResult<RoutingMatrix> {
+    Ok((shape.nodes, shape.routes, shape.elements(name)?))
 }
 
 pub(crate) fn validate_softmax_buffers(
     scores: &GpuBuffer<f32>,
     probabilities: &GpuBuffer<f32>,
-    n_nodes: usize,
-    n_routes: usize,
+    shape: RoutingShape,
 ) -> GpuResult<RoutingMatrix> {
-    let matrix = routing_matrix("score matrix", n_nodes, n_routes)?;
+    let matrix = routing_matrix("score matrix", shape)?;
     expect_min_len("scores", scores.len(), matrix.2)?;
     expect_min_len("probabilities", probabilities.len(), matrix.2)?;
     Ok(matrix)
@@ -184,13 +204,12 @@ pub(crate) fn validate_softmax_buffers(
 pub(crate) fn validate_top_k_buffers(
     scores: &GpuBuffer<f32>,
     top_k_indices: &GpuBuffer<i32>,
-    n_nodes: usize,
-    n_routes: usize,
+    shape: RoutingShape,
     top_k: usize,
 ) -> GpuResult<RoutingMatrix> {
-    let matrix = routing_matrix("score matrix", n_nodes, n_routes)?;
+    let matrix = routing_matrix("score matrix", shape)?;
     validate_top_k(top_k)?;
-    let top_k_elements = matrix_elements("top-k output", n_nodes, top_k)?;
+    let top_k_elements = matrix_elements("top-k output", shape.n_nodes, top_k)?;
     expect_min_len("scores", scores.len(), matrix.2)?;
     expect_min_len("top_k_indices", top_k_indices.len(), top_k_elements)?;
     Ok(matrix)
@@ -200,10 +219,9 @@ pub(crate) fn validate_entropy_buffers(
     probabilities: &GpuBuffer<f32>,
     entropy_sum: &GpuBuffer<f32>,
     entropy_max: &GpuBuffer<f32>,
-    n_nodes: usize,
-    n_routes: usize,
+    shape: RoutingShape,
 ) -> GpuResult<RoutingMatrix> {
-    let matrix = routing_matrix("probability matrix", n_nodes, n_routes)?;
+    let matrix = routing_matrix("probability matrix", shape)?;
     expect_min_len("probabilities", probabilities.len(), matrix.2)?;
     expect_min_len("entropy_sum", entropy_sum.len(), 1)?;
     expect_min_len("entropy_max", entropy_max.len(), 1)?;
