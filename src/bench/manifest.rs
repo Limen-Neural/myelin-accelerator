@@ -278,34 +278,36 @@ fn cargo_profile_fingerprint_for_executable(executable: &Path) -> Option<String>
     // Cargo can place test executables under a build script's `out/` directory
     // when native link inputs are involved, so search upward for the profile's
     // `.fingerprint` directory instead of assuming `deps/` or `examples/`.
-    for ancestor in artifact_dir.ancestors() {
+    artifact_dir.ancestors().find_map(|ancestor| {
         let fingerprint_dir = ancestor
             .join(".fingerprint")
             .join(format!("{}-{artifact_hash}", env!("CARGO_PKG_NAME")));
-        let Ok(entries) = std::fs::read_dir(fingerprint_dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(bytes) = std::fs::read(path) else {
-                continue;
-            };
-            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-                continue;
-            };
-            if let Some(profile) = value.get("profile") {
-                return match profile {
-                    serde_json::Value::String(value) => Some(value.clone()),
-                    serde_json::Value::Number(value) => Some(value.to_string()),
-                    _ => None,
-                };
-            }
+        profile_from_fingerprint_dir(&fingerprint_dir)
+    })
+}
+
+fn profile_from_fingerprint_dir(dir: &Path) -> Option<String> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        if let Some(profile) = profile_from_fingerprint_file(&entry.path()) {
+            return profile;
         }
     }
     None
+}
+
+fn profile_from_fingerprint_file(path: &Path) -> Option<Option<String>> {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let value = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+    let profile = value.get("profile")?;
+    Some(match profile {
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    })
 }
 
 fn cargo_artifact_hash(executable: &Path) -> Option<String> {

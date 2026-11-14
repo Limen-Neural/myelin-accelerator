@@ -36,8 +36,6 @@ fn gif_step_weighted_tick_matches_host_ref() {
         &vec![0.0f32; n],
         &mut refractory,
         &mut spikes,
-        n,
-        n,
     );
 
     acc.load_synapse_weights_named("gif-parity", &weights)

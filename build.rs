@@ -521,27 +521,35 @@ fn emit_cuda_runtime_linking(nvcc: &Path) {
 }
 
 fn cuda_library_search_paths(nvcc: &Path) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(dir) = libcudart_search_dir(nvcc) {
-        candidates.push(dir);
+    let mut candidates: Vec<PathBuf> = libcudart_search_dir(nvcc).into_iter().collect();
+    let env_roots = ["CUDA_HOME", "CUDA_PATH"]
+        .into_iter()
+        .filter_map(|name| env::var(name).ok())
+        .map(PathBuf::from);
+    let nvcc_root = nvcc
+        .parent()
+        .and_then(|bin| bin.parent())
+        .map(Path::to_path_buf);
+    for root in env_roots.chain(nvcc_root) {
+        candidates.extend(cuda_library_dirs(&root));
     }
-    for env_var in ["CUDA_HOME", "CUDA_PATH"] {
-        if let Ok(root) = env::var(env_var) {
-            let root = PathBuf::from(root);
-            candidates.push(root.join("lib64"));
-            candidates.push(root.join("lib"));
-            candidates.push(root.join("targets").join("x86_64-linux").join("lib"));
-        }
-    }
-    if let Some(root) = nvcc.parent().and_then(|bin| bin.parent()) {
-        candidates.push(root.join("lib64"));
-        candidates.push(root.join("lib"));
-        candidates.push(root.join("targets").join("x86_64-linux").join("lib"));
-    }
-    candidates.push(PathBuf::from("/usr/local/cuda/lib64"));
-    candidates.push(PathBuf::from("/usr/local/cuda/lib"));
-    candidates.push(PathBuf::from("/usr/lib/x86_64-linux-gnu"));
+    candidates.extend([
+        PathBuf::from("/usr/local/cuda/lib64"),
+        PathBuf::from("/usr/local/cuda/lib"),
+        PathBuf::from("/usr/lib/x86_64-linux-gnu"),
+    ]);
+    dedupe_existing_paths(candidates)
+}
 
+fn cuda_library_dirs(root: &Path) -> [PathBuf; 3] {
+    [
+        root.join("lib64"),
+        root.join("lib"),
+        root.join("targets").join("x86_64-linux").join("lib"),
+    ]
+}
+
+fn dedupe_existing_paths(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut deduped = Vec::new();
     for candidate in candidates {
         if candidate.exists() && !deduped.iter().any(|existing| existing == &candidate) {

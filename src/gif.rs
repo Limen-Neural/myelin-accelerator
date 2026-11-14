@@ -44,9 +44,9 @@ pub fn gif_grid(neuron_count: usize) -> Result<u32, String> {
 
 /// Host GIF step matching `gif_step_weighted`.
 ///
-/// `weights` is row-major `n_neurons × n_inputs`. All buffers are
-/// length-checked; panics only on programmer error in tests.
-#[allow(clippy::too_many_arguments)]
+/// `weights` is row-major `n_neurons × n_inputs`; `n_neurons` and `n_inputs`
+/// are derived from the buffer lengths. All buffers are length-checked; panics
+/// only on programmer error in tests.
 pub fn gif_step_weighted(
     membrane: &mut [f32],
     adaptation: &mut [f32],
@@ -55,14 +55,12 @@ pub fn gif_step_weighted(
     input_current: &[f32],
     refractory: &mut [u32],
     spikes_out: &mut [u32],
-    n_neurons: usize,
-    n_inputs: usize,
 ) {
-    assert_eq!(membrane.len(), n_neurons);
+    let n_neurons = membrane.len();
+    let n_inputs = input_spikes.len();
     assert_eq!(adaptation.len(), n_neurons);
     assert_eq!(refractory.len(), n_neurons);
     assert_eq!(spikes_out.len(), n_neurons);
-    assert_eq!(input_spikes.len(), n_inputs);
     assert_eq!(input_current.len(), n_neurons);
     assert_eq!(weights.len(), n_neurons.saturating_mul(n_inputs));
 
@@ -119,8 +117,6 @@ mod tests {
             &[0.0],
             &mut refract,
             &mut spikes,
-            1,
-            1,
         );
         // drive = 1, v = 0.8*0.92 + 0.75 - 0 = 1.486; threshold = 0.65 → spike
         assert_eq!(spikes[0], 1);
@@ -148,8 +144,6 @@ mod tests {
             &[0.0],
             &mut refract,
             &mut spikes,
-            1,
-            1,
         );
         assert_eq!(spikes[0], 0);
         assert_eq!(membrane[0], LIF_RESET);
@@ -174,8 +168,6 @@ mod tests {
             &current,
             &mut refract,
             &mut spikes,
-            1,
-            1,
         );
         let expected = 0.0 * GIF_LEAK + 0.5;
         assert!((membrane[0] - expected).abs() < 1e-6);
