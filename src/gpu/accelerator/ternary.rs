@@ -37,7 +37,7 @@ impl GpuAccelerator {
     /// immediately; other paths require [`Self::synchronize`] before reading
     /// or dropping any argument buffer.
     #[allow(clippy::too_many_arguments)]
-    // @codescene(disable:"Excess Number of Function Arguments")
+    // @codescene(disable:"Excess Number of Function Arguments", disable:"Large Method")
     pub fn ternary_gemv_async(
         &self,
         packed_w: &GpuBuffer<u32>,
