@@ -122,13 +122,13 @@ fn drop_after_routing_scratch_allocation_and_growth() {
         let state = GpuBuffer::<f32>::alloc(n_nodes).unwrap();
         let adaptation = GpuBuffer::<f32>::alloc(n_nodes).unwrap();
         let mut outputs = FusedRoutingOutputs::alloc(&params, false).unwrap();
-        gpu.fused_routing_select(myelin_accelerator::routing::FusedRoutingRequest::new(
-            &scores,
-            &state,
-            &adaptation,
-            &mut outputs,
-            &params,
-        ))
+        gpu.fused_routing_select(myelin_accelerator::routing::FusedRoutingRequest {
+            scores: &scores,
+            state: &state,
+            adaptation: &adaptation,
+            outputs: &mut outputs,
+            params: &params,
+        })
         .unwrap();
     }
     drop(gpu);

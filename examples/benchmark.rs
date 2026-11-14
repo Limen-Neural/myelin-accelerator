@@ -890,13 +890,13 @@ fn capture_fused_routing(
         config.warmup,
         config.iterations,
         || {
-            acc.fused_routing_select(myelin_accelerator::routing::FusedRoutingRequest::new(
-                scores,
-                state,
-                adaptation,
-                &mut outputs,
-                params,
-            ))
+            acc.fused_routing_select(myelin_accelerator::routing::FusedRoutingRequest {
+                scores: scores,
+                state: state,
+                adaptation: adaptation,
+                outputs: &mut outputs,
+                params: params,
+            })
             .unwrap();
         },
     )
@@ -935,38 +935,38 @@ fn capture_composable_routing(
         config.iterations,
         || {
             // Queue all six launches and wait once, like the fused path.
-            acc.routing_softmax_async(RoutingSoftmaxRequest::new(
-                scores,
-                &mut probabilities,
-                n_nodes,
-                n_routes,
-                params.score_kind,
-            ))
+            acc.routing_softmax_async(RoutingSoftmaxRequest {
+                scores: scores,
+                probabilities: &mut probabilities,
+                n_nodes: n_nodes,
+                n_routes: n_routes,
+                score_kind: params.score_kind,
+            })
             .unwrap();
-            acc.routing_top_k_async(RoutingTopKRequest::new(
-                scores,
-                &mut top_k_indices,
-                n_nodes,
-                n_routes,
-                top_k,
-                params.score_kind,
-            ))
+            acc.routing_top_k_async(RoutingTopKRequest {
+                scores: scores,
+                top_k_indices: &mut top_k_indices,
+                n_nodes: n_nodes,
+                n_routes: n_routes,
+                top_k: top_k,
+                score_kind: params.score_kind,
+            })
             .unwrap();
-            acc.routing_entropy_reduce_async(RoutingEntropyRequest::new(
-                &probabilities,
-                &mut entropy_sum,
-                &mut entropy_max,
-                n_nodes,
-                n_routes,
-            ))
+            acc.routing_entropy_reduce_async(RoutingEntropyRequest {
+                probabilities: &probabilities,
+                entropy_sum: &mut entropy_sum,
+                entropy_max: &mut entropy_max,
+                n_nodes: n_nodes,
+                n_routes: n_routes,
+            })
             .unwrap();
-            acc.adjusted_argmax_async(AdjustedSelectionRequest::new(
-                state,
-                adaptation,
-                &mut index,
-                &mut score,
-                ROUTING_BENCH_SCALE,
-            ))
+            acc.adjusted_argmax_async(AdjustedSelectionRequest {
+                state: state,
+                adaptation: adaptation,
+                selected_index: &mut index,
+                selected_score: &mut score,
+                scale: ROUTING_BENCH_SCALE,
+            })
             .unwrap();
             acc.synchronize().unwrap();
         },
@@ -995,13 +995,13 @@ fn bench_selection_paths(
             config.warmup,
             config.iterations,
             || {
-                acc.adjusted_argmax(AdjustedSelectionRequest::new(
-                    &state,
-                    &adaptation,
-                    &mut index,
-                    &mut score,
-                    ROUTING_BENCH_SCALE,
-                ))
+                acc.adjusted_argmax(AdjustedSelectionRequest {
+                    state: &state,
+                    adaptation: &adaptation,
+                    selected_index: &mut index,
+                    selected_score: &mut score,
+                    scale: ROUTING_BENCH_SCALE,
+                })
                 .unwrap();
             },
         ));
@@ -1013,13 +1013,13 @@ fn bench_selection_paths(
             config.warmup,
             config.iterations,
             || {
-                acc.adjusted_argmax_single_block(AdjustedSelectionRequest::new(
-                    &state,
-                    &adaptation,
-                    &mut index,
-                    &mut score,
-                    ROUTING_BENCH_SCALE,
-                ))
+                acc.adjusted_argmax_single_block(AdjustedSelectionRequest {
+                    state: &state,
+                    adaptation: &adaptation,
+                    selected_index: &mut index,
+                    selected_score: &mut score,
+                    scale: ROUTING_BENCH_SCALE,
+                })
                 .unwrap();
             },
         ));

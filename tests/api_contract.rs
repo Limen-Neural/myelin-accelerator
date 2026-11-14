@@ -135,36 +135,74 @@ mod stub_contract {
         let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
         let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
 
-        assert!(unavailable(acc.routing_softmax(
-            RoutingSoftmaxRequest::new(&scores, &mut probabilities, 2, 2, kind)
-        )));
-        assert!(invalid(acc.routing_softmax(RoutingSoftmaxRequest::new(
-            &short,
-            &mut probabilities,
-            2,
-            2,
-            kind
-        ))));
-        assert!(unavailable(acc.routing_top_k(RoutingTopKRequest::new(
-            &scores, &mut top_k, 2, 2, 1, kind
-        ))));
-        assert!(invalid(acc.routing_top_k(RoutingTopKRequest::new(
-            &scores, &mut top_k, 2, 2, 9, kind
-        ))));
+        assert!(unavailable(acc.routing_softmax(RoutingSoftmaxRequest {
+            scores: &scores,
+            probabilities: &mut probabilities,
+            n_nodes: 2,
+            n_routes: 2,
+            score_kind: kind,
+        })));
+        assert!(invalid(acc.routing_softmax(RoutingSoftmaxRequest {
+            scores: &short,
+            probabilities: &mut probabilities,
+            n_nodes: 2,
+            n_routes: 2,
+            score_kind: kind,
+        })));
+        assert!(unavailable(acc.routing_top_k(RoutingTopKRequest {
+            scores: &scores,
+            top_k_indices: &mut top_k,
+            n_nodes: 2,
+            n_routes: 2,
+            top_k: 1,
+            score_kind: kind,
+        })));
+        assert!(invalid(acc.routing_top_k(RoutingTopKRequest {
+            scores: &scores,
+            top_k_indices: &mut top_k,
+            n_nodes: 2,
+            n_routes: 2,
+            top_k: 9,
+            score_kind: kind,
+        })));
         assert!(unavailable(acc.routing_entropy_reduce(
-            RoutingEntropyRequest::new(&probabilities, &mut sum, &mut max, 2, 2)
+            RoutingEntropyRequest {
+                probabilities: &probabilities,
+                entropy_sum: &mut sum,
+                entropy_max: &mut max,
+                n_nodes: 2,
+                n_routes: 2,
+            }
         )));
-        assert!(invalid(acc.routing_entropy_reduce(
-            RoutingEntropyRequest::new(&short, &mut sum, &mut max, 2, 2)
-        )));
-        assert!(unavailable(acc.adjusted_argmax(
-            AdjustedSelectionRequest::new(&state, &state, &mut index, &mut score, 0.5)
-        )));
-        assert!(invalid(acc.adjusted_argmax(AdjustedSelectionRequest::new(
-            &state, &short, &mut index, &mut score, 0.5
-        ))));
+        assert!(invalid(acc.routing_entropy_reduce(RoutingEntropyRequest {
+            probabilities: &short,
+            entropy_sum: &mut sum,
+            entropy_max: &mut max,
+            n_nodes: 2,
+            n_routes: 2,
+        })));
+        assert!(unavailable(acc.adjusted_argmax(AdjustedSelectionRequest {
+            state: &state,
+            adaptation: &state,
+            selected_index: &mut index,
+            selected_score: &mut score,
+            scale: 0.5,
+        })));
+        assert!(invalid(acc.adjusted_argmax(AdjustedSelectionRequest {
+            state: &state,
+            adaptation: &short,
+            selected_index: &mut index,
+            selected_score: &mut score,
+            scale: 0.5,
+        })));
         assert!(invalid(acc.adjusted_argmax_single_block(
-            AdjustedSelectionRequest::new(&state, &state, &mut index, &mut score, f32::NAN)
+            AdjustedSelectionRequest {
+                state: &state,
+                adaptation: &state,
+                selected_index: &mut index,
+                selected_score: &mut score,
+                scale: f32::NAN,
+            }
         )));
     }
 
@@ -192,16 +230,20 @@ mod stub_contract {
         let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
         let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
 
-        assert!(unavailable(acc.fused_routing_select(
-            FusedRoutingRequest::new(&scores, &state, &state, &mut outputs, &params)
-        )));
-        assert!(invalid(acc.fused_routing_select(FusedRoutingRequest::new(
-            &short,
-            &state,
-            &state,
-            &mut outputs,
-            &params
-        ))));
+        assert!(unavailable(acc.fused_routing_select(FusedRoutingRequest {
+            scores: &scores,
+            state: &state,
+            adaptation: &state,
+            outputs: &mut outputs,
+            params: &params,
+        })));
+        assert!(invalid(acc.fused_routing_select(FusedRoutingRequest {
+            scores: &short,
+            state: &state,
+            adaptation: &state,
+            outputs: &mut outputs,
+            params: &params,
+        })));
     }
 
     use myelin_accelerator::{
