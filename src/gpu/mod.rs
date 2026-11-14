@@ -11,6 +11,7 @@ pub mod error;
 pub(crate) mod ffi;
 pub mod kernel;
 pub mod memory;
+pub(crate) mod temporal;
 
 pub use crate::capability::{
     Backend, CapabilityFacts, CapabilityReport, ComputeCapability, ExecutionPolicy, FallbackReason,
