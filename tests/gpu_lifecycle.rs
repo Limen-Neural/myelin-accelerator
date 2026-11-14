@@ -106,6 +106,36 @@ fn drop_after_scratch_allocation_and_growth() {
 
 #[test]
 #[ignore] // requires GPU + driver ≥ 570
+fn drop_after_routing_scratch_allocation_and_growth() {
+    use myelin_accelerator::routing::{FusedRoutingOutputs, RoutingParams, RoutingScoreKind};
+
+    let gpu = GpuAccelerator::require_gpu().unwrap();
+    for n_nodes in [256usize, 2048] {
+        let params = RoutingParams {
+            n_nodes,
+            n_routes: 4,
+            top_k: 2,
+            score_kind: RoutingScoreKind::Logits,
+            adaptation_scale: 0.5,
+        };
+        let scores = GpuBuffer::<f32>::alloc(n_nodes * 4).unwrap();
+        let state = GpuBuffer::<f32>::alloc(n_nodes).unwrap();
+        let adaptation = GpuBuffer::<f32>::alloc(n_nodes).unwrap();
+        let mut outputs = FusedRoutingOutputs::alloc(&params, false).unwrap();
+        gpu.fused_routing_select(myelin_accelerator::routing::FusedRoutingRequest {
+            scores: &scores,
+            state: &state,
+            adaptation: &adaptation,
+            outputs: &mut outputs,
+            params: &params,
+        })
+        .unwrap();
+    }
+    drop(gpu);
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
 fn scratch_replacement_rejects_foreign_context() {
     let gpu = GpuAccelerator::require_gpu().unwrap();
     exercise_scratch(&gpu, true);

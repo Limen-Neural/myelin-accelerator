@@ -32,6 +32,9 @@ static SATSOLVER_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/satsolver_s
 
 static TERNARY_GEMM_PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/ternary_gemm_sm_120.ptx"));
 
+static ROUTING_SELECTION_PTX: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/routing_selection_sm_120.ptx"));
+
 const SPIKING_KERNELS: &[&str] = &[
     "poisson_encode",
     "lif_step",
@@ -60,6 +63,50 @@ const SATSOLVER_KERNELS: &[&str] = &[
 ];
 
 const TERNARY_GEMM_KERNELS: &[&str] = &["ternary_gemv", "ternary_gemm"];
+
+const ROUTING_SELECTION_KERNELS: &[&str] = &[
+    "routing_softmax",
+    "routing_top_k",
+    "adjusted_argmax_pass1",
+    "indexed_argmax_reduce_pass2",
+    "adjusted_argmax_single_block",
+    "fused_routing_pass1",
+    "fused_routing_pass2",
+];
+
+struct ModuleSpec {
+    ptx: &'static str,
+    name: &'static str,
+    funcs: &'static [&'static str],
+}
+
+const MODULE_SPECS: &[ModuleSpec] = &[
+    ModuleSpec {
+        ptx: SPIKING_NETWORK_PTX,
+        name: "spiking_network",
+        funcs: SPIKING_KERNELS,
+    },
+    ModuleSpec {
+        ptx: VECTOR_SIMILARITY_PTX,
+        name: "vector_similarity",
+        funcs: VECTOR_SIMILARITY_KERNELS,
+    },
+    ModuleSpec {
+        ptx: SATSOLVER_PTX,
+        name: "satsolver",
+        funcs: SATSOLVER_KERNELS,
+    },
+    ModuleSpec {
+        ptx: TERNARY_GEMM_PTX,
+        name: "ternary_gemm",
+        funcs: TERNARY_GEMM_KERNELS,
+    },
+    ModuleSpec {
+        ptx: ROUTING_SELECTION_PTX,
+        name: "routing_selection",
+        funcs: ROUTING_SELECTION_KERNELS,
+    },
+];
 
 // ── KernelModule ─────────────────────────────────────────────────────────────
 
@@ -95,60 +142,17 @@ impl KernelModule {
         let mut func_map = HashMap::new();
         let mut availability = KernelAvailability::compiled_unverified();
 
-        if let Err(error) = Self::load_and_map(
-            &mut modules,
-            &mut func_map,
-            SPIKING_NETWORK_PTX,
-            "spiking_network",
-            SPIKING_KERNELS,
-        ) {
-            availability.spiking_network = Some(false);
-            return Err(KernelLoadFailure {
-                error,
-                availability,
-            });
-        }
-        availability.spiking_network = Some(true);
-        if let Err(error) = Self::load_and_map(
-            &mut modules,
-            &mut func_map,
-            VECTOR_SIMILARITY_PTX,
-            "vector_similarity",
-            VECTOR_SIMILARITY_KERNELS,
-        ) {
-            availability.vector_similarity = Some(false);
-            return Err(KernelLoadFailure {
-                error,
-                availability,
-            });
-        }
-        availability.vector_similarity = Some(true);
-        if let Err(error) = Self::load_and_map(
-            &mut modules,
-            &mut func_map,
-            SATSOLVER_PTX,
-            "satsolver",
-            SATSOLVER_KERNELS,
-        ) {
-            availability.satsolver = Some(false);
-            return Err(KernelLoadFailure {
-                error,
-                availability,
-            });
-        }
-        availability.satsolver = Some(true);
-        if let Err(error) = Self::load_and_map(
-            &mut modules,
-            &mut func_map,
-            TERNARY_GEMM_PTX,
-            "ternary_gemm",
-            TERNARY_GEMM_KERNELS,
-        ) {
-            availability.ternary_gemm = Some(false);
-            return Err(KernelLoadFailure {
-                error,
-                availability,
-            });
+        for spec in MODULE_SPECS {
+            if let Err(error) =
+                Self::load_and_map(&mut modules, &mut func_map, spec.ptx, spec.name, spec.funcs)
+            {
+                set_module_availability(&mut availability, spec.name, false);
+                return Err(KernelLoadFailure {
+                    error,
+                    availability,
+                });
+            }
+            set_module_availability(&mut availability, spec.name, true);
         }
 
         Ok(Self { modules, func_map })
@@ -204,6 +208,18 @@ impl KernelModule {
             module_load_error(name, error)
         })
     }
+}
+
+fn set_module_availability(availability: &mut KernelAvailability, name: &str, available: bool) {
+    let slot = match name {
+        "spiking_network" => &mut availability.spiking_network,
+        "vector_similarity" => &mut availability.vector_similarity,
+        "satsolver" => &mut availability.satsolver,
+        "ternary_gemm" => &mut availability.ternary_gemm,
+        "routing_selection" => &mut availability.routing_selection,
+        _ => return,
+    };
+    *slot = Some(available);
 }
 
 fn function_lookup_error(name: &str, error: CudaError) -> GpuError {
@@ -274,5 +290,6 @@ mod tests {
         assert!(kernels.get_function("satsolver_step").is_ok());
         assert!(kernels.get_function("ternary_gemv").is_ok());
         assert!(kernels.get_function("ternary_gemm").is_ok());
+        assert!(kernels.get_function("fused_routing_pass1").is_ok());
     }
 }

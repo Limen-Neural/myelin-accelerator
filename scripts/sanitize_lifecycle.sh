@@ -30,14 +30,15 @@ fi
 command -v python3 >/dev/null || { echo 'ERROR: python3 is required to parse Cargo JSON.' >&2; exit 1; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-cargo test --locked --features cuda --test gpu_lifecycle --test snn_fixtures_gpu --no-run \
+cargo test --locked --features cuda --test gpu_lifecycle --test snn_fixtures_gpu \
+    --test routing_gpu --no-run \
     --message-format=json-render-diagnostics > "$work/cargo.json"
 python3 - "$work/cargo.json" > "$work/binaries.tsv" <<'PY'
 import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as messages:
     artifacts = [json.loads(line) for line in messages]
-for suite in ("gpu_lifecycle", "snn_fixtures_gpu"):
+for suite in ("gpu_lifecycle", "snn_fixtures_gpu", "routing_gpu"):
     executables = {
         item["executable"] for item in artifacts
         if item.get("reason") == "compiler-artifact"

@@ -188,7 +188,8 @@ jobs:
             exit 1
           fi
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
-                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
+                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx \
+                   routing_selection_sm_120.ptx; do
             if [ ! -f "$ptx_dir/$f" ]; then
               echo "::error::Missing PTX file: $f"
               exit 1
@@ -219,7 +220,8 @@ jobs:
           set -euo pipefail
           ptx_dir="$(./scripts/ptx_out_dir.sh)"
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
-                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
+                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx \
+                   routing_selection_sm_120.ptx; do
             ptxas -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
             echo "✓ ptxas $f"
           done
@@ -327,7 +329,8 @@ jobs:
               exit 1
             fi
             for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
-                     satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
+                     satsolver_sm_120.ptx ternary_gemm_sm_120.ptx \
+                     routing_selection_sm_120.ptx; do
               if [ ! -f "$ptx_dir/$f" ]; then
                 echo "::error::Missing PTX file ($profile): $f"
                 exit 1
@@ -367,7 +370,8 @@ jobs:
           PTXAS="$(dirname "$CUDA_NVCC")/ptxas"
           ptx_dir="$(./scripts/ptx_out_dir.sh)"
           for f in spiking_network_sm_120.ptx vector_similarity_sm_120.ptx \
-                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx; do
+                   satsolver_sm_120.ptx ternary_gemm_sm_120.ptx \
+                   routing_selection_sm_120.ptx; do
             "$PTXAS" -arch=sm_120 -o "/tmp/${f%.ptx}.cubin" "$ptx_dir/$f"
             echo "✓ ptxas $f"
           done

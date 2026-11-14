@@ -8,6 +8,8 @@ pub use crate::capability::{
 use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
 pub use crate::error::{GpuError, GpuResult};
 
+mod routing;
+
 pub(crate) fn host_facts() -> CapabilityFacts {
     CapabilityFacts::not_built()
 }

@@ -49,8 +49,8 @@ assert_eq!(unpack_ternary(&packed, Some(values.len())), values);
 
 | Area | Current interface |
 | --- | --- |
-| Host utilities | Binary and ternary packing, group scales, reference matmul in [`bitpacking`](src/bitpacking.rs); scalar test oracles in [`oracle`](src/oracle.rs). |
-| Wrapped CUDA launches | Poisson encoding, STDP, SAT result extraction and auxiliary best reduction, ternary GEMV and GEMM through `GpuAccelerator`. |
+| Host utilities | Binary and ternary packing, group scales, reference matmul in [`bitpacking`](src/bitpacking.rs); scalar test oracles in [`oracle`](src/oracle.rs); routing contract and CPU reference in [`routing`](src/routing.rs). |
+| Wrapped CUDA launches | Poisson encoding, STDP, SAT result extraction and auxiliary best reduction, ternary GEMV and GEMM, and [routing reductions with adjusted-score selection](docs/ROUTING.md) through `GpuAccelerator`. |
 | Loaded CUDA kernels | Additional LIF, spike statistics, routing, SAT walker, and reduction symbols are available through `KernelModule`, but do not all have high-level launch wrappers. |
 | Benchmark support | Optional `bench` example and manifest utilities; see [benchmark instructions](docs/BENCHMARKS.md). |
 

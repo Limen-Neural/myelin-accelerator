@@ -89,7 +89,7 @@ cargo build --locked --features cuda
 #   ptxas -arch=sm_120 -o /tmp/sn.cubin cmake-build-debug/spiking_network.ptx
 cargo test --locked --features cuda
 cargo test --locked --features cuda -- --ignored --nocapture
-./scripts/sanitize_lifecycle.sh # mandatory accelerator + SNN fixture memcheck
+./scripts/sanitize_lifecycle.sh # mandatory accelerator + SNN fixture + routing memcheck
 cargo run --locked --example benchmark --profile bench --features bench,cuda
 ```
 

@@ -112,6 +112,194 @@ fn bitpacking_ternary_gemm_ref_matches_gemv_columns() {
 
 #[cfg(not(feature = "cuda"))]
 mod stub_contract {
+    #[test]
+    fn routing_matrix_wrappers_validate_then_report_unavailable() {
+        use myelin_accelerator::routing::{
+            RoutingScoreKind, RoutingSoftmaxRequest, RoutingTopKRequest,
+        };
+        use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
+
+        let acc = GpuAccelerator::new();
+        let kind = RoutingScoreKind::Logits;
+        let scores = GpuBuffer::<f32>::alloc(4).unwrap();
+        let short = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut probabilities = GpuBuffer::<f32>::alloc(4).unwrap();
+        let mut top_k = GpuBuffer::<i32>::alloc(2).unwrap();
+
+        let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
+        let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
+
+        assert!(unavailable(acc.routing_softmax(RoutingSoftmaxRequest {
+            scores: &scores,
+            probabilities: &mut probabilities,
+            n_nodes: 2,
+            n_routes: 2,
+            score_kind: kind,
+        })));
+        assert!(invalid(acc.routing_softmax(RoutingSoftmaxRequest {
+            scores: &short,
+            probabilities: &mut probabilities,
+            n_nodes: 2,
+            n_routes: 2,
+            score_kind: kind,
+        })));
+        assert!(unavailable(acc.routing_top_k(RoutingTopKRequest {
+            scores: &scores,
+            top_k_indices: &mut top_k,
+            n_nodes: 2,
+            n_routes: 2,
+            top_k: 1,
+            score_kind: kind,
+        })));
+        assert!(invalid(acc.routing_top_k(RoutingTopKRequest {
+            scores: &scores,
+            top_k_indices: &mut top_k,
+            n_nodes: 2,
+            n_routes: 2,
+            top_k: 9,
+            score_kind: kind,
+        })));
+    }
+
+    #[test]
+    fn routing_entropy_wrapper_validates_then_reports_unavailable() {
+        use myelin_accelerator::routing::RoutingEntropyRequest;
+        use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
+
+        let acc = GpuAccelerator::new();
+        let probabilities = GpuBuffer::<f32>::alloc(4).unwrap();
+        let short = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut sum = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut max = GpuBuffer::<f32>::alloc(1).unwrap();
+
+        let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
+        let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
+
+        assert!(unavailable(acc.routing_entropy_reduce(
+            RoutingEntropyRequest {
+                probabilities: &probabilities,
+                entropy_sum: &mut sum,
+                entropy_max: &mut max,
+                n_nodes: 2,
+                n_routes: 2,
+            }
+        )));
+        assert!(invalid(acc.routing_entropy_reduce(RoutingEntropyRequest {
+            probabilities: &short,
+            entropy_sum: &mut sum,
+            entropy_max: &mut max,
+            n_nodes: 2,
+            n_routes: 2,
+        })));
+    }
+
+    #[test]
+    fn routing_adjusted_selection_wrappers_validate_then_report_unavailable() {
+        use myelin_accelerator::routing::AdjustedSelectionRequest;
+        use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
+
+        let acc = GpuAccelerator::new();
+        let state = GpuBuffer::<f32>::alloc(2).unwrap();
+        let short = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
+        let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
+
+        let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
+        let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
+
+        assert!(unavailable(acc.adjusted_argmax(AdjustedSelectionRequest {
+            state: &state,
+            adaptation: &state,
+            selected_index: &mut index,
+            selected_score: &mut score,
+            scale: 0.5,
+        })));
+        assert!(invalid(acc.adjusted_argmax(AdjustedSelectionRequest {
+            state: &state,
+            adaptation: &short,
+            selected_index: &mut index,
+            selected_score: &mut score,
+            scale: 0.5,
+        })));
+        assert!(invalid(acc.adjusted_argmax_single_block(
+            AdjustedSelectionRequest {
+                state: &state,
+                adaptation: &state,
+                selected_index: &mut index,
+                selected_score: &mut score,
+                scale: f32::NAN,
+            }
+        )));
+    }
+
+    #[test]
+    fn routing_fused_wrapper_validates_then_reports_unavailable() {
+        use myelin_accelerator::routing::{
+            FusedRoutingOutputs, FusedRoutingRequest, RoutingParams, RoutingScoreKind,
+        };
+        use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
+
+        let acc = GpuAccelerator::new();
+        let kind = RoutingScoreKind::Logits;
+        let params = RoutingParams {
+            n_nodes: 2,
+            n_routes: 2,
+            top_k: 1,
+            score_kind: kind,
+            adaptation_scale: 0.5,
+        };
+        let scores = GpuBuffer::<f32>::alloc(4).unwrap();
+        let state = GpuBuffer::<f32>::alloc(2).unwrap();
+        let short = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut outputs = FusedRoutingOutputs::alloc(&params, true).unwrap();
+
+        let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
+        let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
+
+        assert!(unavailable(acc.fused_routing_select(FusedRoutingRequest {
+            scores: &scores,
+            state: &state,
+            adaptation: &state,
+            outputs: &mut outputs,
+            params: &params,
+        })));
+        assert!(invalid(acc.fused_routing_select(FusedRoutingRequest {
+            scores: &short,
+            state: &state,
+            adaptation: &state,
+            outputs: &mut outputs,
+            params: &params,
+        })));
+        let bad_top_k = RoutingParams {
+            n_nodes: 2,
+            n_routes: 2,
+            top_k: 9,
+            score_kind: kind,
+            adaptation_scale: 0.5,
+        };
+        assert!(invalid(acc.fused_routing_select(FusedRoutingRequest {
+            scores: &scores,
+            state: &state,
+            adaptation: &state,
+            outputs: &mut outputs,
+            params: &bad_top_k,
+        })));
+        let bad_scale = RoutingParams {
+            n_nodes: 2,
+            n_routes: 2,
+            top_k: 1,
+            score_kind: kind,
+            adaptation_scale: f32::NAN,
+        };
+        assert!(invalid(acc.fused_routing_select(FusedRoutingRequest {
+            scores: &scores,
+            state: &state,
+            adaptation: &state,
+            outputs: &mut outputs,
+            params: &bad_scale,
+        })));
+    }
+
     use myelin_accelerator::{
         Backend, ExecutionPolicy, FallbackReason, GpuAccelerator, GpuBuffer, GpuContext, GpuError,
         KernelModule, probe_capabilities,
@@ -192,12 +380,15 @@ mod stub_contract {
     /// Zero-length allocation still succeeds and ordinary allocation still
     /// yields `T::default()` with unchanged upload/`to_vec` behavior (GH #48).
     #[test]
-    fn buffer_alloc_zero_and_ordinary_unchanged() {
+    fn buffer_alloc_zero_is_empty() {
         let empty = GpuBuffer::<u64>::alloc(0).expect("alloc(0) must succeed");
         assert_eq!(empty.len(), 0);
         assert!(empty.is_empty());
         assert!(empty.to_vec().unwrap().is_empty());
+    }
 
+    #[test]
+    fn buffer_alloc_ordinary_roundtrip_unchanged() {
         let buf = GpuBuffer::<u64>::alloc(4).expect("ordinary alloc must succeed");
         assert_eq!(buf.to_vec().unwrap(), vec![0u64; 4]);
 
@@ -207,30 +398,56 @@ mod stub_contract {
     }
 
     #[test]
-    fn accelerator_construction() {
+    fn accelerator_construction_reports_cpu_fallback() {
         let acc = GpuAccelerator::new();
         assert!(!acc.is_ready());
         assert_eq!(acc.selected_backend(), Backend::Cpu);
         let fb = acc.fallback().expect("stub fallback record");
         assert_eq!(fb.reason, FallbackReason::CudaFeatureNotBuilt);
+    }
+
+    #[test]
+    fn accelerator_construction_rejects_gpu_operations() {
+        let acc = GpuAccelerator::new();
         assert!(acc.kernels().is_err());
         assert!(acc.synchronize().is_err());
     }
 
     #[test]
-    fn probe_capabilities_is_honest_without_cuda() {
+    fn probe_capabilities_marks_cuda_unbuilt() {
         let report = probe_capabilities();
         assert!(!report.cuda_built);
         assert!(!report.runtime_available);
         assert!(!report.device_available);
+    }
+
+    #[test]
+    fn probe_capabilities_reports_no_compute_or_kernels() {
+        let report = probe_capabilities();
         assert!(report.compute_capability.is_none());
         assert!(!report.kernels.compiled);
+    }
+
+    #[test]
+    fn probe_capabilities_selects_cpu_fallback() {
+        let report = probe_capabilities();
         assert_eq!(report.selected_backend, Backend::Cpu);
         let fb = report.fallback.as_ref().expect("not-built fallback");
         assert_eq!(fb.reason, FallbackReason::CudaFeatureNotBuilt);
         assert_eq!(fb.reason.code(), "cuda_feature_not_built");
+    }
+
+    #[test]
+    fn probe_capabilities_fallback_record_is_portable() {
+        let report = probe_capabilities();
+        let fb = report.fallback.as_ref().expect("not-built fallback");
         assert_eq!(fb.selected_backend, Backend::Cpu);
         assert!(!fb.detail.contains("/home/"));
+    }
+
+    #[test]
+    fn probe_capabilities_rejects_gpu_use() {
+        let report = probe_capabilities();
         assert!(!report.gpu_usable());
         assert!(report.select_backend(ExecutionPolicy::RequireGpu).is_err());
     }

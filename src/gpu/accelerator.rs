@@ -11,6 +11,7 @@ use crate::gpu::context::{CurrentContextGuard, GpuContext};
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::kernel::KernelModule;
 use crate::gpu::memory::GpuBuffer;
+use crate::gpu::routing_ops::RoutingScratch;
 use cust::launch;
 use cust::stream::{Stream, StreamFlags};
 use nvtx::{range_pop, range_push};
@@ -33,6 +34,7 @@ pub struct GpuAccelerator {
     stream: Option<Stream>,
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
+    pub(super) routing_scratch: RefCell<Option<RoutingScratch>>,
     capabilities: CapabilityReport,
     _ctx: Option<GpuContext>,
 }
@@ -97,12 +99,26 @@ impl GpuAccelerator {
         let current_context = CurrentContextGuard::capture();
         let mut facts = crate::host_facts();
 
+        let ctx = Self::init_cuda_context(&mut facts)?;
+        let modules = Self::load_kernel_modules(&mut facts)?;
+        let stream = Self::create_default_stream(&facts)?;
+
+        Ok(Self::finish_gpu_init(
+            ctx,
+            modules,
+            stream,
+            facts,
+            current_context,
+        ))
+    }
+
+    fn init_cuda_context(facts: &mut CapabilityFacts) -> Result<GpuContext, InitFailure> {
         let ctx = match GpuContext::init() {
             Ok(ctx) => ctx,
             Err(e) => {
-                let reason = classify_context_failure(&facts, &e);
+                let reason = classify_context_failure(facts, &e);
                 return Err(InitFailure {
-                    facts,
+                    facts: facts.clone(),
                     reason,
                     detail: e.to_string(),
                 });
@@ -112,53 +128,60 @@ impl GpuAccelerator {
         if facts.compute_capability.is_none() {
             facts.compute_capability = ctx.compute_capability;
         }
-        if let Some(cc) = facts.compute_capability {
-            if !cc.meets_minimum() {
-                return Err(InitFailure {
-                    facts,
-                    reason: FallbackReason::UnsupportedHardware,
-                    detail: format!(
-                        "compute capability {cc} is below required {}",
-                        ComputeCapability::REQUIRED
-                    ),
-                });
-            }
-        } else {
-            return Err(InitFailure {
-                facts,
+        match facts.compute_capability {
+            Some(cc) if cc.meets_minimum() => Ok(ctx),
+            Some(cc) => Err(InitFailure {
+                facts: facts.clone(),
+                reason: FallbackReason::UnsupportedHardware,
+                detail: format!(
+                    "compute capability {cc} is below required {}",
+                    ComputeCapability::REQUIRED
+                ),
+            }),
+            None => Err(InitFailure {
+                facts: facts.clone(),
                 reason: FallbackReason::DriverRuntimeFailure,
                 detail: "compute capability query failed".to_string(),
-            });
+            }),
         }
+    }
 
-        let modules = match KernelModule::load_with_availability() {
-            Ok(modules) => modules,
+    fn load_kernel_modules(facts: &mut CapabilityFacts) -> Result<KernelModule, InitFailure> {
+        match KernelModule::load_with_availability() {
+            Ok(modules) => {
+                facts.kernels = KernelAvailability::all_available();
+                Ok(modules)
+            }
             Err(failure) => {
                 facts.kernels = failure.availability;
                 let reason = failure
                     .error
                     .fallback_reason()
                     .unwrap_or(FallbackReason::DriverRuntimeFailure);
-                return Err(InitFailure {
-                    facts,
+                Err(InitFailure {
+                    facts: facts.clone(),
                     reason,
                     detail: failure.error.to_string(),
-                });
+                })
             }
-        };
+        }
+    }
 
-        facts.kernels = KernelAvailability::all_available();
-        let stream = match Stream::new(StreamFlags::DEFAULT, None) {
-            Ok(stream) => stream,
-            Err(e) => {
-                return Err(InitFailure {
-                    facts,
-                    reason: FallbackReason::DriverRuntimeFailure,
-                    detail: format!("{e:?}"),
-                });
-            }
-        };
+    fn create_default_stream(facts: &CapabilityFacts) -> Result<Stream, InitFailure> {
+        Stream::new(StreamFlags::DEFAULT, None).map_err(|e| InitFailure {
+            facts: facts.clone(),
+            reason: FallbackReason::DriverRuntimeFailure,
+            detail: format!("{e:?}"),
+        })
+    }
 
+    fn finish_gpu_init(
+        ctx: GpuContext,
+        modules: KernelModule,
+        stream: Stream,
+        facts: CapabilityFacts,
+        current_context: CurrentContextGuard,
+    ) -> Self {
         let capabilities = capability_report_for_success(facts);
         let accelerator = Self {
             _ctx: Some(ctx),
@@ -166,10 +189,11 @@ impl GpuAccelerator {
             stream: Some(stream),
             aux_partial_scores: RefCell::new(None),
             aux_partial_walkers: RefCell::new(None),
+            routing_scratch: RefCell::new(None),
             capabilities,
         };
         current_context.disarm();
-        Ok(accelerator)
+        accelerator
     }
 
     fn cpu_fallback(capabilities: CapabilityReport) -> Self {
@@ -179,6 +203,7 @@ impl GpuAccelerator {
             stream: None,
             aux_partial_scores: RefCell::new(None),
             aux_partial_walkers: RefCell::new(None),
+            routing_scratch: RefCell::new(None),
             capabilities,
         }
     }
@@ -221,7 +246,7 @@ impl GpuAccelerator {
         })
     }
 
-    fn unavailable_error(&self) -> GpuError {
+    pub(crate) fn unavailable_error(&self) -> GpuError {
         match &self.capabilities.fallback {
             Some(fb) => GpuError::unavailable(fb.reason, fb.detail.clone()),
             None => GpuError::NoGpu,
@@ -1028,8 +1053,34 @@ impl GpuAccelerator {
         Ok(())
     }
 
-    /// Allocate/grow the owned SAT scratch buffers only in our current
-    /// context, after their last stream use has completed.
+    /// Return the current stream, or the unavailable error on CPU-only builds.
+    pub(crate) fn ready_stream(&self) -> GpuResult<&Stream> {
+        self.stream.as_ref().ok_or_else(|| self.unavailable_error())
+    }
+
+    pub(crate) fn launch_error(kernel: &str, error: impl std::fmt::Debug) -> GpuError {
+        GpuError::LaunchFailed(sanitize_diagnostic(&format!("{kernel} launch: {error:?}")))
+    }
+
+    pub(crate) fn ensure_routing_scratch(&self, partial_len: usize) -> GpuResult<()> {
+        self._ctx
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?
+            .require_current()?;
+        let mut slot = self.routing_scratch.borrow_mut();
+        if slot.as_ref().is_none_or(|s| s.scores.len() < partial_len) {
+            // Replaced buffers may still be referenced by queued launches.
+            self.synchronize()?;
+            *slot = Some(RoutingScratch {
+                entropy_sum: GpuBuffer::alloc(partial_len)?,
+                entropy_max: GpuBuffer::alloc(partial_len)?,
+                scores: GpuBuffer::alloc(partial_len)?,
+                indices: GpuBuffer::alloc(partial_len)?,
+            });
+        }
+        Ok(())
+    }
+
     fn ensure_aux_scratch(&self, partial_len: usize) -> GpuResult<()> {
         self._ctx
             .as_ref()
@@ -1063,7 +1114,11 @@ impl GpuAccelerator {
         Ok(())
     }
 
-    fn zero_output_prefix(&self, output: &mut GpuBuffer<f32>, count: usize) -> GpuResult<()> {
+    pub(crate) fn zero_output_prefix(
+        &self,
+        output: &mut GpuBuffer<f32>,
+        count: usize,
+    ) -> GpuResult<()> {
         let stream = self
             .stream
             .as_ref()
@@ -1116,6 +1171,7 @@ impl Drop for GpuAccelerator {
         let stream = self.stream.take();
         let partial_walkers = self.aux_partial_walkers.get_mut().take();
         let partial_scores = self.aux_partial_scores.get_mut().take();
+        let routing_scratch = self.routing_scratch.get_mut().take();
         if let Some(stream) = &stream
             && let Err(error) = stream.synchronize()
         {
@@ -1126,6 +1182,7 @@ impl Drop for GpuAccelerator {
         }
         // Explicit ownership invariant: synchronize -> scratch -> stream ->
         // modules -> caller context restoration -> final context release.
+        drop(routing_scratch);
         drop(partial_scores);
         drop(partial_walkers);
         drop(stream);

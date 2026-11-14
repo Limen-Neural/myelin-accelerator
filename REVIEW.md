@@ -228,7 +228,7 @@ ptxas -arch=sm_120 -o /tmp/sn.cubin cmake-build-debug/spiking_network.ptx
 cargo test --features cuda -- --ignored
 # Expect: test gpu::kernel::tests::test_load_kernels ... ok
 
-# 4) Mandatory accelerator + SNN fixture teardown gate (zero errors per suite)
+# 4) Mandatory accelerator, SNN fixture, and routing memcheck (zero errors per suite)
 CUDA_NVCC=/usr/local/cuda/bin/nvcc ./scripts/sanitize_lifecycle.sh
 
 # 5) Optimized microbenchmarks (device + launch)
@@ -238,7 +238,7 @@ cargo run --example benchmark --profile bench --features bench,cuda
 # --features bench alone is stub path — not a GPU gate.
 ```
 
-The mandatory teardown script builds `gpu_lifecycle` and `snn_fixtures_gpu`,
+The mandatory teardown script builds `gpu_lifecycle`, `snn_fixtures_gpu`, and `routing_gpu`,
 discovers each executable from Cargo JSON, and runs them in separate serial
 memcheck processes with `--include-ignored`, covering ordinary tests as well as
 the GPU-only ignored tests. Each suite must execute at least one passing test,
@@ -422,7 +422,7 @@ that checkout running `drop(GpuAccelerator::require_gpu().unwrap())`
 reproduced **exit 99 / 8 errors**. The new lifecycle suite before the repair
 reported **154 errors**; its foreign-context scratch assertion also failed.
 This evidence addresses the v0.2.0 blocker #46 / LIM-1464; publication remains
-owned by LIM-1460. It does not qualify unrelated #47–#49 or deferred v0.3/SAAQ work.
+owned by LIM-1460. It does not qualify unrelated #47–#49 or deferred v0.3 work.
 
 ### Ownership and context contract
 
