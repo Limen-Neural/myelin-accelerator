@@ -49,9 +49,7 @@ impl GpuAccelerator {
             )));
         }
         if n_vars == 0 {
-            if !self.is_ready() {
-                return Err(self.unavailable_error());
-            }
+            self.require_ready()?;
             return Ok(());
         }
 

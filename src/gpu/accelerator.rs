@@ -234,6 +234,14 @@ impl GpuAccelerator {
         self.is_ready()
     }
 
+    pub(crate) fn require_ready(&self) -> GpuResult<()> {
+        if self.is_ready() {
+            Ok(())
+        } else {
+            Err(self.unavailable_error())
+        }
+    }
+
     pub(crate) fn has_context(&self) -> bool {
         self._ctx.is_some()
     }

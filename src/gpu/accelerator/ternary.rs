@@ -66,9 +66,7 @@ impl GpuAccelerator {
 
         // Match host-ref: empty product is the zero vector (not "leave y untouched").
         if m == 0 {
-            if !self.is_ready() {
-                return Err(self.unavailable_error());
-            }
+            self.require_ready()?;
             return Ok(());
         }
         if k == 0 {
@@ -193,9 +191,7 @@ impl GpuAccelerator {
 
         // Match host-ref: empty product zeros C (not "leave C untouched").
         if m == 0 || n == 0 {
-            if !self.is_ready() {
-                return Err(self.unavailable_error());
-            }
+            self.require_ready()?;
             return Ok(());
         }
         if k == 0 {
