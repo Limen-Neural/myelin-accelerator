@@ -15,6 +15,8 @@ impl GpuAccelerator {
     /// `scales` is `M × groups_per_row(K, group_size)` f32.
     /// When `skip_zeros` is true, zero trits are skipped on device.
     #[allow(clippy::too_many_arguments)]
+    // @codescene(disable:"Excess Number of Function Arguments")
+    // qlty-ignore: qlty:function-parameters
     pub fn ternary_gemv(
         &self,
         packed_w: &GpuBuffer<u32>,
@@ -36,6 +38,8 @@ impl GpuAccelerator {
     /// immediately; other paths require [`Self::synchronize`] before reading
     /// or dropping any argument buffer.
     #[allow(clippy::too_many_arguments)]
+    // @codescene(disable:"Excess Number of Function Arguments")
+    // qlty-ignore: qlty:function-parameters
     pub fn ternary_gemv_async(
         &self,
         packed_w: &GpuBuffer<u32>,
@@ -134,6 +138,8 @@ impl GpuAccelerator {
     ///
     /// `B` is `K × N` row-major f32; `C` is `M × N` row-major f32.
     #[allow(clippy::too_many_arguments)]
+    // @codescene(disable:"Excess Number of Function Arguments")
+    // qlty-ignore: qlty:function-parameters
     pub fn ternary_gemm(
         &self,
         packed_w: &GpuBuffer<u32>,
@@ -156,6 +162,8 @@ impl GpuAccelerator {
     /// n == 0` return immediately; other paths require [`Self::synchronize`]
     /// before reading or dropping any argument buffer.
     #[allow(clippy::too_many_arguments)]
+    // @codescene(disable:"Excess Number of Function Arguments", disable:"Large Method", disable:"Complex Method", disable:"Complex Conditional")
+    // qlty-ignore: qlty:function-parameters
     pub fn ternary_gemm_async(
         &self,
         packed_w: &GpuBuffer<u32>,

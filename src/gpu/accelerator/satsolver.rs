@@ -10,6 +10,7 @@ const SATSOLVER_BLOCK_SIZE: u32 = 256;
 const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
 
 impl GpuAccelerator {
+    // @codescene(disable:"Excess Number of Function Arguments")
     pub fn satsolver_extract(
         &self,
         assignment: &GpuBuffer<u8>,
@@ -28,6 +29,7 @@ impl GpuAccelerator {
     /// The caller must call [`Self::synchronize`] before reading `output` on the
     /// host or dropping/reusing any argument buffer: `cust` frees device memory
     /// synchronously on `Drop`, which is not ordered against a pending launch.
+    // @codescene(disable:"Excess Number of Function Arguments")
     pub fn satsolver_extract_async(
         &self,
         assignment: &GpuBuffer<u8>,
@@ -110,6 +112,8 @@ impl GpuAccelerator {
     // grouping them would require a context struct on every call site
     // without simplifying the launch. Allow the clippy lint.
     #[allow(clippy::too_many_arguments)]
+    // @codescene(disable:"Excess Number of Function Arguments")
+    // qlty-ignore: qlty:function-parameters
     pub fn satsolver_aux_reduce_best(
         &self,
         assignment: &GpuBuffer<u8>,
@@ -147,6 +151,8 @@ impl GpuAccelerator {
     // grouping them would require a context struct on every call site
     // without simplifying the launch. Allow the clippy lint.
     #[allow(clippy::too_many_arguments)]
+    // @codescene(disable:"Excess Number of Function Arguments", disable:"Large Method")
+    // qlty-ignore: qlty:function-parameters
     pub fn satsolver_aux_reduce_best_async(
         &self,
         assignment: &GpuBuffer<u8>,
