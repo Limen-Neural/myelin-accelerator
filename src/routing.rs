@@ -299,7 +299,11 @@ pub fn top_k_row(scores: &[f32], top_k: usize, kind: RoutingScoreKind) -> Vec<i3
         .enumerate()
         .map(|(index, &value)| (sanitized_score(value, kind), index))
         .collect();
-    ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    ranked.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+    });
     let mut out = vec![-1; top_k];
     for (slot, &(_, index)) in out.iter_mut().zip(ranked.iter()) {
         *slot = index as i32;
@@ -696,6 +700,16 @@ mod tests {
         assert_eq!(
             top_k_row(&[f32::INFINITY, 0.25, f32::NAN], 2, Probabilities),
             vec![1, 0]
+        );
+    }
+
+    #[test]
+    fn top_k_treats_signed_zero_as_equal_and_keeps_lower_index() {
+        use RoutingScoreKind::{Logits, Probabilities};
+        assert_eq!(top_k_row(&[-0.0, 0.0, -1.0], 3, Logits), vec![0, 1, 2]);
+        assert_eq!(
+            top_k_row(&[0.0, -0.0, -1.0], 3, Probabilities),
+            vec![0, 1, 2]
         );
     }
 

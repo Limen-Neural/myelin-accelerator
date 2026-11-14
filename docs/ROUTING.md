@@ -9,8 +9,9 @@ plus per-node `state` and `adaptation` values. One operation produces:
 
 The caller supplies `adaptation_scale` and decides what the inputs and results
 mean. This crate has no default dynamics and no consumer policy.
-`adjusted_argmax` is the canonical adaptation-adjusted selector. Temporal
-primitives reuse it instead of providing a separate policy-specific selector.
+`adjusted_argmax` is the canonical adaptation-adjusted selector. Consumers
+with temporal state can reuse it instead of adding a policy-specific selector
+here.
 
 Scope and acceptance criteria: [LIM-955](https://linear.app/rpd-34/issue/LIM-955).
 

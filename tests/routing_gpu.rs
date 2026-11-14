@@ -10,7 +10,7 @@ use myelin_accelerator::oracle::CaseRng;
 use myelin_accelerator::routing::{
     AdjustedSelection, ENTROPY_ABS_TOL, FusedRoutingOutputs, MAX_ROUTING_TOP_K,
     PROBABILITY_ABS_TOL, RoutingParams, RoutingReference, RoutingScoreKind, adjusted_argmax,
-    routing_reference,
+    entropy_row, routing_reference,
 };
 use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
 
@@ -351,6 +351,59 @@ fn composable_path_matches_fused_results() {
             fused.entropy_max
         );
     }
+}
+
+#[test]
+#[ignore] // requires GPU + driver ≥ 570
+fn composable_entropy_sanitizes_nonfinite_probabilities() {
+    let acc = accelerator();
+    let (n_nodes, n_routes) = (3usize, 4usize);
+    let probabilities = vec![
+        0.5,
+        f32::NAN,
+        f32::INFINITY,
+        -1.0,
+        0.25,
+        0.25,
+        0.25,
+        0.25,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NAN,
+        0.0,
+    ];
+    let probs = GpuBuffer::from_slice(&probabilities).unwrap();
+    let mut entropy_sum = GpuBuffer::<f32>::alloc(1).unwrap();
+    let mut entropy_max = GpuBuffer::<f32>::alloc(1).unwrap();
+
+    acc.routing_entropy_reduce(
+        &probs,
+        &mut entropy_sum,
+        &mut entropy_max,
+        n_nodes,
+        n_routes,
+    )
+    .unwrap();
+
+    let row_entropy = |node: usize| {
+        entropy_row(
+            &probabilities[node * n_routes..(node + 1) * n_routes],
+            RoutingScoreKind::Probabilities,
+        )
+    };
+    let expected_sum: f32 = (0..n_nodes).map(row_entropy).sum();
+    let expected_max = (0..n_nodes).map(row_entropy).fold(0.0f32, f32::max);
+
+    let sum = entropy_sum.to_vec().unwrap()[0];
+    let max = entropy_max.to_vec().unwrap()[0];
+    assert!(
+        (sum - expected_sum).abs() <= ENTROPY_ABS_TOL * n_nodes as f32,
+        "entropy_sum: device {sum}, reference {expected_sum}"
+    );
+    assert!(
+        (max - expected_max).abs() <= ENTROPY_ABS_TOL,
+        "entropy_max: device {max}, reference {expected_max}"
+    );
 }
 
 #[test]
