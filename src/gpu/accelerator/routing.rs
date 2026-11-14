@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::GpuAccelerator;
-use crate::gpu::error::{GpuError, GpuResult};
+use crate::gpu::error::GpuResult;
 use crate::gpu::memory::GpuBuffer;
 use crate::gpu::routing_ops::RoutingScratch;
 impl GpuAccelerator {
