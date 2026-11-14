@@ -235,6 +235,20 @@ pub(crate) struct FusedRoutingInputs<'a> {
     pub(crate) adaptation: &'a GpuBuffer<f32>,
 }
 
+impl<'a> FusedRoutingInputs<'a> {
+    pub(crate) fn new(
+        scores: &'a GpuBuffer<f32>,
+        state: &'a GpuBuffer<f32>,
+        adaptation: &'a GpuBuffer<f32>,
+    ) -> Self {
+        Self {
+            scores,
+            state,
+            adaptation,
+        }
+    }
+}
+
 /// Check every buffer of a fused routing launch against `params`.
 pub(crate) fn validate_fused_buffers(
     inputs: &FusedRoutingInputs<'_>,
@@ -263,6 +277,22 @@ pub(crate) struct SelectionInputs<'a> {
     pub(crate) adaptation: &'a GpuBuffer<f32>,
     pub(crate) selected_index: &'a GpuBuffer<u32>,
     pub(crate) selected_score: &'a GpuBuffer<f32>,
+}
+
+impl<'a> SelectionInputs<'a> {
+    pub(crate) fn new(
+        state: &'a GpuBuffer<f32>,
+        adaptation: &'a GpuBuffer<f32>,
+        selected_index: &'a GpuBuffer<u32>,
+        selected_score: &'a GpuBuffer<f32>,
+    ) -> Self {
+        Self {
+            state,
+            adaptation,
+            selected_index,
+            selected_score,
+        }
+    }
 }
 
 /// Validate adjusted-score selection buffers and return the kernel `n`.

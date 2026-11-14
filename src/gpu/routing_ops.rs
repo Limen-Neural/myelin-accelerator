@@ -228,12 +228,7 @@ impl GpuAccelerator {
         scale: f32,
     ) -> GpuResult<()> {
         let n = {
-            let inputs = SelectionInputs {
-                state,
-                adaptation,
-                selected_index: &*selected_index,
-                selected_score: &*selected_score,
-            };
+            let inputs = SelectionInputs::new(state, adaptation, selected_index, selected_score);
             crate::routing::validate_selection_buffers(&inputs, scale)?
         };
         let pass1 = self.routing_function("adjusted_argmax_pass1")?;
@@ -300,12 +295,7 @@ impl GpuAccelerator {
         selected_score: &mut GpuBuffer<f32>,
         scale: f32,
     ) -> GpuResult<()> {
-        let inputs = SelectionInputs {
-            state,
-            adaptation,
-            selected_index: &*selected_index,
-            selected_score: &*selected_score,
-        };
+        let inputs = SelectionInputs::new(state, adaptation, selected_index, selected_score);
         let n = crate::routing::validate_selection_buffers(&inputs, scale)?;
         let (func, stream) = self.routing_launch_parts("adjusted_argmax_single_block")?;
         // SAFETY: the entry is `(const float*, const float*, unsigned*, float*,
@@ -353,11 +343,7 @@ impl GpuAccelerator {
         outputs: &mut FusedRoutingOutputs,
         params: &RoutingParams,
     ) -> GpuResult<()> {
-        let inputs = FusedRoutingInputs {
-            scores,
-            state,
-            adaptation,
-        };
+        let inputs = FusedRoutingInputs::new(scores, state, adaptation);
         validate_fused_buffers(&inputs, outputs, params)?;
         let pass1 = self.routing_function("fused_routing_pass1")?;
         let pass2 = self.routing_function("fused_routing_pass2")?;

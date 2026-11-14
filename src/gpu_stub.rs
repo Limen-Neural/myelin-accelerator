@@ -455,12 +455,7 @@ impl GpuAccelerator {
         selected_score: &mut GpuBuffer<f32>,
         scale: f32,
     ) -> GpuResult<()> {
-        let inputs = SelectionInputs {
-            state,
-            adaptation,
-            selected_index: &*selected_index,
-            selected_score: &*selected_score,
-        };
+        let inputs = SelectionInputs::new(state, adaptation, selected_index, selected_score);
         validate_selection_buffers(&inputs, scale)?;
         Err(self.unavailable_error())
     }
@@ -506,11 +501,7 @@ impl GpuAccelerator {
         outputs: &mut FusedRoutingOutputs,
         params: &RoutingParams,
     ) -> GpuResult<()> {
-        let inputs = FusedRoutingInputs {
-            scores,
-            state,
-            adaptation,
-        };
+        let inputs = FusedRoutingInputs::new(scores, state, adaptation);
         validate_fused_buffers(&inputs, outputs, params)?;
         Err(self.unavailable_error())
     }
