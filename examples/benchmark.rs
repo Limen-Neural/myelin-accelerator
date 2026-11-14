@@ -790,9 +790,7 @@ fn bench_routing_shape(
     top_k: usize,
 ) {
     use myelin_accelerator::GpuBuffer;
-    use myelin_accelerator::routing::{
-        FusedRoutingOutputs, RoutingParams, RoutingScoreKind, analytical,
-    };
+    use myelin_accelerator::routing::{RoutingParams, RoutingScoreKind, analytical};
 
     let params = RoutingParams {
         n_nodes,
@@ -822,51 +820,114 @@ fn bench_routing_shape(
         requested_fused.launches,
     );
 
-    let mut outputs = FusedRoutingOutputs::alloc(&params, false).unwrap();
-    results.push(capture(
-        &format!("routing_fused_{n_nodes}x{n_routes}_k{top_k}"),
-        "routing-fused",
+    results.push(capture_fused_routing(
+        acc,
+        config,
         &dims,
+        &scores,
+        &state,
+        &adaptation,
+        &params,
+        false,
+    ));
+    results.push(capture_fused_routing(
+        acc,
+        config,
+        &dims,
+        &scores,
+        &state,
+        &adaptation,
+        &params,
+        true,
+    ));
+    results.push(capture_composable_routing(
+        acc,
+        config,
+        &dims,
+        &scores,
+        &state,
+        &adaptation,
+        &params,
+    ));
+}
+
+#[cfg(feature = "cuda")]
+fn capture_fused_routing(
+    acc: &myelin_accelerator::GpuAccelerator,
+    config: &Config,
+    dims: &[(&str, i64)],
+    scores: &myelin_accelerator::GpuBuffer<f32>,
+    state: &myelin_accelerator::GpuBuffer<f32>,
+    adaptation: &myelin_accelerator::GpuBuffer<f32>,
+    params: &myelin_accelerator::routing::RoutingParams,
+    with_probabilities: bool,
+) -> Capture {
+    use myelin_accelerator::routing::FusedRoutingOutputs;
+
+    let mut outputs = FusedRoutingOutputs::alloc(params, with_probabilities).unwrap();
+    let (name, label) = if with_probabilities {
+        (
+            format!(
+                "routing_fused_probabilities_{}x{}_k{}",
+                params.n_nodes, params.n_routes, params.top_k
+            ),
+            "routing-fused-probabilities",
+        )
+    } else {
+        (
+            format!(
+                "routing_fused_{}x{}_k{}",
+                params.n_nodes, params.n_routes, params.top_k
+            ),
+            "routing-fused",
+        )
+    };
+    capture(
+        &name,
+        label,
+        dims,
         Some(42),
         config.warmup,
         config.iterations,
         || {
-            acc.fused_routing_select(&scores, &state, &adaptation, &mut outputs, &params)
+            acc.fused_routing_select(scores, state, adaptation, &mut outputs, params)
                 .unwrap();
         },
-    ));
+    )
+}
 
-    let mut outputs = FusedRoutingOutputs::alloc(&params, true).unwrap();
-    results.push(capture(
-        &format!("routing_fused_probabilities_{n_nodes}x{n_routes}_k{top_k}"),
-        "routing-fused-probabilities",
-        &dims,
-        Some(42),
-        config.warmup,
-        config.iterations,
-        || {
-            acc.fused_routing_select(&scores, &state, &adaptation, &mut outputs, &params)
-                .unwrap();
-        },
-    ));
+#[cfg(feature = "cuda")]
+fn capture_composable_routing(
+    acc: &myelin_accelerator::GpuAccelerator,
+    config: &Config,
+    dims: &[(&str, i64)],
+    scores: &myelin_accelerator::GpuBuffer<f32>,
+    state: &myelin_accelerator::GpuBuffer<f32>,
+    adaptation: &myelin_accelerator::GpuBuffer<f32>,
+    params: &myelin_accelerator::routing::RoutingParams,
+) -> Capture {
+    use myelin_accelerator::GpuBuffer;
 
+    let n_nodes = params.n_nodes;
+    let n_routes = params.n_routes;
+    let top_k = params.top_k;
     let mut probabilities = GpuBuffer::<f32>::alloc(n_nodes * n_routes).unwrap();
     let mut top_k_indices = GpuBuffer::<i32>::alloc(n_nodes * top_k).unwrap();
     let mut entropy_sum = GpuBuffer::<f32>::alloc(1).unwrap();
     let mut entropy_max = GpuBuffer::<f32>::alloc(1).unwrap();
     let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
     let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
-    results.push(capture(
+    capture(
         &format!("routing_composable_{n_nodes}x{n_routes}_k{top_k}"),
         "routing-composable",
-        &dims,
+        dims,
         Some(42),
         config.warmup,
         config.iterations,
         || {
             // Queue all six launches and wait once, like the fused path.
             acc.routing_softmax_async(
-                &scores,
+                scores,
                 &mut probabilities,
                 n_nodes,
                 n_routes,
@@ -874,7 +935,7 @@ fn bench_routing_shape(
             )
             .unwrap();
             acc.routing_top_k_async(
-                &scores,
+                scores,
                 &mut top_k_indices,
                 n_nodes,
                 n_routes,
@@ -891,8 +952,8 @@ fn bench_routing_shape(
             )
             .unwrap();
             acc.adjusted_argmax_async(
-                &state,
-                &adaptation,
+                state,
+                adaptation,
                 &mut index,
                 &mut score,
                 ROUTING_BENCH_SCALE,
@@ -900,7 +961,7 @@ fn bench_routing_shape(
             .unwrap();
             acc.synchronize().unwrap();
         },
-    ));
+    )
 }
 
 #[cfg(feature = "cuda")]
