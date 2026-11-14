@@ -15,15 +15,8 @@ impl GpuAccelerator {
     }
 
     pub fn routing_softmax_async(&self, request: RoutingSoftmaxRequest<'_>) -> GpuResult<()> {
-        let RoutingSoftmaxRequest {
-            scores,
-            probabilities,
-            n_nodes,
-            n_routes,
-            score_kind: _,
-        } = request;
-        let shape = RoutingShape::new(n_nodes, n_routes)?;
-        validate_softmax_buffers(scores, probabilities, shape)?;
+        let shape = RoutingShape::new(request.n_nodes, request.n_routes)?;
+        validate_softmax_buffers(request.scores, request.probabilities, shape)?;
         Err(self.unavailable_error())
     }
 
@@ -32,16 +25,8 @@ impl GpuAccelerator {
     }
 
     pub fn routing_top_k_async(&self, request: RoutingTopKRequest<'_>) -> GpuResult<()> {
-        let RoutingTopKRequest {
-            scores,
-            top_k_indices,
-            n_nodes,
-            n_routes,
-            top_k,
-            score_kind: _,
-        } = request;
-        let shape = RoutingShape::new(n_nodes, n_routes)?;
-        validate_top_k_buffers(scores, top_k_indices, shape, top_k)?;
+        let shape = RoutingShape::new(request.n_nodes, request.n_routes)?;
+        validate_top_k_buffers(request.scores, request.top_k_indices, shape, request.top_k)?;
         Err(self.unavailable_error())
     }
 
@@ -53,15 +38,13 @@ impl GpuAccelerator {
         &self,
         request: RoutingEntropyRequest<'_>,
     ) -> GpuResult<()> {
-        let RoutingEntropyRequest {
-            probabilities,
-            entropy_sum,
-            entropy_max,
-            n_nodes,
-            n_routes,
-        } = request;
-        let shape = RoutingShape::new(n_nodes, n_routes)?;
-        validate_entropy_buffers(probabilities, entropy_sum, entropy_max, shape)?;
+        let shape = RoutingShape::new(request.n_nodes, request.n_routes)?;
+        validate_entropy_buffers(
+            request.probabilities,
+            request.entropy_sum,
+            request.entropy_max,
+            shape,
+        )?;
         Err(self.unavailable_error())
     }
 
@@ -70,15 +53,13 @@ impl GpuAccelerator {
     }
 
     pub fn adjusted_argmax_async(&self, request: AdjustedSelectionRequest<'_>) -> GpuResult<()> {
-        let AdjustedSelectionRequest {
-            state,
-            adaptation,
-            selected_index,
-            selected_score,
-            scale,
-        } = request;
-        let inputs = SelectionInputs::new(state, adaptation, selected_index, selected_score);
-        validate_selection_buffers(&inputs, scale)?;
+        let inputs = SelectionInputs::new(
+            request.state,
+            request.adaptation,
+            request.selected_index,
+            request.selected_score,
+        );
+        validate_selection_buffers(&inputs, request.scale)?;
         Err(self.unavailable_error())
     }
 
@@ -101,15 +82,8 @@ impl GpuAccelerator {
     }
 
     pub fn fused_routing_select_async(&self, request: FusedRoutingRequest<'_>) -> GpuResult<()> {
-        let FusedRoutingRequest {
-            scores,
-            state,
-            adaptation,
-            outputs,
-            params,
-        } = request;
-        let inputs = FusedRoutingInputs::new(scores, state, adaptation);
-        validate_fused_buffers(&inputs, outputs, params)?;
+        let inputs = FusedRoutingInputs::new(request.scores, request.state, request.adaptation);
+        validate_fused_buffers(&inputs, request.outputs, request.params)?;
         Err(self.unavailable_error())
     }
 }

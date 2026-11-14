@@ -365,19 +365,29 @@ mod stub_contract {
     }
 
     #[test]
-    fn probe_capabilities_is_honest_without_cuda() {
+    fn probe_capabilities_marks_cuda_unbuilt() {
         let report = probe_capabilities();
         assert!(!report.cuda_built);
         assert!(!report.runtime_available);
         assert!(!report.device_available);
         assert!(report.compute_capability.is_none());
         assert!(!report.kernels.compiled);
+    }
+
+    #[test]
+    fn probe_capabilities_selects_cpu_fallback() {
+        let report = probe_capabilities();
         assert_eq!(report.selected_backend, Backend::Cpu);
         let fb = report.fallback.as_ref().expect("not-built fallback");
         assert_eq!(fb.reason, FallbackReason::CudaFeatureNotBuilt);
         assert_eq!(fb.reason.code(), "cuda_feature_not_built");
         assert_eq!(fb.selected_backend, Backend::Cpu);
         assert!(!fb.detail.contains("/home/"));
+    }
+
+    #[test]
+    fn probe_capabilities_rejects_gpu_use() {
+        let report = probe_capabilities();
         assert!(!report.gpu_usable());
         assert!(report.select_backend(ExecutionPolicy::RequireGpu).is_err());
     }
