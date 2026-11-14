@@ -890,8 +890,14 @@ fn capture_fused_routing(
         config.warmup,
         config.iterations,
         || {
-            acc.fused_routing_select(scores, state, adaptation, &mut outputs, params)
-                .unwrap();
+            acc.fused_routing_select(myelin_accelerator::routing::FusedRoutingRequest::new(
+                scores,
+                state,
+                adaptation,
+                &mut outputs,
+                params,
+            ))
+            .unwrap();
         },
     )
 }
@@ -907,6 +913,9 @@ fn capture_composable_routing(
     params: &myelin_accelerator::routing::RoutingParams,
 ) -> Capture {
     use myelin_accelerator::GpuBuffer;
+    use myelin_accelerator::routing::{
+        AdjustedSelectionRequest, RoutingEntropyRequest, RoutingSoftmaxRequest, RoutingTopKRequest,
+    };
 
     let n_nodes = params.n_nodes;
     let n_routes = params.n_routes;
@@ -926,38 +935,38 @@ fn capture_composable_routing(
         config.iterations,
         || {
             // Queue all six launches and wait once, like the fused path.
-            acc.routing_softmax_async(
+            acc.routing_softmax_async(RoutingSoftmaxRequest::new(
                 scores,
                 &mut probabilities,
                 n_nodes,
                 n_routes,
                 params.score_kind,
-            )
+            ))
             .unwrap();
-            acc.routing_top_k_async(
+            acc.routing_top_k_async(RoutingTopKRequest::new(
                 scores,
                 &mut top_k_indices,
                 n_nodes,
                 n_routes,
                 top_k,
                 params.score_kind,
-            )
+            ))
             .unwrap();
-            acc.routing_entropy_reduce_async(
+            acc.routing_entropy_reduce_async(RoutingEntropyRequest::new(
                 &probabilities,
                 &mut entropy_sum,
                 &mut entropy_max,
                 n_nodes,
                 n_routes,
-            )
+            ))
             .unwrap();
-            acc.adjusted_argmax_async(
+            acc.adjusted_argmax_async(AdjustedSelectionRequest::new(
                 state,
                 adaptation,
                 &mut index,
                 &mut score,
                 ROUTING_BENCH_SCALE,
-            )
+            ))
             .unwrap();
             acc.synchronize().unwrap();
         },
@@ -971,6 +980,7 @@ fn bench_selection_paths(
     results: &mut Vec<Capture>,
 ) {
     use myelin_accelerator::GpuBuffer;
+    use myelin_accelerator::routing::AdjustedSelectionRequest;
 
     for &n in SELECTION_BENCH_SIZES {
         let state = GpuBuffer::from_slice(&routing_bench_values(n, 45, 4.0)).unwrap();
@@ -985,13 +995,13 @@ fn bench_selection_paths(
             config.warmup,
             config.iterations,
             || {
-                acc.adjusted_argmax(
+                acc.adjusted_argmax(AdjustedSelectionRequest::new(
                     &state,
                     &adaptation,
                     &mut index,
                     &mut score,
                     ROUTING_BENCH_SCALE,
-                )
+                ))
                 .unwrap();
             },
         ));
@@ -1003,13 +1013,13 @@ fn bench_selection_paths(
             config.warmup,
             config.iterations,
             || {
-                acc.adjusted_argmax_single_block(
+                acc.adjusted_argmax_single_block(AdjustedSelectionRequest::new(
                     &state,
                     &adaptation,
                     &mut index,
                     &mut score,
                     ROUTING_BENCH_SCALE,
-                )
+                ))
                 .unwrap();
             },
         ));

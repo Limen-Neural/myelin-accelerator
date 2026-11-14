@@ -114,7 +114,10 @@ fn bitpacking_ternary_gemm_ref_matches_gemv_columns() {
 mod stub_contract {
     #[test]
     fn routing_composable_wrappers_validate_then_report_unavailable() {
-        use myelin_accelerator::routing::RoutingScoreKind;
+        use myelin_accelerator::routing::{
+            AdjustedSelectionRequest, RoutingEntropyRequest, RoutingScoreKind,
+            RoutingSoftmaxRequest, RoutingTopKRequest,
+        };
         use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
 
         let acc = GpuAccelerator::new();
@@ -133,53 +136,43 @@ mod stub_contract {
         let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
 
         assert!(unavailable(acc.routing_softmax(
-            &scores,
-            &mut probabilities,
-            2,
-            2,
-            kind
+            RoutingSoftmaxRequest::new(&scores, &mut probabilities, 2, 2, kind)
         )));
-        assert!(invalid(acc.routing_softmax(
+        assert!(invalid(acc.routing_softmax(RoutingSoftmaxRequest::new(
             &short,
             &mut probabilities,
             2,
             2,
             kind
-        )));
-        assert!(unavailable(
-            acc.routing_top_k(&scores, &mut top_k, 2, 2, 1, kind)
-        ));
-        assert!(invalid(
-            acc.routing_top_k(&scores, &mut top_k, 2, 2, 9, kind)
-        ));
+        ))));
+        assert!(unavailable(acc.routing_top_k(RoutingTopKRequest::new(
+            &scores, &mut top_k, 2, 2, 1, kind
+        ))));
+        assert!(invalid(acc.routing_top_k(RoutingTopKRequest::new(
+            &scores, &mut top_k, 2, 2, 9, kind
+        ))));
         assert!(unavailable(acc.routing_entropy_reduce(
-            &probabilities,
-            &mut sum,
-            &mut max,
-            2,
-            2
+            RoutingEntropyRequest::new(&probabilities, &mut sum, &mut max, 2, 2)
         )));
-        assert!(invalid(
-            acc.routing_entropy_reduce(&short, &mut sum, &mut max, 2, 2)
-        ));
-        assert!(unavailable(
-            acc.adjusted_argmax(&state, &state, &mut index, &mut score, 0.5)
-        ));
-        assert!(invalid(
-            acc.adjusted_argmax(&state, &short, &mut index, &mut score, 0.5)
-        ));
+        assert!(invalid(acc.routing_entropy_reduce(
+            RoutingEntropyRequest::new(&short, &mut sum, &mut max, 2, 2)
+        )));
+        assert!(unavailable(acc.adjusted_argmax(
+            AdjustedSelectionRequest::new(&state, &state, &mut index, &mut score, 0.5)
+        )));
+        assert!(invalid(acc.adjusted_argmax(AdjustedSelectionRequest::new(
+            &state, &short, &mut index, &mut score, 0.5
+        ))));
         assert!(invalid(acc.adjusted_argmax_single_block(
-            &state,
-            &state,
-            &mut index,
-            &mut score,
-            f32::NAN
+            AdjustedSelectionRequest::new(&state, &state, &mut index, &mut score, f32::NAN)
         )));
     }
 
     #[test]
     fn routing_fused_wrapper_validates_then_reports_unavailable() {
-        use myelin_accelerator::routing::{FusedRoutingOutputs, RoutingParams, RoutingScoreKind};
+        use myelin_accelerator::routing::{
+            FusedRoutingOutputs, FusedRoutingRequest, RoutingParams, RoutingScoreKind,
+        };
         use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
 
         let acc = GpuAccelerator::new();
@@ -200,19 +193,15 @@ mod stub_contract {
         let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
 
         assert!(unavailable(acc.fused_routing_select(
-            &scores,
-            &state,
-            &state,
-            &mut outputs,
-            &params
+            FusedRoutingRequest::new(&scores, &state, &state, &mut outputs, &params)
         )));
-        assert!(invalid(acc.fused_routing_select(
+        assert!(invalid(acc.fused_routing_select(FusedRoutingRequest::new(
             &short,
             &state,
             &state,
             &mut outputs,
             &params
-        )));
+        ))));
     }
 
     use myelin_accelerator::{

@@ -8,8 +8,9 @@ pub use crate::capability::{
 use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
 pub use crate::error::{GpuError, GpuResult};
 use crate::routing::{
-    FusedRoutingInputs, FusedRoutingOutputs, RoutingParams, RoutingScoreKind, RoutingShape,
-    SelectionInputs, validate_entropy_buffers, validate_fused_buffers, validate_selection_buffers,
+    AdjustedSelectionRequest, FusedRoutingInputs, FusedRoutingRequest, RoutingEntropyRequest,
+    RoutingShape, RoutingSoftmaxRequest, RoutingTopKRequest, SelectionInputs,
+    validate_entropy_buffers, validate_fused_buffers, validate_selection_buffers,
     validate_softmax_buffers, validate_top_k_buffers,
 };
 
@@ -356,105 +357,73 @@ impl GpuAccelerator {
         Err(self.unavailable_error())
     }
 
-    pub fn routing_softmax(
-        &self,
-        scores: &GpuBuffer<f32>,
-        probabilities: &mut GpuBuffer<f32>,
-        n_nodes: usize,
-        n_routes: usize,
-        score_kind: RoutingScoreKind,
-    ) -> GpuResult<()> {
-        self.routing_softmax_async(scores, probabilities, n_nodes, n_routes, score_kind)
+    pub fn routing_softmax(&self, request: RoutingSoftmaxRequest<'_>) -> GpuResult<()> {
+        self.routing_softmax_async(request)
     }
 
-    pub fn routing_softmax_async(
-        &self,
-        scores: &GpuBuffer<f32>,
-        probabilities: &mut GpuBuffer<f32>,
-        n_nodes: usize,
-        n_routes: usize,
-        _: RoutingScoreKind,
-    ) -> GpuResult<()> {
+    pub fn routing_softmax_async(&self, request: RoutingSoftmaxRequest<'_>) -> GpuResult<()> {
+        let RoutingSoftmaxRequest {
+            scores,
+            probabilities,
+            n_nodes,
+            n_routes,
+            score_kind: _,
+        } = request;
         let shape = RoutingShape::new(n_nodes, n_routes)?;
         validate_softmax_buffers(scores, probabilities, shape)?;
         Err(self.unavailable_error())
     }
 
-    pub fn routing_top_k(
-        &self,
-        scores: &GpuBuffer<f32>,
-        top_k_indices: &mut GpuBuffer<i32>,
-        n_nodes: usize,
-        n_routes: usize,
-        top_k: usize,
-        score_kind: RoutingScoreKind,
-    ) -> GpuResult<()> {
-        self.routing_top_k_async(scores, top_k_indices, n_nodes, n_routes, top_k, score_kind)
+    pub fn routing_top_k(&self, request: RoutingTopKRequest<'_>) -> GpuResult<()> {
+        self.routing_top_k_async(request)
     }
 
-    pub fn routing_top_k_async(
-        &self,
-        scores: &GpuBuffer<f32>,
-        top_k_indices: &mut GpuBuffer<i32>,
-        n_nodes: usize,
-        n_routes: usize,
-        top_k: usize,
-        _: RoutingScoreKind,
-    ) -> GpuResult<()> {
+    pub fn routing_top_k_async(&self, request: RoutingTopKRequest<'_>) -> GpuResult<()> {
+        let RoutingTopKRequest {
+            scores,
+            top_k_indices,
+            n_nodes,
+            n_routes,
+            top_k,
+            score_kind: _,
+        } = request;
         let shape = RoutingShape::new(n_nodes, n_routes)?;
         validate_top_k_buffers(scores, top_k_indices, shape, top_k)?;
         Err(self.unavailable_error())
     }
 
-    pub fn routing_entropy_reduce(
+    pub fn routing_entropy_reduce(&self, request: RoutingEntropyRequest<'_>) -> GpuResult<()> {
+        self.routing_entropy_reduce_async(request)
+    }
+
+    pub fn routing_entropy_reduce_async(
         &self,
-        probabilities: &GpuBuffer<f32>,
-        entropy_sum: &mut GpuBuffer<f32>,
-        entropy_max: &mut GpuBuffer<f32>,
-        n_nodes: usize,
-        n_routes: usize,
+        request: RoutingEntropyRequest<'_>,
     ) -> GpuResult<()> {
-        self.routing_entropy_reduce_async(
+        let RoutingEntropyRequest {
             probabilities,
             entropy_sum,
             entropy_max,
             n_nodes,
             n_routes,
-        )
-    }
-
-    pub fn routing_entropy_reduce_async(
-        &self,
-        probabilities: &GpuBuffer<f32>,
-        entropy_sum: &mut GpuBuffer<f32>,
-        entropy_max: &mut GpuBuffer<f32>,
-        n_nodes: usize,
-        n_routes: usize,
-    ) -> GpuResult<()> {
+        } = request;
         let shape = RoutingShape::new(n_nodes, n_routes)?;
         validate_entropy_buffers(probabilities, entropy_sum, entropy_max, shape)?;
         Err(self.unavailable_error())
     }
 
-    pub fn adjusted_argmax(
-        &self,
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        selected_index: &mut GpuBuffer<u32>,
-        selected_score: &mut GpuBuffer<f32>,
-        scale: f32,
-    ) -> GpuResult<()> {
-        self.adjusted_argmax_async(state, adaptation, selected_index, selected_score, scale)
+    pub fn adjusted_argmax(&self, request: AdjustedSelectionRequest<'_>) -> GpuResult<()> {
+        self.adjusted_argmax_async(request)
     }
 
-    pub fn adjusted_argmax_async(
-        &self,
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        selected_index: &mut GpuBuffer<u32>,
-        selected_score: &mut GpuBuffer<f32>,
-        scale: f32,
-    ) -> GpuResult<()> {
+    pub fn adjusted_argmax_async(&self, request: AdjustedSelectionRequest<'_>) -> GpuResult<()> {
+        let AdjustedSelectionRequest {
+            state,
+            adaptation,
+            selected_index,
+            selected_score,
+            scale,
+        } = request;
         let inputs = SelectionInputs::new(state, adaptation, selected_index, selected_score);
         validate_selection_buffers(&inputs, scale)?;
         Err(self.unavailable_error())
@@ -462,45 +431,30 @@ impl GpuAccelerator {
 
     pub fn adjusted_argmax_single_block(
         &self,
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        selected_index: &mut GpuBuffer<u32>,
-        selected_score: &mut GpuBuffer<f32>,
-        scale: f32,
+        request: AdjustedSelectionRequest<'_>,
     ) -> GpuResult<()> {
-        self.adjusted_argmax_async(state, adaptation, selected_index, selected_score, scale)
+        self.adjusted_argmax_single_block_async(request)
     }
 
     pub fn adjusted_argmax_single_block_async(
         &self,
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        selected_index: &mut GpuBuffer<u32>,
-        selected_score: &mut GpuBuffer<f32>,
-        scale: f32,
+        request: AdjustedSelectionRequest<'_>,
     ) -> GpuResult<()> {
-        self.adjusted_argmax_async(state, adaptation, selected_index, selected_score, scale)
+        self.adjusted_argmax_async(request)
     }
 
-    pub fn fused_routing_select(
-        &self,
-        scores: &GpuBuffer<f32>,
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        outputs: &mut FusedRoutingOutputs,
-        params: &RoutingParams,
-    ) -> GpuResult<()> {
-        self.fused_routing_select_async(scores, state, adaptation, outputs, params)
+    pub fn fused_routing_select(&self, request: FusedRoutingRequest<'_>) -> GpuResult<()> {
+        self.fused_routing_select_async(request)
     }
 
-    pub fn fused_routing_select_async(
-        &self,
-        scores: &GpuBuffer<f32>,
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        outputs: &mut FusedRoutingOutputs,
-        params: &RoutingParams,
-    ) -> GpuResult<()> {
+    pub fn fused_routing_select_async(&self, request: FusedRoutingRequest<'_>) -> GpuResult<()> {
+        let FusedRoutingRequest {
+            scores,
+            state,
+            adaptation,
+            outputs,
+            params,
+        } = request;
         let inputs = FusedRoutingInputs::new(scores, state, adaptation);
         validate_fused_buffers(&inputs, outputs, params)?;
         Err(self.unavailable_error())

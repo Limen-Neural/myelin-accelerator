@@ -1,7 +1,6 @@
 use crate::gpu::accelerator::GpuAccelerator;
 use crate::gpu::error::GpuResult;
-use crate::gpu::memory::GpuBuffer;
-use crate::routing::{ROUTING_BLOCK_SIZE, SelectionInputs};
+use crate::routing::{AdjustedSelectionRequest, ROUTING_BLOCK_SIZE, SelectionInputs};
 use cust::launch;
 
 impl GpuAccelerator {
@@ -10,33 +9,20 @@ impl GpuAccelerator {
     ///
     /// Writes [`crate::routing::NO_SELECTION`] and `-inf` when no node is
     /// eligible. This is the default selection path; see `docs/ROUTING.md`.
-    pub fn adjusted_argmax(
-        &self,
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        selected_index: &mut GpuBuffer<u32>,
-        selected_score: &mut GpuBuffer<f32>,
-        scale: f32,
-    ) -> GpuResult<()> {
-        self.finish_launch(self.adjusted_argmax_async(
+    pub fn adjusted_argmax(&self, request: AdjustedSelectionRequest<'_>) -> GpuResult<()> {
+        self.finish_launch(self.adjusted_argmax_async(request))
+    }
+
+    /// Enqueue [`Self::adjusted_argmax`]; synchronize before using the buffers.
+    /// An error after the first launch can leave that launch queued.
+    pub fn adjusted_argmax_async(&self, request: AdjustedSelectionRequest<'_>) -> GpuResult<()> {
+        let AdjustedSelectionRequest {
             state,
             adaptation,
             selected_index,
             selected_score,
             scale,
-        ))
-    }
-
-    /// Enqueue [`Self::adjusted_argmax`]; synchronize before using the buffers.
-    /// An error after the first launch can leave that launch queued.
-    pub fn adjusted_argmax_async(
-        &self,
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        selected_index: &mut GpuBuffer<u32>,
-        selected_score: &mut GpuBuffer<f32>,
-        scale: f32,
-    ) -> GpuResult<()> {
+        } = request;
         let n = {
             let inputs = SelectionInputs::new(state, adaptation, selected_index, selected_score);
             crate::routing::validate_selection_buffers(&inputs, scale)?
@@ -80,31 +66,24 @@ impl GpuAccelerator {
     /// only at the small sizes identified in `docs/ROUTING.md`.
     pub fn adjusted_argmax_single_block(
         &self,
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        selected_index: &mut GpuBuffer<u32>,
-        selected_score: &mut GpuBuffer<f32>,
-        scale: f32,
+        request: AdjustedSelectionRequest<'_>,
     ) -> GpuResult<()> {
-        self.finish_launch(self.adjusted_argmax_single_block_async(
-            state,
-            adaptation,
-            selected_index,
-            selected_score,
-            scale,
-        ))
+        self.finish_launch(self.adjusted_argmax_single_block_async(request))
     }
 
     /// Enqueue [`Self::adjusted_argmax_single_block`]; synchronize before using
     /// the buffers.
     pub fn adjusted_argmax_single_block_async(
         &self,
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        selected_index: &mut GpuBuffer<u32>,
-        selected_score: &mut GpuBuffer<f32>,
-        scale: f32,
+        request: AdjustedSelectionRequest<'_>,
     ) -> GpuResult<()> {
+        let AdjustedSelectionRequest {
+            state,
+            adaptation,
+            selected_index,
+            selected_score,
+            scale,
+        } = request;
         let inputs = SelectionInputs::new(state, adaptation, selected_index, selected_score);
         let n = crate::routing::validate_selection_buffers(&inputs, scale)?;
         let (func, stream) = self.routing_launch_parts("adjusted_argmax_single_block")?;

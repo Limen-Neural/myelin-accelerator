@@ -1,40 +1,26 @@
 use crate::gpu::accelerator::GpuAccelerator;
 use crate::gpu::error::GpuResult;
-use crate::gpu::memory::GpuBuffer;
-use crate::routing::{ROUTING_BLOCK_SIZE, RoutingScoreKind, RoutingShape, validate_top_k_buffers};
+use crate::routing::{
+    ROUTING_BLOCK_SIZE, RoutingShape, RoutingTopKRequest, validate_top_k_buffers,
+};
 use cust::launch;
 
 impl GpuAccelerator {
     /// Per-row top-k route indices (composable path), padded with `-1`.
-    pub fn routing_top_k(
-        &self,
-        scores: &GpuBuffer<f32>,
-        top_k_indices: &mut GpuBuffer<i32>,
-        n_nodes: usize,
-        n_routes: usize,
-        top_k: usize,
-        score_kind: RoutingScoreKind,
-    ) -> GpuResult<()> {
-        self.finish_launch(self.routing_top_k_async(
+    pub fn routing_top_k(&self, request: RoutingTopKRequest<'_>) -> GpuResult<()> {
+        self.finish_launch(self.routing_top_k_async(request))
+    }
+
+    /// Enqueue [`Self::routing_top_k`]; synchronize before using the buffers.
+    pub fn routing_top_k_async(&self, request: RoutingTopKRequest<'_>) -> GpuResult<()> {
+        let RoutingTopKRequest {
             scores,
             top_k_indices,
             n_nodes,
             n_routes,
             top_k,
             score_kind,
-        ))
-    }
-
-    /// Enqueue [`Self::routing_top_k`]; synchronize before using the buffers.
-    pub fn routing_top_k_async(
-        &self,
-        scores: &GpuBuffer<f32>,
-        top_k_indices: &mut GpuBuffer<i32>,
-        n_nodes: usize,
-        n_routes: usize,
-        top_k: usize,
-        score_kind: RoutingScoreKind,
-    ) -> GpuResult<()> {
+        } = request;
         let shape = RoutingShape::new(n_nodes, n_routes)?;
         let (nodes, routes, _) = validate_top_k_buffers(scores, top_k_indices, shape, top_k)?;
         if n_nodes == 0 {

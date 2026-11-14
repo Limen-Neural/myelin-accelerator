@@ -1,9 +1,7 @@
 use crate::gpu::accelerator::GpuAccelerator;
 use crate::gpu::error::GpuResult;
-use crate::gpu::memory::GpuBuffer;
 use crate::routing::{
-    FusedRoutingInputs, FusedRoutingOutputs, ROUTING_BLOCK_SIZE, RoutingParams,
-    validate_fused_buffers,
+    FusedRoutingInputs, FusedRoutingRequest, ROUTING_BLOCK_SIZE, validate_fused_buffers,
 };
 use cust::launch;
 
@@ -14,29 +12,20 @@ impl GpuAccelerator {
     /// Inputs are `n_nodes × n_routes` scores and `n_nodes` state/adaptation
     /// values. Partial buffers are held by the accelerator. The contract is
     /// documented in [`crate::routing`].
-    pub fn fused_routing_select(
-        &self,
-        scores: &GpuBuffer<f32>,
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        outputs: &mut FusedRoutingOutputs,
-        params: &RoutingParams,
-    ) -> GpuResult<()> {
-        self.finish_launch(
-            self.fused_routing_select_async(scores, state, adaptation, outputs, params),
-        )
+    pub fn fused_routing_select(&self, request: FusedRoutingRequest<'_>) -> GpuResult<()> {
+        self.finish_launch(self.fused_routing_select_async(request))
     }
 
     /// Enqueue [`Self::fused_routing_select`]; synchronize before using the
     /// buffers. An error after the first launch can leave that launch queued.
-    pub fn fused_routing_select_async(
-        &self,
-        scores: &GpuBuffer<f32>,
-        state: &GpuBuffer<f32>,
-        adaptation: &GpuBuffer<f32>,
-        outputs: &mut FusedRoutingOutputs,
-        params: &RoutingParams,
-    ) -> GpuResult<()> {
+    pub fn fused_routing_select_async(&self, request: FusedRoutingRequest<'_>) -> GpuResult<()> {
+        let FusedRoutingRequest {
+            scores,
+            state,
+            adaptation,
+            outputs,
+            params,
+        } = request;
         let inputs = FusedRoutingInputs::new(scores, state, adaptation);
         validate_fused_buffers(&inputs, outputs, params)?;
         let pass1 = self.routing_function("fused_routing_pass1")?;

@@ -8,9 +8,10 @@
 
 use myelin_accelerator::oracle::CaseRng;
 use myelin_accelerator::routing::{
-    AdjustedSelection, ENTROPY_ABS_TOL, FusedRoutingOutputs, MAX_ROUTING_TOP_K,
-    PROBABILITY_ABS_TOL, RoutingParams, RoutingReference, RoutingScoreKind, adjusted_argmax,
-    entropy_row, routing_reference,
+    AdjustedSelection, AdjustedSelectionRequest, ENTROPY_ABS_TOL, FusedRoutingOutputs,
+    FusedRoutingRequest, MAX_ROUTING_TOP_K, PROBABILITY_ABS_TOL, RoutingEntropyRequest,
+    RoutingParams, RoutingReference, RoutingScoreKind, RoutingSoftmaxRequest, RoutingTopKRequest,
+    adjusted_argmax, entropy_row, routing_reference,
 };
 use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
 
@@ -61,8 +62,14 @@ fn run_fused(acc: &GpuAccelerator, inputs: &Inputs, params: &RoutingParams) -> D
     let state = GpuBuffer::from_slice(&inputs.state).unwrap();
     let adaptation = GpuBuffer::from_slice(&inputs.adaptation).unwrap();
     let mut outputs = FusedRoutingOutputs::alloc(params, true).unwrap();
-    acc.fused_routing_select(&scores, &state, &adaptation, &mut outputs, params)
-        .unwrap();
+    acc.fused_routing_select(FusedRoutingRequest::new(
+        &scores,
+        &state,
+        &adaptation,
+        &mut outputs,
+        params,
+    ))
+    .unwrap();
     let summary = outputs.read_summary().unwrap();
     DeviceRun {
         top_k_indices: outputs.top_k_indices.to_vec().unwrap(),
@@ -125,12 +132,24 @@ fn select_both(
     let d_adaptation = GpuBuffer::from_slice(adaptation).unwrap();
     let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
     let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
-    acc.adjusted_argmax(&d_state, &d_adaptation, &mut index, &mut score, scale)
-        .unwrap();
+    acc.adjusted_argmax(AdjustedSelectionRequest::new(
+        &d_state,
+        &d_adaptation,
+        &mut index,
+        &mut score,
+        scale,
+    ))
+    .unwrap();
     let two_pass =
         AdjustedSelection::from_raw(index.to_vec().unwrap()[0], score.to_vec().unwrap()[0]);
-    acc.adjusted_argmax_single_block(&d_state, &d_adaptation, &mut index, &mut score, scale)
-        .unwrap();
+    acc.adjusted_argmax_single_block(AdjustedSelectionRequest::new(
+        &d_state,
+        &d_adaptation,
+        &mut index,
+        &mut score,
+        scale,
+    ))
+    .unwrap();
     let single =
         AdjustedSelection::from_raw(index.to_vec().unwrap()[0], score.to_vec().unwrap()[0]);
     (two_pass, single)
@@ -281,8 +300,14 @@ fn fused_without_probabilities_matches_with_probabilities() {
     let state = GpuBuffer::from_slice(&inputs.state).unwrap();
     let adaptation = GpuBuffer::from_slice(&inputs.adaptation).unwrap();
     let mut outputs = FusedRoutingOutputs::alloc(&p, false).unwrap();
-    acc.fused_routing_select(&scores, &state, &adaptation, &mut outputs, &p)
-        .unwrap();
+    acc.fused_routing_select(FusedRoutingRequest::new(
+        &scores,
+        &state,
+        &adaptation,
+        &mut outputs,
+        &p,
+    ))
+    .unwrap();
     let summary = outputs.read_summary().unwrap();
 
     assert_eq!(outputs.top_k_indices.to_vec().unwrap(), with.top_k_indices);
@@ -311,27 +336,39 @@ fn composable_path_matches_fused_results() {
         let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
         let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
 
-        acc.routing_softmax(&scores, &mut probabilities, n_nodes, n_routes, p.score_kind)
-            .unwrap();
-        acc.routing_top_k(
+        acc.routing_softmax(RoutingSoftmaxRequest::new(
+            &scores,
+            &mut probabilities,
+            n_nodes,
+            n_routes,
+            p.score_kind,
+        ))
+        .unwrap();
+        acc.routing_top_k(RoutingTopKRequest::new(
             &scores,
             &mut top_k_indices,
             n_nodes,
             n_routes,
             top_k,
             p.score_kind,
-        )
+        ))
         .unwrap();
-        acc.routing_entropy_reduce(
+        acc.routing_entropy_reduce(RoutingEntropyRequest::new(
             &probabilities,
             &mut entropy_sum,
             &mut entropy_max,
             n_nodes,
             n_routes,
-        )
+        ))
         .unwrap();
-        acc.adjusted_argmax(&state, &adaptation, &mut index, &mut score, SCALE)
-            .unwrap();
+        acc.adjusted_argmax(AdjustedSelectionRequest::new(
+            &state,
+            &adaptation,
+            &mut index,
+            &mut score,
+            SCALE,
+        ))
+        .unwrap();
 
         assert_eq!(top_k_indices.to_vec().unwrap(), fused.top_k_indices);
         assert_eq!(
@@ -376,13 +413,13 @@ fn composable_entropy_sanitizes_nonfinite_probabilities() {
     let mut entropy_sum = GpuBuffer::<f32>::alloc(1).unwrap();
     let mut entropy_max = GpuBuffer::<f32>::alloc(1).unwrap();
 
-    acc.routing_entropy_reduce(
+    acc.routing_entropy_reduce(RoutingEntropyRequest::new(
         &probs,
         &mut entropy_sum,
         &mut entropy_max,
         n_nodes,
         n_routes,
-    )
+    ))
     .unwrap();
 
     let row_entropy = |node: usize| {
@@ -472,8 +509,14 @@ fn scratch_grows_and_async_path_orders_launches() {
         let state = GpuBuffer::from_slice(&inputs.state).unwrap();
         let adaptation = GpuBuffer::from_slice(&inputs.adaptation).unwrap();
         let mut outputs = FusedRoutingOutputs::alloc(&p, false).unwrap();
-        acc.fused_routing_select_async(&scores, &state, &adaptation, &mut outputs, &p)
-            .unwrap();
+        acc.fused_routing_select_async(FusedRoutingRequest::new(
+            &scores,
+            &state,
+            &adaptation,
+            &mut outputs,
+            &p,
+        ))
+        .unwrap();
         acc.synchronize().unwrap();
         let expected =
             routing_reference(&inputs.scores, &inputs.state, &inputs.adaptation, &p).unwrap();
@@ -498,20 +541,46 @@ fn invalid_inputs_fail_before_launch() {
     let state = GpuBuffer::from_slice(&[0.0f32; 2]).unwrap();
     let mut outputs = FusedRoutingOutputs::alloc(&p, false).unwrap();
 
-    let result = acc.fused_routing_select(&short, &state, &state, &mut outputs, &p);
+    let result = acc.fused_routing_select(FusedRoutingRequest::new(
+        &short,
+        &state,
+        &state,
+        &mut outputs,
+        &p,
+    ));
     assert!(matches!(result, Err(GpuError::InvalidInput(_))));
-    let result = acc.fused_routing_select(&good, &short, &state, &mut outputs, &p);
+    let result = acc.fused_routing_select(FusedRoutingRequest::new(
+        &good,
+        &short,
+        &state,
+        &mut outputs,
+        &p,
+    ));
     assert!(matches!(result, Err(GpuError::InvalidInput(_))));
 
     let mut bad_k = p;
     bad_k.top_k = MAX_ROUTING_TOP_K + 1;
-    let result = acc.fused_routing_select(&good, &state, &state, &mut outputs, &bad_k);
+    let result = acc.fused_routing_select(FusedRoutingRequest::new(
+        &good,
+        &state,
+        &state,
+        &mut outputs,
+        &bad_k,
+    ));
     assert!(matches!(result, Err(GpuError::InvalidInput(_))));
 
     let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
     let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
-    let result = acc.adjusted_argmax(&state, &short, &mut index, &mut score, 1.0);
+    let result = acc.adjusted_argmax(AdjustedSelectionRequest::new(
+        &state, &short, &mut index, &mut score, 1.0,
+    ));
     assert!(matches!(result, Err(GpuError::InvalidInput(_))));
-    let result = acc.adjusted_argmax(&state, &state, &mut index, &mut score, f32::NAN);
+    let result = acc.adjusted_argmax(AdjustedSelectionRequest::new(
+        &state,
+        &state,
+        &mut index,
+        &mut score,
+        f32::NAN,
+    ));
     assert!(matches!(result, Err(GpuError::InvalidInput(_))));
 }

@@ -1,39 +1,25 @@
 use crate::gpu::accelerator::GpuAccelerator;
 use crate::gpu::error::GpuResult;
-use crate::gpu::memory::GpuBuffer;
 use crate::routing::{
-    ROUTING_BLOCK_SIZE, RoutingScoreKind, RoutingShape, validate_softmax_buffers,
+    ROUTING_BLOCK_SIZE, RoutingShape, RoutingSoftmaxRequest, validate_softmax_buffers,
 };
 use cust::launch;
 
 impl GpuAccelerator {
     /// Row-normalize a score matrix into `probabilities` (composable path).
-    pub fn routing_softmax(
-        &self,
-        scores: &GpuBuffer<f32>,
-        probabilities: &mut GpuBuffer<f32>,
-        n_nodes: usize,
-        n_routes: usize,
-        score_kind: RoutingScoreKind,
-    ) -> GpuResult<()> {
-        self.finish_launch(self.routing_softmax_async(
+    pub fn routing_softmax(&self, request: RoutingSoftmaxRequest<'_>) -> GpuResult<()> {
+        self.finish_launch(self.routing_softmax_async(request))
+    }
+
+    /// Enqueue [`Self::routing_softmax`]; synchronize before using the buffers.
+    pub fn routing_softmax_async(&self, request: RoutingSoftmaxRequest<'_>) -> GpuResult<()> {
+        let RoutingSoftmaxRequest {
             scores,
             probabilities,
             n_nodes,
             n_routes,
             score_kind,
-        ))
-    }
-
-    /// Enqueue [`Self::routing_softmax`]; synchronize before using the buffers.
-    pub fn routing_softmax_async(
-        &self,
-        scores: &GpuBuffer<f32>,
-        probabilities: &mut GpuBuffer<f32>,
-        n_nodes: usize,
-        n_routes: usize,
-        score_kind: RoutingScoreKind,
-    ) -> GpuResult<()> {
+        } = request;
         let shape = RoutingShape::new(n_nodes, n_routes)?;
         let (nodes, routes, elements) = validate_softmax_buffers(scores, probabilities, shape)?;
         if elements == 0 {

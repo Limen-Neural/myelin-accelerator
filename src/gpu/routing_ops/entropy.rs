@@ -1,39 +1,30 @@
 use crate::gpu::accelerator::GpuAccelerator;
 use crate::gpu::error::GpuResult;
-use crate::gpu::memory::GpuBuffer;
-use crate::routing::{ROUTING_BLOCK_SIZE, RoutingShape, validate_entropy_buffers};
+use crate::routing::{
+    ROUTING_BLOCK_SIZE, RoutingEntropyRequest, RoutingShape, validate_entropy_buffers,
+};
 use cust::launch;
 
 impl GpuAccelerator {
     /// Sum and maximum of per-node entropy from a probability matrix
     /// (composable path).
-    pub fn routing_entropy_reduce(
-        &self,
-        probabilities: &GpuBuffer<f32>,
-        entropy_sum: &mut GpuBuffer<f32>,
-        entropy_max: &mut GpuBuffer<f32>,
-        n_nodes: usize,
-        n_routes: usize,
-    ) -> GpuResult<()> {
-        self.finish_launch(self.routing_entropy_reduce_async(
-            probabilities,
-            entropy_sum,
-            entropy_max,
-            n_nodes,
-            n_routes,
-        ))
+    pub fn routing_entropy_reduce(&self, request: RoutingEntropyRequest<'_>) -> GpuResult<()> {
+        self.finish_launch(self.routing_entropy_reduce_async(request))
     }
 
     /// Enqueue [`Self::routing_entropy_reduce`]; synchronize before using the
     /// buffers. An error after the first launch can leave that launch queued.
     pub fn routing_entropy_reduce_async(
         &self,
-        probabilities: &GpuBuffer<f32>,
-        entropy_sum: &mut GpuBuffer<f32>,
-        entropy_max: &mut GpuBuffer<f32>,
-        n_nodes: usize,
-        n_routes: usize,
+        request: RoutingEntropyRequest<'_>,
     ) -> GpuResult<()> {
+        let RoutingEntropyRequest {
+            probabilities,
+            entropy_sum,
+            entropy_max,
+            n_nodes,
+            n_routes,
+        } = request;
         let shape = RoutingShape::new(n_nodes, n_routes)?;
         let (nodes, routes, _) =
             validate_entropy_buffers(probabilities, entropy_sum, entropy_max, shape)?;
