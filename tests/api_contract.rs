@@ -113,24 +113,18 @@ fn bitpacking_ternary_gemm_ref_matches_gemv_columns() {
 #[cfg(not(feature = "cuda"))]
 mod stub_contract {
     #[test]
-    fn routing_composable_wrappers_validate_then_report_unavailable() {
+    fn routing_matrix_wrappers_validate_then_report_unavailable() {
         use myelin_accelerator::routing::{
-            AdjustedSelectionRequest, RoutingEntropyRequest, RoutingScoreKind,
-            RoutingSoftmaxRequest, RoutingTopKRequest,
+            RoutingScoreKind, RoutingSoftmaxRequest, RoutingTopKRequest,
         };
         use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
 
         let acc = GpuAccelerator::new();
         let kind = RoutingScoreKind::Logits;
         let scores = GpuBuffer::<f32>::alloc(4).unwrap();
-        let state = GpuBuffer::<f32>::alloc(2).unwrap();
         let short = GpuBuffer::<f32>::alloc(1).unwrap();
         let mut probabilities = GpuBuffer::<f32>::alloc(4).unwrap();
         let mut top_k = GpuBuffer::<i32>::alloc(2).unwrap();
-        let mut sum = GpuBuffer::<f32>::alloc(1).unwrap();
-        let mut max = GpuBuffer::<f32>::alloc(1).unwrap();
-        let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
-        let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
 
         let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
         let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
@@ -165,6 +159,25 @@ mod stub_contract {
             top_k: 9,
             score_kind: kind,
         })));
+    }
+
+    #[test]
+    fn routing_reduce_selection_wrappers_validate_then_report_unavailable() {
+        use myelin_accelerator::routing::{AdjustedSelectionRequest, RoutingEntropyRequest};
+        use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
+
+        let acc = GpuAccelerator::new();
+        let probabilities = GpuBuffer::<f32>::alloc(4).unwrap();
+        let short = GpuBuffer::<f32>::alloc(1).unwrap();
+        let state = GpuBuffer::<f32>::alloc(2).unwrap();
+        let mut sum = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut max = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
+        let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
+
+        let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
+        let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
+
         assert!(unavailable(acc.routing_entropy_reduce(
             RoutingEntropyRequest {
                 probabilities: &probabilities,
