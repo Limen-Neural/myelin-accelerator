@@ -162,18 +162,15 @@ mod stub_contract {
     }
 
     #[test]
-    fn routing_reduce_selection_wrappers_validate_then_report_unavailable() {
-        use myelin_accelerator::routing::{AdjustedSelectionRequest, RoutingEntropyRequest};
+    fn routing_entropy_wrapper_validates_then_reports_unavailable() {
+        use myelin_accelerator::routing::RoutingEntropyRequest;
         use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
 
         let acc = GpuAccelerator::new();
         let probabilities = GpuBuffer::<f32>::alloc(4).unwrap();
         let short = GpuBuffer::<f32>::alloc(1).unwrap();
-        let state = GpuBuffer::<f32>::alloc(2).unwrap();
         let mut sum = GpuBuffer::<f32>::alloc(1).unwrap();
         let mut max = GpuBuffer::<f32>::alloc(1).unwrap();
-        let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
-        let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
 
         let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
         let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
@@ -194,6 +191,22 @@ mod stub_contract {
             n_nodes: 2,
             n_routes: 2,
         })));
+    }
+
+    #[test]
+    fn routing_adjusted_selection_wrappers_validate_then_report_unavailable() {
+        use myelin_accelerator::routing::AdjustedSelectionRequest;
+        use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
+
+        let acc = GpuAccelerator::new();
+        let state = GpuBuffer::<f32>::alloc(2).unwrap();
+        let short = GpuBuffer::<f32>::alloc(1).unwrap();
+        let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
+        let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
+
+        let unavailable = |r: Result<(), GpuError>| matches!(r, Err(GpuError::Unavailable { .. }));
+        let invalid = |r: Result<(), GpuError>| matches!(r, Err(GpuError::InvalidInput(_)));
+
         assert!(unavailable(acc.adjusted_argmax(AdjustedSelectionRequest {
             state: &state,
             adaptation: &state,
@@ -339,12 +352,15 @@ mod stub_contract {
     /// Zero-length allocation still succeeds and ordinary allocation still
     /// yields `T::default()` with unchanged upload/`to_vec` behavior (GH #48).
     #[test]
-    fn buffer_alloc_zero_and_ordinary_unchanged() {
+    fn buffer_alloc_zero_is_empty() {
         let empty = GpuBuffer::<u64>::alloc(0).expect("alloc(0) must succeed");
         assert_eq!(empty.len(), 0);
         assert!(empty.is_empty());
         assert!(empty.to_vec().unwrap().is_empty());
+    }
 
+    #[test]
+    fn buffer_alloc_ordinary_roundtrip_unchanged() {
         let buf = GpuBuffer::<u64>::alloc(4).expect("ordinary alloc must succeed");
         assert_eq!(buf.to_vec().unwrap(), vec![0u64; 4]);
 
@@ -354,12 +370,17 @@ mod stub_contract {
     }
 
     #[test]
-    fn accelerator_construction() {
+    fn accelerator_construction_reports_cpu_fallback() {
         let acc = GpuAccelerator::new();
         assert!(!acc.is_ready());
         assert_eq!(acc.selected_backend(), Backend::Cpu);
         let fb = acc.fallback().expect("stub fallback record");
         assert_eq!(fb.reason, FallbackReason::CudaFeatureNotBuilt);
+    }
+
+    #[test]
+    fn accelerator_construction_rejects_gpu_operations() {
+        let acc = GpuAccelerator::new();
         assert!(acc.kernels().is_err());
         assert!(acc.synchronize().is_err());
     }
@@ -370,6 +391,11 @@ mod stub_contract {
         assert!(!report.cuda_built);
         assert!(!report.runtime_available);
         assert!(!report.device_available);
+    }
+
+    #[test]
+    fn probe_capabilities_reports_no_compute_or_kernels() {
+        let report = probe_capabilities();
         assert!(report.compute_capability.is_none());
         assert!(!report.kernels.compiled);
     }
@@ -381,6 +407,12 @@ mod stub_contract {
         let fb = report.fallback.as_ref().expect("not-built fallback");
         assert_eq!(fb.reason, FallbackReason::CudaFeatureNotBuilt);
         assert_eq!(fb.reason.code(), "cuda_feature_not_built");
+    }
+
+    #[test]
+    fn probe_capabilities_fallback_record_is_portable() {
+        let report = probe_capabilities();
+        let fb = report.fallback.as_ref().expect("not-built fallback");
         assert_eq!(fb.selected_backend, Backend::Cpu);
         assert!(!fb.detail.contains("/home/"));
     }
