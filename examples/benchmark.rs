@@ -775,120 +775,132 @@ fn bench_routing_matrix_shapes(
     config: &Config,
     results: &mut Vec<Capture>,
 ) {
+    for &(n_nodes, n_routes, top_k) in ROUTING_BENCH_SHAPES {
+        bench_routing_shape(acc, config, results, n_nodes, n_routes, top_k);
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn bench_routing_shape(
+    acc: &myelin_accelerator::GpuAccelerator,
+    config: &Config,
+    results: &mut Vec<Capture>,
+    n_nodes: usize,
+    n_routes: usize,
+    top_k: usize,
+) {
     use myelin_accelerator::GpuBuffer;
     use myelin_accelerator::routing::{
         FusedRoutingOutputs, RoutingParams, RoutingScoreKind, analytical,
     };
 
-    for &(n_nodes, n_routes, top_k) in ROUTING_BENCH_SHAPES {
-        let params = RoutingParams {
-            n_nodes,
-            n_routes,
-            top_k,
-            score_kind: RoutingScoreKind::Logits,
-            adaptation_scale: ROUTING_BENCH_SCALE,
-        };
-        let scores =
-            GpuBuffer::from_slice(&routing_bench_values(n_nodes * n_routes, 42, 8.0)).unwrap();
-        let state = GpuBuffer::from_slice(&routing_bench_values(n_nodes, 43, 4.0)).unwrap();
-        let adaptation = GpuBuffer::from_slice(&routing_bench_values(n_nodes, 44, 1.0)).unwrap();
-        let dims = [
-            ("n_nodes", n_nodes as i64),
-            ("n_routes", n_routes as i64),
-            ("top_k", top_k as i64),
-        ];
+    let params = RoutingParams {
+        n_nodes,
+        n_routes,
+        top_k,
+        score_kind: RoutingScoreKind::Logits,
+        adaptation_scale: ROUTING_BENCH_SCALE,
+    };
+    let scores = GpuBuffer::from_slice(&routing_bench_values(n_nodes * n_routes, 42, 8.0)).unwrap();
+    let state = GpuBuffer::from_slice(&routing_bench_values(n_nodes, 43, 4.0)).unwrap();
+    let adaptation = GpuBuffer::from_slice(&routing_bench_values(n_nodes, 44, 1.0)).unwrap();
+    let dims = [
+        ("n_nodes", n_nodes as i64),
+        ("n_routes", n_routes as i64),
+        ("top_k", top_k as i64),
+    ];
 
-        // Analytical figures are printed apart from the measured rows below.
-        let requested_composable = analytical::composable(n_nodes, n_routes, top_k);
-        let requested_fused = analytical::fused(n_nodes, n_routes, top_k);
-        println!(
-            "[analytical, not measured] {n_nodes}x{n_routes} k={top_k}:              composable {} requested bytes / {} launches; fused {} / {}",
-            requested_composable.bytes_total(),
-            requested_composable.launches,
-            requested_fused.bytes_total(),
-            requested_fused.launches,
-        );
+    // Analytical figures are printed apart from the measured rows below.
+    let requested_composable = analytical::composable(n_nodes, n_routes, top_k);
+    let requested_fused = analytical::fused(n_nodes, n_routes, top_k);
+    println!(
+        "[analytical, not measured] {n_nodes}x{n_routes} k={top_k}: \
+         composable {} requested bytes / {} launches; fused {} / {}",
+        requested_composable.bytes_total(),
+        requested_composable.launches,
+        requested_fused.bytes_total(),
+        requested_fused.launches,
+    );
 
-        let mut outputs = FusedRoutingOutputs::alloc(&params, false).unwrap();
-        results.push(capture(
-            &format!("routing_fused_{n_nodes}x{n_routes}_k{top_k}"),
-            "routing-fused",
-            &dims,
-            Some(42),
-            config.warmup,
-            config.iterations,
-            || {
-                acc.fused_routing_select(&scores, &state, &adaptation, &mut outputs, &params)
-                    .unwrap();
-            },
-        ));
+    let mut outputs = FusedRoutingOutputs::alloc(&params, false).unwrap();
+    results.push(capture(
+        &format!("routing_fused_{n_nodes}x{n_routes}_k{top_k}"),
+        "routing-fused",
+        &dims,
+        Some(42),
+        config.warmup,
+        config.iterations,
+        || {
+            acc.fused_routing_select(&scores, &state, &adaptation, &mut outputs, &params)
+                .unwrap();
+        },
+    ));
 
-        let mut outputs = FusedRoutingOutputs::alloc(&params, true).unwrap();
-        results.push(capture(
-            &format!("routing_fused_probabilities_{n_nodes}x{n_routes}_k{top_k}"),
-            "routing-fused-probabilities",
-            &dims,
-            Some(42),
-            config.warmup,
-            config.iterations,
-            || {
-                acc.fused_routing_select(&scores, &state, &adaptation, &mut outputs, &params)
-                    .unwrap();
-            },
-        ));
+    let mut outputs = FusedRoutingOutputs::alloc(&params, true).unwrap();
+    results.push(capture(
+        &format!("routing_fused_probabilities_{n_nodes}x{n_routes}_k{top_k}"),
+        "routing-fused-probabilities",
+        &dims,
+        Some(42),
+        config.warmup,
+        config.iterations,
+        || {
+            acc.fused_routing_select(&scores, &state, &adaptation, &mut outputs, &params)
+                .unwrap();
+        },
+    ));
 
-        let mut probabilities = GpuBuffer::<f32>::alloc(n_nodes * n_routes).unwrap();
-        let mut top_k_indices = GpuBuffer::<i32>::alloc(n_nodes * top_k).unwrap();
-        let mut entropy_sum = GpuBuffer::<f32>::alloc(1).unwrap();
-        let mut entropy_max = GpuBuffer::<f32>::alloc(1).unwrap();
-        let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
-        let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
-        results.push(capture(
-            &format!("routing_composable_{n_nodes}x{n_routes}_k{top_k}"),
-            "routing-composable",
-            &dims,
-            Some(42),
-            config.warmup,
-            config.iterations,
-            || {
-                // Queue all six launches and wait once, like the fused path.
-                acc.routing_softmax_async(
-                    &scores,
-                    &mut probabilities,
-                    n_nodes,
-                    n_routes,
-                    params.score_kind,
-                )
-                .unwrap();
-                acc.routing_top_k_async(
-                    &scores,
-                    &mut top_k_indices,
-                    n_nodes,
-                    n_routes,
-                    top_k,
-                    params.score_kind,
-                )
-                .unwrap();
-                acc.routing_entropy_reduce_async(
-                    &probabilities,
-                    &mut entropy_sum,
-                    &mut entropy_max,
-                    n_nodes,
-                    n_routes,
-                )
-                .unwrap();
-                acc.adjusted_argmax_async(
-                    &state,
-                    &adaptation,
-                    &mut index,
-                    &mut score,
-                    ROUTING_BENCH_SCALE,
-                )
-                .unwrap();
-                acc.synchronize().unwrap();
-            },
-        ));
-    }
+    let mut probabilities = GpuBuffer::<f32>::alloc(n_nodes * n_routes).unwrap();
+    let mut top_k_indices = GpuBuffer::<i32>::alloc(n_nodes * top_k).unwrap();
+    let mut entropy_sum = GpuBuffer::<f32>::alloc(1).unwrap();
+    let mut entropy_max = GpuBuffer::<f32>::alloc(1).unwrap();
+    let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
+    let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
+    results.push(capture(
+        &format!("routing_composable_{n_nodes}x{n_routes}_k{top_k}"),
+        "routing-composable",
+        &dims,
+        Some(42),
+        config.warmup,
+        config.iterations,
+        || {
+            // Queue all six launches and wait once, like the fused path.
+            acc.routing_softmax_async(
+                &scores,
+                &mut probabilities,
+                n_nodes,
+                n_routes,
+                params.score_kind,
+            )
+            .unwrap();
+            acc.routing_top_k_async(
+                &scores,
+                &mut top_k_indices,
+                n_nodes,
+                n_routes,
+                top_k,
+                params.score_kind,
+            )
+            .unwrap();
+            acc.routing_entropy_reduce_async(
+                &probabilities,
+                &mut entropy_sum,
+                &mut entropy_max,
+                n_nodes,
+                n_routes,
+            )
+            .unwrap();
+            acc.adjusted_argmax_async(
+                &state,
+                &adaptation,
+                &mut index,
+                &mut score,
+                ROUTING_BENCH_SCALE,
+            )
+            .unwrap();
+            acc.synchronize().unwrap();
+        },
+    ));
 }
 
 #[cfg(feature = "cuda")]

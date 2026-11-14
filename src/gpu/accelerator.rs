@@ -13,7 +13,7 @@ use crate::gpu::kernel::KernelModule;
 use crate::gpu::memory::GpuBuffer;
 use crate::routing::{
     FusedRoutingOutputs, ROUTING_BLOCK_SIZE, RoutingParams, RoutingScoreKind, expect_min_len,
-    kernel_dimension, matrix_elements, validate_fused_buffers, validate_scale, validate_top_k,
+    kernel_dimension, matrix_elements, validate_fused_buffers, validate_top_k,
 };
 use cust::launch;
 use cust::stream::{Stream, StreamFlags};
