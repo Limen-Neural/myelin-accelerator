@@ -13,6 +13,7 @@ int myelin_launch_gif_step_weighted_f16(
     unsigned int grid_x,
     unsigned int block_x,
     unsigned int shared_bytes,
+    unsigned int shared_mem_limit,
     void* membrane,
     void* adaptation,
     void* weights,

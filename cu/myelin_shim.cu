@@ -10,6 +10,7 @@ extern "C" int myelin_launch_gif_step_weighted_f16(
     unsigned int grid_x,
     unsigned int block_x,
     unsigned int shared_bytes,
+    unsigned int shared_mem_limit,
     void* membrane,
     void* adaptation,
     void* weights,
@@ -33,7 +34,7 @@ extern "C" int myelin_launch_gif_step_weighted_f16(
         cudaError_t attr_status = cudaFuncSetAttribute(
             gif_step_weighted_f16,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
-            static_cast<int>(shared_bytes));
+            static_cast<int>(shared_mem_limit));
         if (attr_status != cudaSuccess) {
             return static_cast<int>(attr_status);
         }

@@ -22,6 +22,7 @@ pub(crate) enum SynapsePrecision {
 pub(crate) struct TemporalState {
     neuron_count: usize,
     n_inputs: usize,
+    shared_mem_limit: u32,
     membrane: GpuBuffer<f32>,
     refractory: GpuBuffer<u32>,
     spikes_out: GpuBuffer<u32>,
@@ -312,6 +313,7 @@ impl GpuAccelerator {
             grid_x: grid,
             block_x: TEMPORAL_BLOCK_SIZE,
             shared_bytes,
+            shared_mem_limit: state.shared_mem_limit,
             buffers: ffi::GifF16Buffers {
                 membrane: state.membrane.as_device_ptr(),
                 adaptation: state.adaptation.as_device_ptr(),
@@ -402,6 +404,7 @@ impl GpuAccelerator {
         Ok(TemporalState {
             neuron_count,
             n_inputs,
+            shared_mem_limit: Self::temporal_shared_mem_limit()?,
             membrane: GpuBuffer::<f32>::alloc(neuron_count)?,
             refractory: GpuBuffer::<u32>::alloc(neuron_count)?,
             spikes_out: GpuBuffer::<u32>::alloc(neuron_count)?,
