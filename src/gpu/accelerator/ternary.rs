@@ -173,15 +173,13 @@ impl GpuAccelerator {
         group_size: i32,
         skip_zeros: bool,
     ) -> GpuResult<()> {
-        if m < 0 || k < 0 || n < 0 {
-            return Err(GpuError::invalid_input(format!(
-                "ternary_gemm: m, k, n must be >= 0, got m={m} k={k} n={n}"
-            )));
-        }
-        if group_size <= 0 {
-            return Err(GpuError::invalid_input(format!(
-                "ternary_gemm: group_size must be > 0, got {group_size}"
-            )));
+        if m < 0 || k < 0 || n < 0 || group_size <= 0 {
+            let msg = if m < 0 || k < 0 || n < 0 {
+                format!("ternary_gemm: m, k, n must be >= 0, got m={m} k={k} n={n}")
+            } else {
+                format!("ternary_gemm: group_size must be > 0, got {group_size}")
+            };
+            return Err(GpuError::invalid_input(msg));
         }
 
         let m_u = m as usize;
