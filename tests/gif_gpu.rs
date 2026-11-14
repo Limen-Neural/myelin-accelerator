@@ -21,8 +21,8 @@ fn gif_step_weighted_tick_matches_host_ref() {
 
     let mut weights = vec![0.0f32; n_neurons * n_inputs];
     let mut input = vec![0.0f32; n_inputs];
-    for i in 0..n_inputs {
-        input[i] = if i % 3 == 0 { 1.0 } else { 0.0 };
+    for (i, value) in input.iter_mut().enumerate() {
+        *value = if i % 3 == 0 { 1.0 } else { 0.0 };
     }
     for i in 0..n_neurons {
         weights[i * n_inputs + (i % n_inputs)] = 1.0;
