@@ -775,9 +775,26 @@ fn bench_routing_matrix_shapes(
     config: &Config,
     results: &mut Vec<Capture>,
 ) {
+    use myelin_accelerator::routing::{RoutingParams, RoutingScoreKind};
+
     for &(n_nodes, n_routes, top_k) in ROUTING_BENCH_SHAPES {
-        bench_routing_shape(acc, config, results, n_nodes, n_routes, top_k);
+        let params = RoutingParams {
+            n_nodes,
+            n_routes,
+            top_k,
+            score_kind: RoutingScoreKind::Logits,
+            adaptation_scale: ROUTING_BENCH_SCALE,
+        };
+        bench_routing_shape(acc, config, results, &params);
     }
+}
+
+#[cfg(feature = "cuda")]
+struct RoutingBenchInputs<'a> {
+    scores: &'a myelin_accelerator::GpuBuffer<f32>,
+    state: &'a myelin_accelerator::GpuBuffer<f32>,
+    adaptation: &'a myelin_accelerator::GpuBuffer<f32>,
+    params: &'a myelin_accelerator::routing::RoutingParams,
 }
 
 #[cfg(feature = "cuda")]
@@ -785,20 +802,14 @@ fn bench_routing_shape(
     acc: &myelin_accelerator::GpuAccelerator,
     config: &Config,
     results: &mut Vec<Capture>,
-    n_nodes: usize,
-    n_routes: usize,
-    top_k: usize,
+    params: &myelin_accelerator::routing::RoutingParams,
 ) {
     use myelin_accelerator::GpuBuffer;
-    use myelin_accelerator::routing::{RoutingParams, RoutingScoreKind, analytical};
+    use myelin_accelerator::routing::analytical;
 
-    let params = RoutingParams {
-        n_nodes,
-        n_routes,
-        top_k,
-        score_kind: RoutingScoreKind::Logits,
-        adaptation_scale: ROUTING_BENCH_SCALE,
-    };
+    let n_nodes = params.n_nodes;
+    let n_routes = params.n_routes;
+    let top_k = params.top_k;
     let scores = GpuBuffer::from_slice(&routing_bench_values(n_nodes * n_routes, 42, 8.0)).unwrap();
     let state = GpuBuffer::from_slice(&routing_bench_values(n_nodes, 43, 4.0)).unwrap();
     let adaptation = GpuBuffer::from_slice(&routing_bench_values(n_nodes, 44, 1.0)).unwrap();
@@ -807,6 +818,12 @@ fn bench_routing_shape(
         ("n_routes", n_routes as i64),
         ("top_k", top_k as i64),
     ];
+    let inputs = RoutingBenchInputs {
+        scores: &scores,
+        state: &state,
+        adaptation: &adaptation,
+        params,
+    };
 
     // Analytical figures are printed apart from the measured rows below.
     let requested_composable = analytical::composable(n_nodes, n_routes, top_k);
@@ -820,35 +837,9 @@ fn bench_routing_shape(
         requested_fused.launches,
     );
 
-    results.push(capture_fused_routing(
-        acc,
-        config,
-        &dims,
-        &scores,
-        &state,
-        &adaptation,
-        &params,
-        false,
-    ));
-    results.push(capture_fused_routing(
-        acc,
-        config,
-        &dims,
-        &scores,
-        &state,
-        &adaptation,
-        &params,
-        true,
-    ));
-    results.push(capture_composable_routing(
-        acc,
-        config,
-        &dims,
-        &scores,
-        &state,
-        &adaptation,
-        &params,
-    ));
+    results.push(capture_fused_routing(acc, config, &dims, &inputs, false));
+    results.push(capture_fused_routing(acc, config, &dims, &inputs, true));
+    results.push(capture_composable_routing(acc, config, &dims, &inputs));
 }
 
 #[cfg(feature = "cuda")]
@@ -856,14 +847,12 @@ fn capture_fused_routing(
     acc: &myelin_accelerator::GpuAccelerator,
     config: &Config,
     dims: &[(&str, i64)],
-    scores: &myelin_accelerator::GpuBuffer<f32>,
-    state: &myelin_accelerator::GpuBuffer<f32>,
-    adaptation: &myelin_accelerator::GpuBuffer<f32>,
-    params: &myelin_accelerator::routing::RoutingParams,
+    inputs: &RoutingBenchInputs<'_>,
     with_probabilities: bool,
 ) -> Capture {
     use myelin_accelerator::routing::FusedRoutingOutputs;
 
+    let params = inputs.params;
     let mut outputs = FusedRoutingOutputs::alloc(params, with_probabilities).unwrap();
     let (name, label) = if with_probabilities {
         (
@@ -891,9 +880,9 @@ fn capture_fused_routing(
         config.iterations,
         || {
             acc.fused_routing_select(myelin_accelerator::routing::FusedRoutingRequest {
-                scores,
-                state,
-                adaptation,
+                scores: inputs.scores,
+                state: inputs.state,
+                adaptation: inputs.adaptation,
                 outputs: &mut outputs,
                 params,
             })
@@ -907,16 +896,17 @@ fn capture_composable_routing(
     acc: &myelin_accelerator::GpuAccelerator,
     config: &Config,
     dims: &[(&str, i64)],
-    scores: &myelin_accelerator::GpuBuffer<f32>,
-    state: &myelin_accelerator::GpuBuffer<f32>,
-    adaptation: &myelin_accelerator::GpuBuffer<f32>,
-    params: &myelin_accelerator::routing::RoutingParams,
+    inputs: &RoutingBenchInputs<'_>,
 ) -> Capture {
     use myelin_accelerator::GpuBuffer;
     use myelin_accelerator::routing::{
         AdjustedSelectionRequest, RoutingEntropyRequest, RoutingSoftmaxRequest, RoutingTopKRequest,
     };
 
+    let params = inputs.params;
+    let scores = inputs.scores;
+    let state = inputs.state;
+    let adaptation = inputs.adaptation;
     let n_nodes = params.n_nodes;
     let n_routes = params.n_routes;
     let top_k = params.top_k;
@@ -987,42 +977,35 @@ fn bench_selection_paths(
         let adaptation = GpuBuffer::from_slice(&routing_bench_values(n, 46, 1.0)).unwrap();
         let mut index = GpuBuffer::<u32>::alloc(1).unwrap();
         let mut score = GpuBuffer::<f32>::alloc(1).unwrap();
-        results.push(capture(
-            &format!("adjusted_argmax_two_pass_{n}"),
-            "adjusted-argmax-two-pass",
-            &[("n", n as i64)],
-            Some(45),
-            config.warmup,
-            config.iterations,
-            || {
-                acc.adjusted_argmax(AdjustedSelectionRequest {
-                    state: &state,
-                    adaptation: &adaptation,
-                    selected_index: &mut index,
-                    selected_score: &mut score,
-                    scale: ROUTING_BENCH_SCALE,
-                })
-                .unwrap();
-            },
-        ));
-        results.push(capture(
-            &format!("adjusted_argmax_single_block_{n}"),
-            "adjusted-argmax-single-block",
-            &[("n", n as i64)],
-            Some(45),
-            config.warmup,
-            config.iterations,
-            || {
-                acc.adjusted_argmax_single_block(AdjustedSelectionRequest {
-                    state: &state,
-                    adaptation: &adaptation,
-                    selected_index: &mut index,
-                    selected_score: &mut score,
-                    scale: ROUTING_BENCH_SCALE,
-                })
-                .unwrap();
-            },
-        ));
+        for (suffix, single_block) in [("two_pass", false), ("single_block", true)] {
+            let label = if single_block {
+                "adjusted-argmax-single-block"
+            } else {
+                "adjusted-argmax-two-pass"
+            };
+            results.push(capture(
+                &format!("adjusted_argmax_{suffix}_{n}"),
+                label,
+                &[("n", n as i64)],
+                Some(45),
+                config.warmup,
+                config.iterations,
+                || {
+                    let request = AdjustedSelectionRequest {
+                        state: &state,
+                        adaptation: &adaptation,
+                        selected_index: &mut index,
+                        selected_score: &mut score,
+                        scale: ROUTING_BENCH_SCALE,
+                    };
+                    if single_block {
+                        acc.adjusted_argmax_single_block(request).unwrap();
+                    } else {
+                        acc.adjusted_argmax(request).unwrap();
+                    }
+                },
+            ));
+        }
     }
 }
 
