@@ -23,11 +23,10 @@ impl GpuAccelerator {
         } = request;
         let shape = RoutingShape::new(n_nodes, n_routes)?;
         let (nodes, routes, elements) = validate_softmax_buffers(scores, probabilities, shape)?;
+        let (func, stream) = self.routing_launch_parts("routing_softmax")?;
         if elements == 0 {
             return Ok(());
         }
-
-        let (func, stream) = self.routing_launch_parts("routing_softmax")?;
         let grid = Self::routing_grid(n_nodes);
         // SAFETY: the entry is `(const float*, float*, int, int, int)`. Both
         // buffers hold at least n_nodes * n_routes elements, the kernel guards

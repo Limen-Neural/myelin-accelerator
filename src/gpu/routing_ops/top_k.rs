@@ -23,11 +23,10 @@ impl GpuAccelerator {
         } = request;
         let shape = RoutingShape::new(n_nodes, n_routes)?;
         let (nodes, routes, _) = validate_top_k_buffers(scores, top_k_indices, shape, top_k)?;
+        let (func, stream) = self.routing_launch_parts("routing_top_k")?;
         if n_nodes == 0 {
             return Ok(());
         }
-
-        let (func, stream) = self.routing_launch_parts("routing_top_k")?;
         let grid = Self::routing_grid(n_nodes);
         // SAFETY: the entry is `(const float*, int*, int, int, int, int)`.
         // Buffer lengths were checked above, top_k is at most
