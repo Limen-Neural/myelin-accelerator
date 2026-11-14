@@ -9,7 +9,9 @@ use crate::routing::{
     RoutingShape, SelectionInputs, validate_entropy_buffers, validate_fused_buffers,
     validate_softmax_buffers, validate_top_k_buffers,
 };
+use cust::function::Function;
 use cust::launch;
+use cust::stream::Stream;
 
 /// Per-block partial buffers shared by the multi-pass routing launches.
 pub(crate) struct RoutingScratch {
@@ -49,13 +51,11 @@ impl GpuAccelerator {
     ) -> GpuResult<()> {
         let shape = RoutingShape::new(n_nodes, n_routes)?;
         let (nodes, routes, elements) = validate_softmax_buffers(scores, probabilities, shape)?;
-        let kernels = self.kernels()?;
         if elements == 0 {
             return Ok(());
         }
 
-        let func = kernels.get_function("routing_softmax")?;
-        let stream = self.ready_stream()?;
+        let (func, stream) = self.routing_launch_parts("routing_softmax")?;
         let grid = Self::routing_grid(n_nodes);
         // SAFETY: the entry is `(const float*, float*, int, int, int)`. Both
         // buffers hold at least n_nodes * n_routes elements, the kernel guards
@@ -105,13 +105,11 @@ impl GpuAccelerator {
     ) -> GpuResult<()> {
         let shape = RoutingShape::new(n_nodes, n_routes)?;
         let (nodes, routes, _) = validate_top_k_buffers(scores, top_k_indices, shape, top_k)?;
-        let kernels = self.kernels()?;
         if n_nodes == 0 {
             return Ok(());
         }
 
-        let func = kernels.get_function("routing_top_k")?;
-        let stream = self.ready_stream()?;
+        let (func, stream) = self.routing_launch_parts("routing_top_k")?;
         let grid = Self::routing_grid(n_nodes);
         // SAFETY: the entry is `(const float*, int*, int, int, int, int)`.
         // Buffer lengths were checked above, top_k is at most
@@ -162,42 +160,39 @@ impl GpuAccelerator {
         let shape = RoutingShape::new(n_nodes, n_routes)?;
         let (nodes, routes, _) =
             validate_entropy_buffers(probabilities, entropy_sum, entropy_max, shape)?;
-        let kernels = self.kernels()?;
         if n_nodes == 0 {
             self.zero_output_prefix(entropy_sum, 1)?;
             return self.zero_output_prefix(entropy_max, 1);
         }
 
-        let pass1 = kernels.get_function("routing_entropy_reduce_pass1")?;
-        let pass2 = kernels.get_function("latent_reduce_pass2")?;
+        let pass1 = self.routing_function("routing_entropy_reduce_pass1")?;
+        let pass2 = self.routing_function("latent_reduce_pass2")?;
         let grid = Self::routing_grid(n_nodes);
-        self.ensure_routing_scratch(grid as usize)?;
-        let scratch = self.routing_scratch.borrow();
-        let scratch = scratch.as_ref().ok_or_else(|| self.unavailable_error())?;
-        let stream = self.ready_stream()?;
-        // SAFETY: pass 1 is `(const float*, float*, float*, int, int)` and
-        // writes grid partials; scratch holds at least grid elements. Pass 2 is
-        // `(const float*, const float*, float*, float*, int)` and writes one
-        // scalar to each output. Both launches share this stream, so pass 2
-        // reads completed partials. Scratch lives on `self`.
-        unsafe {
-            launch!(pass1<<<grid, ROUTING_BLOCK_SIZE as u32, 0, stream>>>(
-                probabilities.as_device_ptr(),
-                scratch.entropy_sum.as_device_ptr(),
-                scratch.entropy_max.as_device_ptr(),
-                nodes,
-                routes,
-            ))
-            .map_err(|e| Self::launch_error("routing_entropy_reduce_pass1", e))?;
-            launch!(pass2<<<1u32, ROUTING_BLOCK_SIZE as u32, 0, stream>>>(
-                scratch.entropy_sum.as_device_ptr(),
-                scratch.entropy_max.as_device_ptr(),
-                entropy_sum.as_device_ptr(),
-                entropy_max.as_device_ptr(),
-                grid as i32,
-            ))
-        }
-        .map_err(|e| Self::launch_error("latent_reduce_pass2", e))
+        self.with_routing_scratch(grid as usize, move |scratch, stream| {
+            // SAFETY: pass 1 is `(const float*, float*, float*, int, int)` and
+            // writes grid partials; scratch holds at least grid elements. Pass 2 is
+            // `(const float*, const float*, float*, float*, int)` and writes one
+            // scalar to each output. Both launches share this stream, so pass 2
+            // reads completed partials. Scratch lives on `self`.
+            unsafe {
+                launch!(pass1<<<grid, ROUTING_BLOCK_SIZE as u32, 0, stream>>>(
+                    probabilities.as_device_ptr(),
+                    scratch.entropy_sum.as_device_ptr(),
+                    scratch.entropy_max.as_device_ptr(),
+                    nodes,
+                    routes,
+                ))
+                .map_err(|e| Self::launch_error("routing_entropy_reduce_pass1", e))?;
+                launch!(pass2<<<1u32, ROUTING_BLOCK_SIZE as u32, 0, stream>>>(
+                    scratch.entropy_sum.as_device_ptr(),
+                    scratch.entropy_max.as_device_ptr(),
+                    entropy_sum.as_device_ptr(),
+                    entropy_max.as_device_ptr(),
+                    grid as i32,
+                ))
+            }
+            .map_err(|e| Self::launch_error("latent_reduce_pass2", e))
+        })
     }
 
     /// Select the node with the highest `state - scale * adaptation`, using a
@@ -232,48 +227,47 @@ impl GpuAccelerator {
         selected_score: &mut GpuBuffer<f32>,
         scale: f32,
     ) -> GpuResult<()> {
-        let inputs = SelectionInputs {
-            state,
-            adaptation,
-            selected_index: &*selected_index,
-            selected_score: &*selected_score,
+        let n = {
+            let inputs = SelectionInputs {
+                state,
+                adaptation,
+                selected_index: &*selected_index,
+                selected_score: &*selected_score,
+            };
+            crate::routing::validate_selection_buffers(&inputs, scale)?
         };
-        let n = crate::routing::validate_selection_buffers(&inputs, scale)?;
-        let kernels = self.kernels()?;
-        let pass1 = kernels.get_function("adjusted_argmax_pass1")?;
-        let pass2 = kernels.get_function("indexed_argmax_reduce_pass2")?;
+        let pass1 = self.routing_function("adjusted_argmax_pass1")?;
+        let pass2 = self.routing_function("indexed_argmax_reduce_pass2")?;
         let grid = Self::routing_grid(n as usize);
-        self.ensure_routing_scratch(grid.max(1) as usize)?;
-        let scratch = self.routing_scratch.borrow();
-        let scratch = scratch.as_ref().ok_or_else(|| self.unavailable_error())?;
-        let stream = self.ready_stream()?;
-        // SAFETY: pass 1 is `(const float*, const float*, float*, unsigned*,
-        // int, float)`; state and adaptation hold n elements, the kernel guards
-        // tid >= n, and scratch holds at least grid partials. Pass 2 is
-        // `(const float*, const unsigned*, unsigned*, float*, int)` and reads
-        // exactly grid partials, so grid == 0 writes the no-selection result
-        // without reading scratch. Both launches share this stream.
-        unsafe {
-            if grid > 0 {
-                launch!(pass1<<<grid, ROUTING_BLOCK_SIZE as u32, 0, stream>>>(
-                    state.as_device_ptr(),
-                    adaptation.as_device_ptr(),
+        self.with_routing_scratch(grid.max(1) as usize, move |scratch, stream| {
+            // SAFETY: pass 1 is `(const float*, const float*, float*, unsigned*,
+            // int, float)`; state and adaptation hold n elements, the kernel guards
+            // tid >= n, and scratch holds at least grid partials. Pass 2 is
+            // `(const float*, const unsigned*, unsigned*, float*, int)` and reads
+            // exactly grid partials, so grid == 0 writes the no-selection result
+            // without reading scratch. Both launches share this stream.
+            unsafe {
+                if grid > 0 {
+                    launch!(pass1<<<grid, ROUTING_BLOCK_SIZE as u32, 0, stream>>>(
+                        state.as_device_ptr(),
+                        adaptation.as_device_ptr(),
+                        scratch.scores.as_device_ptr(),
+                        scratch.indices.as_device_ptr(),
+                        n,
+                        scale,
+                    ))
+                    .map_err(|e| Self::launch_error("adjusted_argmax_pass1", e))?;
+                }
+                launch!(pass2<<<1u32, ROUTING_BLOCK_SIZE as u32, 0, stream>>>(
                     scratch.scores.as_device_ptr(),
                     scratch.indices.as_device_ptr(),
-                    n,
-                    scale,
+                    selected_index.as_device_ptr(),
+                    selected_score.as_device_ptr(),
+                    grid as i32,
                 ))
-                .map_err(|e| Self::launch_error("adjusted_argmax_pass1", e))?;
             }
-            launch!(pass2<<<1u32, ROUTING_BLOCK_SIZE as u32, 0, stream>>>(
-                scratch.scores.as_device_ptr(),
-                scratch.indices.as_device_ptr(),
-                selected_index.as_device_ptr(),
-                selected_score.as_device_ptr(),
-                grid as i32,
-            ))
-        }
-        .map_err(|e| Self::launch_error("indexed_argmax_reduce_pass2", e))
+            .map_err(|e| Self::launch_error("indexed_argmax_reduce_pass2", e))
+        })
     }
 
     /// One-launch variant of [`Self::adjusted_argmax`] with the same results
@@ -313,9 +307,7 @@ impl GpuAccelerator {
             selected_score: &*selected_score,
         };
         let n = crate::routing::validate_selection_buffers(&inputs, scale)?;
-        let kernels = self.kernels()?;
-        let func = kernels.get_function("adjusted_argmax_single_block")?;
-        let stream = self.ready_stream()?;
+        let (func, stream) = self.routing_launch_parts("adjusted_argmax_single_block")?;
         // SAFETY: the entry is `(const float*, const float*, unsigned*, float*,
         // int, float)`. Threads stride below n, which both inputs hold, and only
         // thread 0 writes one scalar to each output, which were length-checked.
@@ -367,59 +359,76 @@ impl GpuAccelerator {
             adaptation,
         };
         validate_fused_buffers(&inputs, outputs, params)?;
-        let kernels = self.kernels()?;
-        let pass1 = kernels.get_function("fused_routing_pass1")?;
-        let pass2 = kernels.get_function("fused_routing_pass2")?;
+        let pass1 = self.routing_function("fused_routing_pass1")?;
+        let pass2 = self.routing_function("fused_routing_pass2")?;
         let grid = Self::routing_grid(params.n_nodes);
-        self.ensure_routing_scratch(grid.max(1) as usize)?;
-        let scratch = self.routing_scratch.borrow();
-        let scratch = scratch.as_ref().ok_or_else(|| self.unavailable_error())?;
-        let stream = self.ready_stream()?;
         let top_k_probabilities = outputs
             .top_k_probabilities
             .as_ref()
             .map_or_else(cust::memory::DevicePointer::null, |b| b.as_device_ptr());
-        // SAFETY: pass 1 is `(const float*, const float*, const float*, int*,
-        // float*, float*, float*, float*, unsigned*, int, int, int, int, float)`.
-        // validate_fused_buffers checked every input and output length and that
-        // top_k is in 1..=MAX_ROUTING_TOP_K; the kernel guards tid >= n_nodes,
-        // only writes probabilities through a non-null pointer, and writes grid
-        // partials into scratch. Pass 2 reads exactly grid partials, so
-        // grid == 0 writes the empty result without reading scratch. Both
-        // launches share this stream.
-        unsafe {
-            if grid > 0 {
-                launch!(pass1<<<grid, ROUTING_BLOCK_SIZE as u32, 0, stream>>>(
-                    scores.as_device_ptr(),
-                    state.as_device_ptr(),
-                    adaptation.as_device_ptr(),
-                    outputs.top_k_indices.as_device_ptr(),
-                    top_k_probabilities,
+        self.with_routing_scratch(grid.max(1) as usize, move |scratch, stream| {
+            // SAFETY: pass 1 is `(const float*, const float*, const float*, int*,
+            // float*, float*, float*, float*, unsigned*, int, int, int, int, float)`.
+            // validate_fused_buffers checked every input and output length and that
+            // top_k is in 1..=MAX_ROUTING_TOP_K; the kernel guards tid >= n_nodes,
+            // only writes probabilities through a non-null pointer, and writes grid
+            // partials into scratch. Pass 2 reads exactly grid partials, so
+            // grid == 0 writes the empty result without reading scratch. Both
+            // launches share this stream.
+            unsafe {
+                if grid > 0 {
+                    launch!(pass1<<<grid, ROUTING_BLOCK_SIZE as u32, 0, stream>>>(
+                        scores.as_device_ptr(),
+                        state.as_device_ptr(),
+                        adaptation.as_device_ptr(),
+                        outputs.top_k_indices.as_device_ptr(),
+                        top_k_probabilities,
+                        scratch.entropy_sum.as_device_ptr(),
+                        scratch.entropy_max.as_device_ptr(),
+                        scratch.scores.as_device_ptr(),
+                        scratch.indices.as_device_ptr(),
+                        params.n_nodes as i32,
+                        params.n_routes as i32,
+                        params.top_k as i32,
+                        params.score_kind.as_kernel_arg(),
+                        params.adaptation_scale,
+                    ))
+                    .map_err(|e| Self::launch_error("fused_routing_pass1", e))?;
+                }
+                launch!(pass2<<<1u32, ROUTING_BLOCK_SIZE as u32, 0, stream>>>(
                     scratch.entropy_sum.as_device_ptr(),
                     scratch.entropy_max.as_device_ptr(),
                     scratch.scores.as_device_ptr(),
                     scratch.indices.as_device_ptr(),
-                    params.n_nodes as i32,
-                    params.n_routes as i32,
-                    params.top_k as i32,
-                    params.score_kind.as_kernel_arg(),
-                    params.adaptation_scale,
+                    outputs.entropy_sum.as_device_ptr(),
+                    outputs.entropy_max.as_device_ptr(),
+                    outputs.selected_index.as_device_ptr(),
+                    outputs.selected_score.as_device_ptr(),
+                    grid as i32,
                 ))
-                .map_err(|e| Self::launch_error("fused_routing_pass1", e))?;
             }
-            launch!(pass2<<<1u32, ROUTING_BLOCK_SIZE as u32, 0, stream>>>(
-                scratch.entropy_sum.as_device_ptr(),
-                scratch.entropy_max.as_device_ptr(),
-                scratch.scores.as_device_ptr(),
-                scratch.indices.as_device_ptr(),
-                outputs.entropy_sum.as_device_ptr(),
-                outputs.entropy_max.as_device_ptr(),
-                outputs.selected_index.as_device_ptr(),
-                outputs.selected_score.as_device_ptr(),
-                grid as i32,
-            ))
-        }
-        .map_err(|e| Self::launch_error("fused_routing_pass2", e))
+            .map_err(|e| Self::launch_error("fused_routing_pass2", e))
+        })
+    }
+
+    fn routing_function<'a>(&'a self, name: &str) -> GpuResult<Function<'a>> {
+        self.kernels()?.get_function(name)
+    }
+
+    fn routing_launch_parts<'a>(&'a self, name: &str) -> GpuResult<(Function<'a>, &'a Stream)> {
+        Ok((self.routing_function(name)?, self.ready_stream()?))
+    }
+
+    fn with_routing_scratch<T>(
+        &self,
+        partial_len: usize,
+        f: impl FnOnce(&RoutingScratch, &Stream) -> GpuResult<T>,
+    ) -> GpuResult<T> {
+        self.ensure_routing_scratch(partial_len)?;
+        let scratch = self.routing_scratch.borrow();
+        let scratch = scratch.as_ref().ok_or_else(|| self.unavailable_error())?;
+        let stream = self.ready_stream()?;
+        f(scratch, stream)
     }
 
     fn finish_launch(&self, launched: GpuResult<()>) -> GpuResult<()> {

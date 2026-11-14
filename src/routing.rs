@@ -878,7 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_inputs_are_errors_not_panics() {
+    fn routing_params_reject_invalid_values() {
         assert!(invalid(params(1, 1, 0).validate()));
         assert!(invalid(params(1, 1, MAX_ROUTING_TOP_K + 1).validate()));
         assert!(invalid(params(i32::MAX as usize + 1, 1, 1).validate()));
@@ -887,6 +887,10 @@ mod tests {
         let mut bad_scale = params(1, 1, 1);
         bad_scale.adaptation_scale = f32::NAN;
         assert!(invalid(bad_scale.validate()));
+    }
+
+    #[test]
+    fn routing_inputs_reject_invalid_values() {
         assert!(invalid(adjusted_argmax(&[1.0], &[1.0], f32::INFINITY)));
         assert!(invalid(adjusted_argmax(&[1.0], &[], 1.0)));
 
