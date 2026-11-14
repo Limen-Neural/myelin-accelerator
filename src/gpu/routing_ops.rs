@@ -157,10 +157,8 @@ impl GpuAccelerator {
         n_nodes: usize,
         n_routes: usize,
     ) -> GpuResult<()> {
-        let matrix =
+        let (nodes, routes, _) =
             validate_entropy_buffers(probabilities, entropy_sum, entropy_max, n_nodes, n_routes)?;
-        let nodes = matrix.nodes;
-        let routes = matrix.routes;
         let kernels = self.kernels()?;
         if n_nodes == 0 {
             self.zero_output_prefix(entropy_sum, 1)?;
