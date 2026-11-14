@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn params(n_nodes: usize, n_routes: usize, top_k: usize) -> RoutingParams {
