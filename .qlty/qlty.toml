@@ -7,4 +7,4 @@ default = true
 # CUDA kernel ABI wrappers intentionally mirror many-argument device launch
 # signatures; restructuring them would change the public GPU API.
 [smells.function_parameters]
-threshold = 10
+threshold = 11
