@@ -99,12 +99,26 @@ impl GpuAccelerator {
         let current_context = CurrentContextGuard::capture();
         let mut facts = crate::host_facts();
 
+        let ctx = Self::init_cuda_context(&mut facts)?;
+        let modules = Self::load_kernel_modules(&mut facts)?;
+        let stream = Self::create_default_stream(&facts)?;
+
+        Ok(Self::finish_gpu_init(
+            ctx,
+            modules,
+            stream,
+            facts,
+            current_context,
+        ))
+    }
+
+    fn init_cuda_context(facts: &mut CapabilityFacts) -> Result<GpuContext, InitFailure> {
         let ctx = match GpuContext::init() {
             Ok(ctx) => ctx,
             Err(e) => {
-                let reason = classify_context_failure(&facts, &e);
+                let reason = classify_context_failure(facts, &e);
                 return Err(InitFailure {
-                    facts,
+                    facts: facts.clone(),
                     reason,
                     detail: e.to_string(),
                 });
@@ -114,53 +128,60 @@ impl GpuAccelerator {
         if facts.compute_capability.is_none() {
             facts.compute_capability = ctx.compute_capability;
         }
-        if let Some(cc) = facts.compute_capability {
-            if !cc.meets_minimum() {
-                return Err(InitFailure {
-                    facts,
-                    reason: FallbackReason::UnsupportedHardware,
-                    detail: format!(
-                        "compute capability {cc} is below required {}",
-                        ComputeCapability::REQUIRED
-                    ),
-                });
-            }
-        } else {
-            return Err(InitFailure {
-                facts,
+        match facts.compute_capability {
+            Some(cc) if cc.meets_minimum() => Ok(ctx),
+            Some(cc) => Err(InitFailure {
+                facts: facts.clone(),
+                reason: FallbackReason::UnsupportedHardware,
+                detail: format!(
+                    "compute capability {cc} is below required {}",
+                    ComputeCapability::REQUIRED
+                ),
+            }),
+            None => Err(InitFailure {
+                facts: facts.clone(),
                 reason: FallbackReason::DriverRuntimeFailure,
                 detail: "compute capability query failed".to_string(),
-            });
+            }),
         }
+    }
 
-        let modules = match KernelModule::load_with_availability() {
-            Ok(modules) => modules,
+    fn load_kernel_modules(facts: &mut CapabilityFacts) -> Result<KernelModule, InitFailure> {
+        match KernelModule::load_with_availability() {
+            Ok(modules) => {
+                facts.kernels = KernelAvailability::all_available();
+                Ok(modules)
+            }
             Err(failure) => {
                 facts.kernels = failure.availability;
                 let reason = failure
                     .error
                     .fallback_reason()
                     .unwrap_or(FallbackReason::DriverRuntimeFailure);
-                return Err(InitFailure {
-                    facts,
+                Err(InitFailure {
+                    facts: facts.clone(),
                     reason,
                     detail: failure.error.to_string(),
-                });
+                })
             }
-        };
+        }
+    }
 
-        facts.kernels = KernelAvailability::all_available();
-        let stream = match Stream::new(StreamFlags::DEFAULT, None) {
-            Ok(stream) => stream,
-            Err(e) => {
-                return Err(InitFailure {
-                    facts,
-                    reason: FallbackReason::DriverRuntimeFailure,
-                    detail: format!("{e:?}"),
-                });
-            }
-        };
+    fn create_default_stream(facts: &CapabilityFacts) -> Result<Stream, InitFailure> {
+        Stream::new(StreamFlags::DEFAULT, None).map_err(|e| InitFailure {
+            facts: facts.clone(),
+            reason: FallbackReason::DriverRuntimeFailure,
+            detail: format!("{e:?}"),
+        })
+    }
 
+    fn finish_gpu_init(
+        ctx: GpuContext,
+        modules: KernelModule,
+        stream: Stream,
+        facts: CapabilityFacts,
+        current_context: CurrentContextGuard,
+    ) -> Self {
         let capabilities = capability_report_for_success(facts);
         let accelerator = Self {
             _ctx: Some(ctx),
@@ -172,7 +193,7 @@ impl GpuAccelerator {
             capabilities,
         };
         current_context.disarm();
-        Ok(accelerator)
+        accelerator
     }
 
     fn cpu_fallback(capabilities: CapabilityReport) -> Self {
