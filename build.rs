@@ -20,6 +20,7 @@ const KERNELS: &[(&str, &str)] = &[
     ("vector_similarity.cu", "vector_similarity_sm_120.ptx"),
     ("satsolver.cu", "satsolver_sm_120.ptx"),
     ("ternary_gemm.cu", "ternary_gemm_sm_120.ptx"),
+    ("routing_selection.cu", "routing_selection_sm_120.ptx"),
 ];
 
 const FATBINS: &[(&str, &str)] = &[
@@ -28,6 +29,24 @@ const FATBINS: &[(&str, &str)] = &[
     ("satsolver.cu", "satsolver_sm_120.fatbin"),
     ("ternary_gemm.cu", "ternary_gemm_sm_120.fatbin"),
 ];
+
+struct NvccBuild<'a> {
+    nvcc: &'a Path,
+    cu_dir: &'a Path,
+    out_dir: &'a Path,
+    arch: &'a str,
+    ptx_version_override: Option<&'a str>,
+    is_blackwell: bool,
+}
+
+struct NvccCompile<'a> {
+    nvcc: &'a Path,
+    cu_dir: &'a Path,
+    source: &'a Path,
+    output: &'a Path,
+    arch: &'a str,
+    extra_args: &'a [String],
+}
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
@@ -86,19 +105,11 @@ fn main() {
         return;
     }
 
-    let nvcc = find_nvcc();
-    // Treat empty MYELIN_PTX_VERSION as unset (Some("") would write ".version ").
-    let ptx_version_override = env::var("MYELIN_PTX_VERSION")
-        .ok()
-        .filter(|v| !v.trim().is_empty());
-    let is_blackwell = arch.starts_with("sm_12") || arch.starts_with("compute_12");
-
-    let Some(nvcc_path) = nvcc else {
+    let Some(nvcc_path) = find_nvcc() else {
         panic!(
             "cuda feature is enabled but nvcc was not found. Install CUDA toolkit or set CUDA_NVCC."
         );
     };
-
     match nvcc_version(&nvcc_path) {
         Some(v) => {
             println!("cargo:warning=using nvcc: {v}");
@@ -107,53 +118,48 @@ fn main() {
         None => println!("cargo:warning=using nvcc at {}", nvcc_path.display()),
     }
 
-    let emitted_ptx_version = compile_ptx_kernels(
-        &nvcc_path,
-        &cu_dir,
-        &out_dir,
-        arch.as_str(),
-        ptx_version_override.as_deref(),
-        is_blackwell,
-    );
+    compile_cuda_artifacts(&nvcc_path, &cu_dir, &out_dir, arch.as_str());
+}
 
-    compile_fatbins(&nvcc_path, &cu_dir, &out_dir, arch.as_str());
+fn compile_cuda_artifacts(nvcc: &Path, cu_dir: &Path, out_dir: &Path, arch: &str) {
+    // Treat empty MYELIN_PTX_VERSION as unset (Some("") would write ".version ").
+    let ptx_version_override = env::var("MYELIN_PTX_VERSION")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let build = NvccBuild {
+        nvcc,
+        cu_dir,
+        out_dir,
+        arch,
+        ptx_version_override: ptx_version_override.as_deref(),
+        is_blackwell: arch.starts_with("sm_12") || arch.starts_with("compute_12"),
+    };
 
-    build_myelin_shim(&nvcc_path, &cu_dir, &out_dir, &arch);
-    emit_cuda_runtime_linking(&nvcc_path);
+    let emitted_ptx_version = compile_ptx_kernels(&build);
+    compile_fatbins(&build);
+    build_myelin_shim(nvcc, cu_dir, out_dir, arch);
+    emit_cuda_runtime_linking(nvcc);
     println!("cargo:rustc-env=MYELIN_BUILD_CUDA_ARCH={arch}");
     if let Some(version) = emitted_ptx_version {
         println!("cargo:rustc-env=MYELIN_BUILD_PTX_VERSION={version}");
     }
 }
 
-fn compile_ptx_kernels(
-    nvcc: &Path,
-    cu_dir: &Path,
-    out_dir: &Path,
-    arch: &str,
-    ptx_version_override: Option<&str>,
-    is_blackwell: bool,
-) -> Option<String> {
+fn compile_ptx_kernels(build: &NvccBuild<'_>) -> Option<String> {
     let mut emitted_ptx_version = None;
     for &(cu_name, ptx_name) in KERNELS {
-        let source = cu_dir.join(cu_name);
-        let output = out_dir.join(ptx_name);
-        compile_to_ptx(
-            nvcc,
-            cu_dir,
-            &source,
-            &output,
-            arch,
-            &nvcc_feature_defines(cu_name),
-        );
-        apply_ptx_version_policy(
-            &output,
-            cu_name,
-            ptx_name,
-            arch,
-            ptx_version_override,
-            is_blackwell,
-        );
+        let source = build.cu_dir.join(cu_name);
+        let output = build.out_dir.join(ptx_name);
+        let extra_args = nvcc_feature_defines(cu_name);
+        compile_to_ptx(&NvccCompile {
+            nvcc: build.nvcc,
+            cu_dir: build.cu_dir,
+            source: &source,
+            output: &output,
+            arch: build.arch,
+            extra_args: &extra_args,
+        });
+        apply_ptx_version_policy(&output, cu_name, ptx_name, build);
         if let Some(version) = read_ptx_version(&output) {
             if let Some(previous) = emitted_ptx_version.as_deref() {
                 assert_eq!(
@@ -168,20 +174,14 @@ fn compile_ptx_kernels(
     emitted_ptx_version
 }
 
-fn apply_ptx_version_policy(
-    output: &Path,
-    cu_name: &str,
-    ptx_name: &str,
-    arch: &str,
-    ptx_version_override: Option<&str>,
-    is_blackwell: bool,
-) {
+fn apply_ptx_version_policy(output: &Path, cu_name: &str, ptx_name: &str, build: &NvccBuild<'_>) {
     // sm_120 + PTX < 9.2 is invalid. Explicit overrides are applied for
     // non-Blackwell arches; on Blackwell, clamp any override below the floor.
-    if let Some(ver) = ptx_version_override {
-        let effective = if is_blackwell && ptx_version_less(ver, DEFAULT_REAL_PTX_VERSION) {
+    if let Some(ver) = build.ptx_version_override {
+        let effective = if build.is_blackwell && ptx_version_less(ver, DEFAULT_REAL_PTX_VERSION) {
             println!(
-                "cargo:warning=MYELIN_PTX_VERSION={ver} is below {DEFAULT_REAL_PTX_VERSION} for {arch}; clamping"
+                "cargo:warning=MYELIN_PTX_VERSION={ver} is below {DEFAULT_REAL_PTX_VERSION} for {}; clamping",
+                build.arch
             );
             DEFAULT_REAL_PTX_VERSION
         } else {
@@ -189,32 +189,41 @@ fn apply_ptx_version_policy(
         };
         patch_ptx_version_any(output, effective);
         println!(
-            "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx={effective} [override])"
+            "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={}, ptx={effective} [override])",
+            build.arch
         );
-    } else if is_blackwell {
+    } else if build.is_blackwell {
         // Leave nvcc's header when already high enough; raise only if lower.
         ensure_min_ptx_version(output, DEFAULT_REAL_PTX_VERSION);
         println!(
-            "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx>={DEFAULT_REAL_PTX_VERSION})"
+            "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={}, ptx>={DEFAULT_REAL_PTX_VERSION})",
+            build.arch
         );
     } else {
-        println!("cargo:warning=compiled {cu_name} -> {ptx_name} (arch={arch}, ptx=nvcc-default)");
+        println!(
+            "cargo:warning=compiled {cu_name} -> {ptx_name} (arch={}, ptx=nvcc-default)",
+            build.arch
+        );
     }
 }
 
-fn compile_fatbins(nvcc: &Path, cu_dir: &Path, out_dir: &Path, arch: &str) {
+fn compile_fatbins(build: &NvccBuild<'_>) {
     for &(cu_name, fatbin_name) in FATBINS {
-        let source = cu_dir.join(cu_name);
-        let output = out_dir.join(fatbin_name);
-        compile_to_fatbin(
-            nvcc,
-            cu_dir,
-            &source,
-            &output,
-            arch,
-            &nvcc_feature_defines(cu_name),
+        let source = build.cu_dir.join(cu_name);
+        let output = build.out_dir.join(fatbin_name);
+        let extra_args = nvcc_feature_defines(cu_name);
+        compile_to_fatbin(&NvccCompile {
+            nvcc: build.nvcc,
+            cu_dir: build.cu_dir,
+            source: &source,
+            output: &output,
+            arch: build.arch,
+            extra_args: &extra_args,
+        });
+        println!(
+            "cargo:warning=compiled {cu_name} -> {fatbin_name} ({} SASS + PTX fallback)",
+            build.arch
         );
-        println!("cargo:warning=compiled {cu_name} -> {fatbin_name} ({arch} SASS + PTX fallback)");
     }
 }
 
@@ -437,30 +446,32 @@ fn append_nvcc_compile_args(
     }
 }
 
-fn compile_to_ptx(
-    nvcc: &Path,
-    cu_dir: &Path,
-    source: &Path,
-    output: &Path,
-    arch: &str,
-    extra_args: &[String],
-) {
-    let mut cmd = Command::new(nvcc);
-    cmd.arg("-ptx").arg(format!("-arch={arch}"));
-    append_nvcc_compile_args(&mut cmd, cu_dir, output, source, extra_args);
+fn compile_to_ptx(request: &NvccCompile<'_>) {
+    let mut cmd = Command::new(request.nvcc);
+    cmd.arg("-ptx").arg(format!("-arch={}", request.arch));
+    append_nvcc_compile_args(
+        &mut cmd,
+        request.cu_dir,
+        request.output,
+        request.source,
+        request.extra_args,
+    );
 
-    let status = cmd
-        .status()
-        .unwrap_or_else(|e| panic!("Failed to invoke nvcc for {}: {e}", source.display()));
+    let status = cmd.status().unwrap_or_else(|e| {
+        panic!(
+            "Failed to invoke nvcc for {}: {e}",
+            request.source.display()
+        )
+    });
 
     if !status.success() {
-        panic!("nvcc failed to compile {}", source.display());
+        panic!("nvcc failed to compile {}", request.source.display());
     }
 
     assert!(
-        output.exists(),
+        request.output.exists(),
         "nvcc completed but did not emit {}",
-        output.display()
+        request.output.display()
     );
 }
 
@@ -474,32 +485,34 @@ fn arch_gencode_parts(arch: &str) -> (String, String) {
     (format!("compute_{digits}"), format!("sm_{digits}"))
 }
 
-fn compile_to_fatbin(
-    nvcc: &Path,
-    cu_dir: &Path,
-    source: &Path,
-    output: &Path,
-    arch: &str,
-    extra_args: &[String],
-) {
-    let (compute, sm) = arch_gencode_parts(arch);
+fn compile_to_fatbin(request: &NvccCompile<'_>) {
+    let (compute, sm) = arch_gencode_parts(request.arch);
 
-    let mut cmd = Command::new(nvcc);
+    let mut cmd = Command::new(request.nvcc);
     cmd.arg("-fatbin")
         .arg(format!("-gencode=arch={compute},code={sm}"))
         .arg(format!("-gencode=arch={compute},code={compute}"));
-    append_nvcc_compile_args(&mut cmd, cu_dir, output, source, extra_args);
+    append_nvcc_compile_args(
+        &mut cmd,
+        request.cu_dir,
+        request.output,
+        request.source,
+        request.extra_args,
+    );
 
-    let status = cmd
-        .status()
-        .unwrap_or_else(|e| panic!("Failed to invoke nvcc fatbin for {}: {e}", source.display()));
+    let status = cmd.status().unwrap_or_else(|e| {
+        panic!(
+            "Failed to invoke nvcc fatbin for {}: {e}",
+            request.source.display()
+        )
+    });
     if !status.success() {
-        panic!("nvcc failed to fatbin {}", source.display());
+        panic!("nvcc failed to fatbin {}", request.source.display());
     }
     assert!(
-        output.exists(),
+        request.output.exists(),
         "nvcc completed but did not emit {}",
-        output.display()
+        request.output.display()
     );
 }
 

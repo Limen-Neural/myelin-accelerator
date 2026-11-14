@@ -8,6 +8,8 @@ pub use crate::capability::{
 use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
 pub use crate::error::{GpuError, GpuResult};
 
+mod routing;
+
 pub(crate) fn host_facts() -> CapabilityFacts {
     CapabilityFacts::not_built()
 }
@@ -298,7 +300,7 @@ impl GpuAccelerator {
         Err(self.unavailable_error())
     }
 
-    pub fn ensure_temporal_state(&mut self, _: usize) -> GpuResult<()> {
+    pub fn ensure_temporal_state(&mut self, _: usize, _: usize) -> GpuResult<()> {
         Err(GpuError::NoGpu)
     }
 
@@ -339,6 +341,10 @@ impl GpuAccelerator {
     }
 
     pub fn upload_temporal_input_spikes(&mut self, _: &[f32]) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn upload_temporal_input_current(&mut self, _: &[f32]) -> GpuResult<()> {
         Err(GpuError::NoGpu)
     }
 
@@ -926,7 +932,7 @@ mod tests {
     fn accelerator_temporal_methods_return_no_gpu() {
         let mut acc = GpuAccelerator::new();
         assert!(matches!(
-            acc.ensure_temporal_state(16).unwrap_err(),
+            acc.ensure_temporal_state(16, 16).unwrap_err(),
             GpuError::NoGpu
         ));
         assert!(matches!(
@@ -961,6 +967,10 @@ mod tests {
         ));
         assert!(matches!(
             acc.upload_temporal_input_spikes(&[0.0]).unwrap_err(),
+            GpuError::NoGpu
+        ));
+        assert!(matches!(
+            acc.upload_temporal_input_current(&[0.0]).unwrap_err(),
             GpuError::NoGpu
         ));
     }

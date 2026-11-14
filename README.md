@@ -49,8 +49,8 @@ assert_eq!(unpack_ternary(&packed, Some(values.len())), values);
 
 | Area | Current interface |
 | --- | --- |
-| Host utilities | Binary and ternary packing, group scales, reference matmul in [`bitpacking`](src/bitpacking.rs); scalar test oracles in [`oracle`](src/oracle.rs). |
-| Wrapped CUDA launches | Poisson encoding, STDP, SAT result extraction and auxiliary best reduction, ternary GEMV and GEMM through `GpuAccelerator`. |
+| Host utilities | Binary and ternary packing, group scales, reference matmul in [`bitpacking`](src/bitpacking.rs); scalar test oracles in [`oracle`](src/oracle.rs); routing contract and CPU reference in [`routing`](src/routing.rs). |
+| Wrapped CUDA launches | Poisson encoding, STDP, SAT result extraction and auxiliary best reduction, ternary GEMV and GEMM, and [routing reductions with adjusted-score selection](docs/ROUTING.md) through `GpuAccelerator`. |
 | Loaded CUDA kernels | Additional LIF, spike statistics, routing, SAT walker, and reduction symbols are available through `KernelModule`, but do not all have high-level launch wrappers. |
 | Benchmark support | Optional `bench` example and manifest utilities; see [benchmark instructions](docs/BENCHMARKS.md). |
 
@@ -58,7 +58,14 @@ The [architecture guide](docs/ARCHITECTURE.md#high-level-launches-today-gpuaccel
 
 ## Build and verify
 
-CPU-safe checks need only the Rust toolchain:
+The crate declares `rust-version = "1.88.0"` in `Cargo.toml`, measured on the
+default (CPU) feature set — let-chains and `slice::as_chunks` require 1.88.
+The `cuda` feature is not covered by that floor: `cust 0.3.2` / `nvtx` may
+need a newer rustc, so CUDA builds are qualified on the pinned dev toolchain
+(`rust-toolchain.toml`, currently 1.99.0) rather than by the crate-wide MSRV.
+A dedicated `msrv` CI job checks the crate on the Cargo.toml `rust-version`.
+
+CPU-safe checks need only the Rust toolchain (1.88.0 or newer):
 
 ```bash
 cargo test --locked

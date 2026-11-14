@@ -14,21 +14,25 @@ fn gif_step_weighted_tick_matches_host_ref() {
     let mut acc = GpuAccelerator::new();
     assert!(acc.is_ready(), "GPU not ready for GIF golden");
 
-    let n = 32usize;
-    acc.ensure_temporal_state(n).expect("temporal state");
+    let n_neurons = 32usize;
+    let n_inputs = 16usize;
+    acc.ensure_temporal_state(n_neurons, n_inputs)
+        .expect("temporal state");
 
-    let mut weights = vec![0.0f32; n * n];
-    let mut input = vec![0.0f32; n];
-    for i in 0..n {
-        weights[i * n + i] = 1.0;
+    let mut weights = vec![0.0f32; n_neurons * n_inputs];
+    let mut input = vec![0.0f32; n_inputs];
+    for i in 0..n_inputs {
         input[i] = if i % 3 == 0 { 1.0 } else { 0.0 };
     }
+    for i in 0..n_neurons {
+        weights[i * n_inputs + (i % n_inputs)] = 1.0;
+    }
 
-    let mut membrane = vec![0.0f32; n];
-    let mut adaptation = vec![0.0f32; n];
-    let mut refractory = vec![0u32; n];
-    let mut spikes = vec![0u32; n];
-    let input_current = vec![0.0f32; n];
+    let mut membrane = vec![0.0f32; n_neurons];
+    let mut adaptation = vec![0.0f32; n_neurons];
+    let mut refractory = vec![0u32; n_neurons];
+    let mut spikes = vec![0u32; n_neurons];
+    let input_current: Vec<f32> = (0..n_neurons).map(|i| (i % 7) as f32 * 0.01).collect();
     let mut neurons = GifNeuronState {
         membrane: &mut membrane,
         adaptation: &mut adaptation,
@@ -45,12 +49,16 @@ fn gif_step_weighted_tick_matches_host_ref() {
     acc.load_synapse_weights_named("gif-parity", &weights)
         .expect("weights");
     acc.upload_temporal_input_spikes(&input).expect("inputs");
-    acc.gif_step_weighted_tick(n).expect("gif tick");
+    acc.upload_temporal_input_current(&input_current)
+        .expect("input current");
+    acc.gif_step_weighted_tick(n_neurons).expect("gif tick");
 
-    let got_mem = acc.temporal_membrane_to_vec(n).expect("membrane");
-    let got_adp = acc.temporal_adaptation_to_vec(n).expect("adaptation");
-    let got_spk = acc.temporal_spikes_to_vec(n).expect("spikes");
-    for i in 0..n {
+    let got_mem = acc.temporal_membrane_to_vec(n_neurons).expect("membrane");
+    let got_adp = acc
+        .temporal_adaptation_to_vec(n_neurons)
+        .expect("adaptation");
+    let got_spk = acc.temporal_spikes_to_vec(n_neurons).expect("spikes");
+    for i in 0..n_neurons {
         assert!(
             (got_mem[i] - membrane[i]).abs() < 1e-4,
             "membrane[{i}] gpu={} host={}",

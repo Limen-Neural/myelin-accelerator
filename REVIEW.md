@@ -174,7 +174,7 @@ cd ~/Limen-Neural/myelin-accelerator
 
 cargo test --locked
 cargo build --locked --no-default-features
-cargo clippy --locked --no-default-features -- -D warnings
+cargo clippy --locked --no-default-features --tests -- -D warnings
 cargo build --locked --features bench --example benchmark
 # Expect: stub PTX warning; no "using nvcc: …" lines
 ```
@@ -229,7 +229,7 @@ ptxas -arch=sm_120 -o /tmp/sn.cubin cmake-build-debug/spiking_network.ptx
 cargo test --features cuda -- --ignored
 # Expect: test gpu::kernel::tests::test_load_kernels ... ok
 
-# 4) Mandatory accelerator + SNN fixture teardown gate (zero errors per suite)
+# 4) Mandatory accelerator, SNN fixture, and routing memcheck (zero errors per suite)
 CUDA_NVCC=/usr/local/cuda/bin/nvcc ./scripts/sanitize_lifecycle.sh
 
 # 5) Optimized microbenchmarks (device + launch)
@@ -239,7 +239,7 @@ cargo run --example benchmark --profile bench --features bench,cuda
 # --features bench alone is stub path — not a GPU gate.
 ```
 
-The mandatory teardown script builds `gpu_lifecycle` and `snn_fixtures_gpu`,
+The mandatory teardown script builds `gpu_lifecycle`, `snn_fixtures_gpu`, and `routing_gpu`,
 discovers each executable from Cargo JSON, and runs them in separate serial
 memcheck processes with `--include-ignored`, covering ordinary tests as well as
 the GPU-only ignored tests. Each suite must execute at least one passing test,
@@ -281,7 +281,7 @@ ctest --test-dir cmake-build-debug --output-on-failure
 
 | Layer | Command | Proves |
 |-------|---------|--------|
-| CPU-safe | `cargo test --locked` / `build --locked --no-default-features` / `clippy --locked --no-default-features` | Stub path; **no** `nvcc` |
+| CPU-safe | `cargo test --locked` / `build --locked --no-default-features` / `clippy --locked --no-default-features --tests` | Stub path; **no** `nvcc` |
 | Bench example (CPU) | `cargo build --locked --features bench --example benchmark` | Example compiles; still **no** GPU kernels |
 | Feature compile | `cargo build --lib --features cuda` | `nvcc` + `cust` + nvtx + PTX embed |
 | Offline ISA | `ptxas -arch=sm_120 -o /tmp/x.cubin <file.ptx>` | PTX is valid for sm_120 |
@@ -500,3 +500,33 @@ self-hosted `sm_120` CI job. The registered local runner is online and its toolk
 contains Compute Sanitizer; the cloud PTX job is unchanged. Logs and local probe
 sources are retained under `/tmp/myelin46-evidence/`, with clean repaired-commit
 results in `scratch-final-code/`; this is local evidence, not an uploaded artifact.
+
+## 10. Rust toolchain / MSRV split (LIM-1574 / GH #69, parent LIM-1591)
+
+`package.rust-version` in `Cargo.toml` is the **true measured MSRV** and may
+differ from the dev toolchain pin. The rule is `rust-version <= toolchain
+channel`, not equality:
+
+| Pin | Location | Value |
+|-----|----------|-------|
+| True MSRV (default/CPU features) | `Cargo.toml` `package.rust-version` | `1.88.0` |
+| Dev toolchain | `rust-toolchain.toml` `channel` | `1.99.0` |
+| Non-MSRV CI jobs (`lint`, `cpu-checks`, `cuda-ptx-cloud`, `cuda-build`, `coverage`) | `.github/workflows/*.yml` `toolchain:` (`cuda-ptx-cloud` uses rustup `--default-toolchain` instead) | `1.99.0` |
+| MSRV verification | `ci.yml` `msrv` job | reads `rust-version` from `Cargo.toml` at run time |
+
+Measurement (2026-11, default features, `cargo +<ver> check --locked
+--all-targets`): 1.85.0 fails on let-chains (`src/capability.rs`,
+`src/gpu/accelerator.rs`) and unstable `slice::as_chunks`
+(`src/bitpacking.rs`); 1.88.0 passes. Let-chains and `as_chunks` both
+stabilized in 1.88.0, so that is the floor. The `cuda` feature
+(`cust 0.3.2`, `nvtx`) is **not** covered by this MSRV and is qualified on
+the 1.99.0 dev pin instead.
+
+The `msrv` job extracts `rust-version` from `Cargo.toml` with `sed`, exports
+`RUSTUP_TOOLCHAIN` so `rust-toolchain.toml` cannot override it, installs that
+exact toolchain, and runs `cargo check --locked --all-targets` plus
+`cargo test --locked` (and the `bench` example tests). When raising or
+lowering the MSRV, change only `Cargo.toml`; the job follows automatically.
+Bump the dev pin (`rust-toolchain.toml` + non-MSRV CI `toolchain:` values)
+only in a coordinated stable bump — never set `rust-version` to the dev
+pin.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::gif::{GIF_BLOCK_SIZE, gif_grid};
-use crate::gpu::accelerator::GpuAccelerator;
+use crate::gpu::accelerator::{GpuAccelerator, LaunchShape};
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::ffi;
 use crate::gpu::memory::GpuBuffer;
@@ -38,7 +38,7 @@ impl GpuAccelerator {
         gif_grid(neuron_count).map_err(GpuError::LaunchFailed)
     }
 
-    pub fn ensure_temporal_state(&mut self, neuron_count: usize) -> GpuResult<()> {
+    pub fn ensure_temporal_state(&mut self, neuron_count: usize, n_inputs: usize) -> GpuResult<()> {
         if !self.has_context() {
             return Err(GpuError::NoGpu);
         }
@@ -47,18 +47,18 @@ impl GpuAccelerator {
                 "temporal state requires neuron_count > 0".into(),
             ));
         }
-        let _ = Self::temporal_grid(neuron_count)?;
+        Self::validate_temporal_dimensions(neuron_count, n_inputs)?;
 
         let needs_realloc = self
             .temporal_state
             .as_ref()
-            .is_none_or(|state| state.neuron_count != neuron_count);
+            .is_none_or(|state| state.neuron_count != neuron_count || state.n_inputs != n_inputs);
 
         if needs_realloc {
             if self.temporal_state.is_some() {
                 self.synchronize()?;
             }
-            self.temporal_state = Some(Self::build_temporal_state(neuron_count)?);
+            self.temporal_state = Some(Self::build_temporal_state(neuron_count, n_inputs)?);
         }
 
         Ok(())
@@ -117,6 +117,22 @@ impl GpuAccelerator {
             .map_err(|e| GpuError::MemoryError(format!("input_spikes upload failed: {e}")))
     }
 
+    /// Upload the per-neuron external current used by the next GIF tick.
+    pub fn upload_temporal_input_current(&mut self, input_current: &[f32]) -> GpuResult<()> {
+        let state = self.temporal_state_for_synapse()?;
+        if input_current.len() != state.neuron_count {
+            return Err(GpuError::MemoryError(format!(
+                "temporal input_current length mismatch: expected {}, got {}",
+                state.neuron_count,
+                input_current.len()
+            )));
+        }
+        state
+            .input_current
+            .upload(input_current)
+            .map_err(|e| GpuError::MemoryError(format!("input_current upload failed: {e}")))
+    }
+
     fn temporal_state_for_synapse(&mut self) -> GpuResult<&mut TemporalState> {
         if !self.has_context() {
             return Err(GpuError::NoGpu);
@@ -131,7 +147,10 @@ impl GpuAccelerator {
         weights_len: usize,
         label: &str,
     ) -> GpuResult<usize> {
-        let expected = state.neuron_count * state.n_inputs;
+        let expected = state
+            .neuron_count
+            .checked_mul(state.n_inputs)
+            .ok_or_else(|| GpuError::MemoryError("temporal synapse dimensions overflow".into()))?;
         if weights_len != expected {
             return Err(GpuError::MemoryError(format!(
                 "{label} length mismatch: expected {} ({}x{}), got {}",
@@ -218,13 +237,11 @@ impl GpuAccelerator {
     /// Requires synapse weights to be loaded. Synchronizes before returning so
     /// callers can immediately download spikes, membrane, or adaptation.
     pub fn gif_step_weighted_tick(&mut self, neuron_count: usize) -> GpuResult<()> {
-        self.ensure_temporal_state(neuron_count)?;
+        if self.temporal_state.is_none() {
+            self.ensure_temporal_state(neuron_count, neuron_count)?;
+        }
 
-        let precision = self
-            .temporal_state
-            .as_ref()
-            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?
-            .synapse_precision;
+        let precision = self.checked_temporal_state(neuron_count)?.synapse_precision;
         if precision == SynapsePrecision::None {
             return Err(GpuError::MemoryError(
                 "synapse weights must be loaded before gif_step_weighted_tick".into(),
@@ -247,7 +264,7 @@ impl GpuAccelerator {
             .expect("temporal state checked above");
         let n_inputs = state.n_inputs;
         let grid = Self::temporal_grid(neuron_count)?;
-        let shared_bytes = (n_inputs * 4) as u32;
+        let shared_bytes = Self::temporal_shared_bytes(n_inputs)?;
         let stream = self.cuda_stream().ok_or(GpuError::NoGpu)?;
         let gif_step = self.kernels()?.get_function("gif_step_weighted")?;
         unsafe {
@@ -265,9 +282,11 @@ impl GpuAccelerator {
             .map_err(|e| {
                 Self::ptx_launch_error(
                     "gif_step_weighted",
-                    grid,
-                    TEMPORAL_BLOCK_SIZE,
-                    shared_bytes,
+                    LaunchShape {
+                        grid,
+                        block: TEMPORAL_BLOCK_SIZE,
+                        shared_mem: shared_bytes,
+                    },
                     Some(neuron_count),
                     e,
                 )
@@ -287,7 +306,7 @@ impl GpuAccelerator {
             .as_ref()
             .ok_or_else(|| GpuError::MemoryError("f16 synapse buffer not initialised".into()))?;
         let grid = Self::temporal_grid(neuron_count)?;
-        let shared_bytes = (n_inputs * 4) as u32;
+        let shared_bytes = Self::temporal_shared_bytes(n_inputs)?;
         let stream = self.cuda_stream().ok_or(GpuError::NoGpu)?;
         ffi::launch_gif_step_weighted_f16(ffi::GifF16Launch {
             stream,
@@ -346,14 +365,18 @@ impl GpuAccelerator {
                 neuron_count as i32,
                 0.0f32
             ))
-            .map_err(|e| Self::ptx_launch_error(
-                "reset_membrane",
-                grid,
-                TEMPORAL_BLOCK_SIZE,
-                TEMPORAL_SHARED_MEM_BYTES,
-                Some(neuron_count),
-                e,
-            ))?;
+            .map_err(|e| {
+                Self::ptx_launch_error(
+                    "reset_membrane",
+                    LaunchShape {
+                        grid,
+                        block: TEMPORAL_BLOCK_SIZE,
+                        shared_mem: TEMPORAL_SHARED_MEM_BYTES,
+                    },
+                    Some(neuron_count),
+                    e,
+                )
+            })?;
         }
         self.synchronize()
     }
@@ -375,26 +398,45 @@ impl GpuAccelerator {
             .and_then(|state| state.synapse_signature.as_deref())
     }
 
-    fn build_temporal_state(neuron_count: usize) -> GpuResult<TemporalState> {
-        let n_inputs = neuron_count;
-        let weight_size = neuron_count * n_inputs;
+    fn build_temporal_state(neuron_count: usize, n_inputs: usize) -> GpuResult<TemporalState> {
+        let weight_size = neuron_count
+            .checked_mul(n_inputs)
+            .ok_or_else(|| GpuError::MemoryError("temporal synapse dimensions overflow".into()))?;
         Ok(TemporalState {
             neuron_count,
             n_inputs,
-            membrane: GpuBuffer::<f32>::from_slice(&vec![0.0f32; neuron_count])?,
-            refractory: GpuBuffer::<u32>::from_slice(&vec![0u32; neuron_count])?,
-            spikes_out: GpuBuffer::<u32>::from_slice(&vec![0u32; neuron_count])?,
-            input_current: GpuBuffer::<f32>::from_slice(&vec![0.0f32; neuron_count])?,
-            input_spikes: GpuBuffer::<f32>::from_slice(&vec![0.0f32; n_inputs])?,
-            adaptation: GpuBuffer::<f32>::from_slice(&vec![0.0f32; neuron_count])?,
-            weights_f32: {
-                let mut weights = GpuBuffer::<f32>::alloc(weight_size)?;
-                weights.zero_prefix(weight_size)?;
-                weights
-            },
+            membrane: GpuBuffer::<f32>::alloc(neuron_count)?,
+            refractory: GpuBuffer::<u32>::alloc(neuron_count)?,
+            spikes_out: GpuBuffer::<u32>::alloc(neuron_count)?,
+            input_current: GpuBuffer::<f32>::alloc(neuron_count)?,
+            input_spikes: GpuBuffer::<f32>::alloc(n_inputs)?,
+            adaptation: GpuBuffer::<f32>::alloc(neuron_count)?,
+            weights_f32: GpuBuffer::<f32>::alloc(weight_size)?,
             weights_f16: None,
             synapse_precision: SynapsePrecision::None,
             synapse_signature: None,
+        })
+    }
+
+    fn validate_temporal_dimensions(neuron_count: usize, n_inputs: usize) -> GpuResult<()> {
+        let _ = Self::temporal_grid(neuron_count)?;
+        if neuron_count > i32::MAX as usize || n_inputs > i32::MAX as usize {
+            return Err(GpuError::LaunchFailed(format!(
+                "temporal dimensions exceed i32 kernel limits (neuron_count={neuron_count}, n_inputs={n_inputs})"
+            )));
+        }
+        Self::temporal_shared_bytes(n_inputs)?;
+        Ok(())
+    }
+
+    fn temporal_shared_bytes(n_inputs: usize) -> GpuResult<u32> {
+        let bytes = n_inputs.checked_mul(4).ok_or_else(|| {
+            GpuError::LaunchFailed("temporal shared-memory size overflows".into())
+        })?;
+        u32::try_from(bytes).map_err(|_| {
+            GpuError::LaunchFailed(format!(
+                "temporal shared-memory size {bytes} exceeds u32 launch limit"
+            ))
         })
     }
 

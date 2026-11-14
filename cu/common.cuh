@@ -19,6 +19,10 @@
 #define SHIP_E        2.71828182845904523536f
 #define SHIP_EPS      1e-8f
 
+__device__ __forceinline__ float sanitized_probability(float x) {
+    return isfinite(x) ? fmaxf(x, 0.0f) : 0.0f;
+}
+
 // ── Warp utility ──────────────────────────────────────────────────
 #define WARP_SIZE 32
 

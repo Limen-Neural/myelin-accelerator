@@ -11,6 +11,7 @@ use crate::gpu::context::{CurrentContextGuard, GpuContext};
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::kernel::KernelModule;
 use crate::gpu::memory::GpuBuffer;
+use crate::gpu::routing_ops::RoutingScratch;
 use crate::gpu::temporal::TemporalState;
 use crate::launch_hook::{LaunchFailure, LaunchType, report_launch_failure};
 use cust::launch;
@@ -36,6 +37,7 @@ pub struct GpuAccelerator {
     pub(crate) temporal_state: Option<TemporalState>,
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
+    pub(super) routing_scratch: RefCell<Option<RoutingScratch>>,
     capabilities: CapabilityReport,
     _ctx: Option<GpuContext>,
 }
@@ -54,6 +56,13 @@ struct StdpTraceLaunch<'a> {
     n_post: i32,
     n_pre: i32,
     dt_ms: f32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct LaunchShape {
+    pub(crate) grid: u32,
+    pub(crate) block: u32,
+    pub(crate) shared_mem: u32,
 }
 
 impl GpuAccelerator {
@@ -161,11 +170,12 @@ impl GpuAccelerator {
                     .error
                     .fallback_reason()
                     .unwrap_or(FallbackReason::DriverRuntimeFailure);
-                Err(InitFailure {
-                    facts: facts.clone(),
-                    reason,
-                    detail: failure.error.to_string(),
-                })
+                warn!(
+                    reason = reason.code(),
+                    detail = sanitize_diagnostic(&failure.error.to_string()),
+                    "fatbin/PTX load failed; continuing with shim-only temporal path when possible"
+                );
+                Ok(None)
             }
         }
     }
@@ -193,6 +203,7 @@ impl GpuAccelerator {
             temporal_state: None,
             aux_partial_scores: RefCell::new(None),
             aux_partial_walkers: RefCell::new(None),
+            routing_scratch: RefCell::new(None),
             capabilities,
         };
         current_context.disarm();
@@ -207,18 +218,22 @@ impl GpuAccelerator {
             temporal_state: None,
             aux_partial_scores: RefCell::new(None),
             aux_partial_walkers: RefCell::new(None),
+            routing_scratch: RefCell::new(None),
             capabilities,
         }
     }
 
-    /// `true` when a CUDA context and stream exist and capabilities allow GPU use.
+    /// `true` when a CUDA context, stream, and kernel modules are ready for GPU use.
     pub fn is_ready(&self) -> bool {
-        self._ctx.is_some() && self.stream.is_some() && self.capabilities.gpu_usable()
+        self._ctx.is_some()
+            && self.stream.is_some()
+            && self.modules.is_some()
+            && self.capabilities.gpu_usable()
     }
 
     /// `true` when [`Self::is_ready`] and fatbin/PTX modules loaded successfully.
     pub fn kernels_ready(&self) -> bool {
-        self.is_ready() && self.modules.is_some()
+        self.is_ready()
     }
 
     pub(crate) fn has_context(&self) -> bool {
@@ -227,18 +242,14 @@ impl GpuAccelerator {
 
     pub(crate) fn ptx_launch_error(
         kernel_name: &str,
-        grid: u32,
-        block: u32,
-        shared_mem: u32,
+        shape: LaunchShape,
         neuron_count: Option<usize>,
         error: impl std::fmt::Debug,
     ) -> GpuError {
         Self::reported_launch_error(
             kernel_name,
             LaunchType::PtxFatbin,
-            grid,
-            block,
-            shared_mem,
+            shape,
             neuron_count,
             error,
         )
@@ -247,9 +258,7 @@ impl GpuAccelerator {
     fn reported_launch_error(
         kernel_name: &str,
         launch_type: LaunchType,
-        grid: u32,
-        block: u32,
-        shared_mem: u32,
+        shape: LaunchShape,
         neuron_count: Option<usize>,
         error: impl std::fmt::Debug,
     ) -> GpuError {
@@ -257,9 +266,9 @@ impl GpuAccelerator {
         report_launch_failure(LaunchFailure {
             kernel_name: kernel_name.to_string(),
             launch_type,
-            grid: (grid, 1, 1),
-            block: (block, 1, 1),
-            shared_mem,
+            grid: (shape.grid, 1, 1),
+            block: (shape.block, 1, 1),
+            shared_mem: shape.shared_mem,
             neuron_count,
             error: gpu_error.to_string(),
             jit_error_log: None,
@@ -307,7 +316,7 @@ impl GpuAccelerator {
         })
     }
 
-    fn unavailable_error(&self) -> GpuError {
+    pub(crate) fn unavailable_error(&self) -> GpuError {
         match &self.capabilities.fallback {
             Some(fb) => GpuError::unavailable(fb.reason, fb.detail.clone()),
             None => GpuError::NoGpu,
@@ -1114,8 +1123,34 @@ impl GpuAccelerator {
         Ok(())
     }
 
-    /// Allocate/grow the owned SAT scratch buffers only in our current
-    /// context, after their last stream use has completed.
+    /// Return the current stream, or the unavailable error on CPU-only builds.
+    pub(crate) fn ready_stream(&self) -> GpuResult<&Stream> {
+        self.stream.as_ref().ok_or_else(|| self.unavailable_error())
+    }
+
+    pub(crate) fn launch_error(kernel: &str, error: impl std::fmt::Debug) -> GpuError {
+        GpuError::LaunchFailed(sanitize_diagnostic(&format!("{kernel} launch: {error:?}")))
+    }
+
+    pub(crate) fn ensure_routing_scratch(&self, partial_len: usize) -> GpuResult<()> {
+        self._ctx
+            .as_ref()
+            .ok_or_else(|| self.unavailable_error())?
+            .require_current()?;
+        let mut slot = self.routing_scratch.borrow_mut();
+        if slot.as_ref().is_none_or(|s| s.scores.len() < partial_len) {
+            // Replaced buffers may still be referenced by queued launches.
+            self.synchronize()?;
+            *slot = Some(RoutingScratch {
+                entropy_sum: GpuBuffer::alloc(partial_len)?,
+                entropy_max: GpuBuffer::alloc(partial_len)?,
+                scores: GpuBuffer::alloc(partial_len)?,
+                indices: GpuBuffer::alloc(partial_len)?,
+            });
+        }
+        Ok(())
+    }
+
     fn ensure_aux_scratch(&self, partial_len: usize) -> GpuResult<()> {
         self._ctx
             .as_ref()
@@ -1149,7 +1184,11 @@ impl GpuAccelerator {
         Ok(())
     }
 
-    fn zero_output_prefix(&self, output: &mut GpuBuffer<f32>, count: usize) -> GpuResult<()> {
+    pub(crate) fn zero_output_prefix(
+        &self,
+        output: &mut GpuBuffer<f32>,
+        count: usize,
+    ) -> GpuResult<()> {
         let stream = self
             .stream
             .as_ref()
@@ -1203,6 +1242,7 @@ impl Drop for GpuAccelerator {
         let temporal_state = self.temporal_state.take();
         let partial_walkers = self.aux_partial_walkers.get_mut().take();
         let partial_scores = self.aux_partial_scores.get_mut().take();
+        let routing_scratch = self.routing_scratch.get_mut().take();
         if let Some(stream) = &stream
             && let Err(error) = stream.synchronize()
         {
@@ -1213,6 +1253,7 @@ impl Drop for GpuAccelerator {
         }
         // Explicit ownership invariant: synchronize -> scratch -> stream ->
         // modules -> caller context restoration -> final context release.
+        drop(routing_scratch);
         drop(partial_scores);
         drop(partial_walkers);
         drop(temporal_state);

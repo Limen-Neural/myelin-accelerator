@@ -16,6 +16,7 @@ mod error;
 pub mod gif;
 pub mod launch_hook;
 pub mod oracle;
+pub mod routing;
 
 #[cfg(not(feature = "cuda"))]
 pub mod gpu_stub;

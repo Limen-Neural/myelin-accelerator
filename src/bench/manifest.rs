@@ -278,19 +278,22 @@ fn cargo_profile_fingerprint_for_executable(executable: &Path) -> Option<String>
     // Cargo can place test executables under a build script's `out/` directory
     // when native link inputs are involved, so search upward for the profile's
     // `.fingerprint` directory instead of assuming `deps/` or `examples/`.
-    artifact_dir.ancestors().find_map(|ancestor| {
+    for ancestor in artifact_dir.ancestors() {
         let fingerprint_dir = ancestor
             .join(".fingerprint")
             .join(format!("{}-{artifact_hash}", env!("CARGO_PKG_NAME")));
-        profile_from_fingerprint_dir(&fingerprint_dir)
-    })
+        if let Some(profile) = profile_from_fingerprint_dir(&fingerprint_dir) {
+            return profile;
+        }
+    }
+    None
 }
 
-fn profile_from_fingerprint_dir(dir: &Path) -> Option<String> {
+fn profile_from_fingerprint_dir(dir: &Path) -> Option<Option<String>> {
     let entries = std::fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
         if let Some(profile) = profile_from_fingerprint_file(&entry.path()) {
-            return profile;
+            return Some(profile);
         }
     }
     None
@@ -962,6 +965,53 @@ mod tests {
         assert_eq!(
             cargo_profile_fingerprint_for_executable(&executable).as_deref(),
             Some("987654321")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cargo_profile_fingerprint_does_not_fall_through_invalid_profile() {
+        let dir = std::env::temp_dir().join(format!(
+            "myelin-cargo-profile-fingerprint-invalid-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let out = dir.join("debug/build/myelin-accelerator/0123456789abcdef/out");
+        let invalid_fingerprint = out.join(format!(
+            ".fingerprint/{}-0123456789abcdef",
+            env!("CARGO_PKG_NAME")
+        ));
+        let ancestor_fingerprint = dir.join(format!(
+            "debug/.fingerprint/{}-0123456789abcdef",
+            env!("CARGO_PKG_NAME")
+        ));
+        std::fs::create_dir_all(&out).expect("artifact directory");
+        std::fs::create_dir_all(&invalid_fingerprint).expect("invalid fingerprint directory");
+        std::fs::create_dir_all(&ancestor_fingerprint).expect("ancestor fingerprint directory");
+        std::fs::write(
+            out.join("myelin_accelerator-0123456789abcdef"),
+            b"synthetic",
+        )
+        .expect("synthetic executable");
+        std::fs::write(
+            invalid_fingerprint.join("bad-profile.json"),
+            br#"{"profile":null}"#,
+        )
+        .expect("invalid fingerprint JSON");
+        std::fs::write(
+            ancestor_fingerprint.join("good-profile.json"),
+            br#"{"profile":123456789}"#,
+        )
+        .expect("ancestor fingerprint JSON");
+
+        assert_eq!(
+            cargo_profile_fingerprint_for_executable(
+                &out.join("myelin_accelerator-0123456789abcdef")
+            ),
+            None
         );
         let _ = std::fs::remove_dir_all(dir);
     }
