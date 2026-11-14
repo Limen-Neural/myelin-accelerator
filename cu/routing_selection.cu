@@ -55,12 +55,6 @@ float sanitized_logit(float x)
 }
 
 __device__ __forceinline__
-float sanitized_probability(float x)
-{
-    return isfinite(x) ? fmaxf(x, 0.0f) : 0.0f;
-}
-
-__device__ __forceinline__
 float sanitized_score(float x, int score_kind)
 {
     return score_kind == ROUTING_SCORES_ARE_LOGITS

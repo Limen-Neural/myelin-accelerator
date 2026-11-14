@@ -423,7 +423,7 @@ void routing_entropy_reduce_pass1(
         const float* row = routing_probs + (long)tid * n_routes;
         for (int r = 0; r < n_routes; ++r) {
             float raw = row[r];
-            float p = isfinite(raw) ? fmaxf(raw, 0.0f) : 0.0f;
+            float p = sanitized_probability(raw);
             if (p > SHIP_EPS) {
                 entropy = fmaf(-p, log2f(p), entropy);
             }

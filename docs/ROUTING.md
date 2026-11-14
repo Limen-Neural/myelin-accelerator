@@ -26,7 +26,9 @@ Scope and acceptance criteria: [LIM-955](https://linear.app/rpd-34/issue/LIM-955
 ## Usage
 
 ```rust,ignore
-use myelin_accelerator::routing::{FusedRoutingOutputs, RoutingParams, RoutingScoreKind};
+use myelin_accelerator::routing::{
+    FusedRoutingOutputs, FusedRoutingRequest, RoutingParams, RoutingScoreKind,
+};
 use myelin_accelerator::{GpuAccelerator, GpuBuffer};
 
 let acc = GpuAccelerator::require_gpu()?;
@@ -43,7 +45,13 @@ let adaptation = GpuBuffer::from_slice(&adaptation)?; // n_nodes
 
 // `true` also writes the probabilities of the selected routes.
 let mut outputs = FusedRoutingOutputs::alloc(&params, false)?;
-acc.fused_routing_select(&scores, &state, &adaptation, &mut outputs, &params)?;
+acc.fused_routing_select(FusedRoutingRequest {
+    scores: &scores,
+    state: &state,
+    adaptation: &adaptation,
+    outputs: &mut outputs,
+    params: &params,
+})?;
 
 let summary = outputs.read_summary()?;
 let top_k = outputs.top_k_indices.to_vec()?; // n_nodes * top_k

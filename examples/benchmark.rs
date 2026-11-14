@@ -891,11 +891,11 @@ fn capture_fused_routing(
         config.iterations,
         || {
             acc.fused_routing_select(myelin_accelerator::routing::FusedRoutingRequest {
-                scores: scores,
-                state: state,
-                adaptation: adaptation,
+                scores,
+                state,
+                adaptation,
                 outputs: &mut outputs,
-                params: params,
+                params,
             })
             .unwrap();
         },
@@ -936,19 +936,19 @@ fn capture_composable_routing(
         || {
             // Queue all six launches and wait once, like the fused path.
             acc.routing_softmax_async(RoutingSoftmaxRequest {
-                scores: scores,
+                scores,
                 probabilities: &mut probabilities,
-                n_nodes: n_nodes,
-                n_routes: n_routes,
+                n_nodes,
+                n_routes,
                 score_kind: params.score_kind,
             })
             .unwrap();
             acc.routing_top_k_async(RoutingTopKRequest {
-                scores: scores,
+                scores,
                 top_k_indices: &mut top_k_indices,
-                n_nodes: n_nodes,
-                n_routes: n_routes,
-                top_k: top_k,
+                n_nodes,
+                n_routes,
+                top_k,
                 score_kind: params.score_kind,
             })
             .unwrap();
@@ -956,13 +956,13 @@ fn capture_composable_routing(
                 probabilities: &probabilities,
                 entropy_sum: &mut entropy_sum,
                 entropy_max: &mut entropy_max,
-                n_nodes: n_nodes,
-                n_routes: n_routes,
+                n_nodes,
+                n_routes,
             })
             .unwrap();
             acc.adjusted_argmax_async(AdjustedSelectionRequest {
-                state: state,
-                adaptation: adaptation,
+                state,
+                adaptation,
                 selected_index: &mut index,
                 selected_score: &mut score,
                 scale: ROUTING_BENCH_SCALE,

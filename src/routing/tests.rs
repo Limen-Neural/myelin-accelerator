@@ -1,3 +1,6 @@
+// Copyright 2026 Raul Montoya Cardenas
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use super::*;
 
 fn params(n_nodes: usize, n_routes: usize, top_k: usize) -> RoutingParams {

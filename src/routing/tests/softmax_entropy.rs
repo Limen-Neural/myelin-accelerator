@@ -1,3 +1,6 @@
+// Copyright 2026 Raul Montoya Cardenas
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use super::super::*;
 
 #[test]
@@ -64,4 +67,5 @@ fn probability_rows_sanitize_out_of_range_values() {
         entropy_row(&[0.5, f32::NAN, f32::INFINITY, -1.0], Probabilities),
         0.5
     );
+    assert_eq!(entropy_row(&[0.5, 1.0e-8], Probabilities), 0.5);
 }

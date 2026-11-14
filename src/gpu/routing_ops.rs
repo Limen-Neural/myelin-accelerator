@@ -15,11 +15,11 @@ mod softmax;
 mod top_k;
 
 /// Per-block partial buffers shared by the multi-pass routing launches.
-pub(crate) struct RoutingScratch {
-    pub(crate) entropy_sum: GpuBuffer<f32>,
-    pub(crate) entropy_max: GpuBuffer<f32>,
-    pub(crate) scores: GpuBuffer<f32>,
-    pub(crate) indices: GpuBuffer<u32>,
+pub(super) struct RoutingScratch {
+    pub(super) entropy_sum: GpuBuffer<f32>,
+    pub(super) entropy_max: GpuBuffer<f32>,
+    pub(super) scores: GpuBuffer<f32>,
+    pub(super) indices: GpuBuffer<u32>,
 }
 
 impl GpuAccelerator {

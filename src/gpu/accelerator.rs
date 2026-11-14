@@ -34,7 +34,7 @@ pub struct GpuAccelerator {
     stream: Option<Stream>,
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
-    pub(crate) routing_scratch: RefCell<Option<RoutingScratch>>,
+    pub(super) routing_scratch: RefCell<Option<RoutingScratch>>,
     capabilities: CapabilityReport,
     _ctx: Option<GpuContext>,
 }
@@ -1053,8 +1053,7 @@ impl GpuAccelerator {
         Ok(())
     }
 
-    /// Allocate/grow the owned SAT scratch buffers only in our current
-    /// context, after their last stream use has completed.
+    /// Return the current stream, or the unavailable error on CPU-only builds.
     pub(crate) fn ready_stream(&self) -> GpuResult<&Stream> {
         self.stream.as_ref().ok_or_else(|| self.unavailable_error())
     }

@@ -1,3 +1,6 @@
+// Copyright 2026 Raul Montoya Cardenas
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use super::super::*;
 
 #[test]
@@ -39,6 +42,9 @@ fn adjusted_score_is_single_rounded() {
     assert_eq!(adjusted_score(state, adaptation, scale), 0.0);
     let (a, s) = (1.0f32 + f32::EPSILON, 1.0f32 - f32::EPSILON / 2.0);
     let product = a * s;
-    assert_eq!(adjusted_score(product, a, s), (-s).mul_add(a, product));
+    assert_eq!(
+        adjusted_score(product, a, s),
+        (-2.0f32.powi(-24)) + 2.0f32.powi(-47)
+    );
     assert_ne!(adjusted_score(product, a, s), 0.0);
 }

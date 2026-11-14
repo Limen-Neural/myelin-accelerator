@@ -48,7 +48,10 @@ use crate::gpu::GpuBuffer;
 
 mod requests;
 
-pub use requests::*;
+pub use requests::{
+    AdjustedSelectionRequest, FusedRoutingRequest, RoutingEntropyRequest, RoutingSoftmaxRequest,
+    RoutingTopKRequest,
+};
 
 /// Maximum `top_k` accepted by the routing kernels (a fixed per-thread array).
 pub const MAX_ROUTING_TOP_K: usize = 8;

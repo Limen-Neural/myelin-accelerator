@@ -67,7 +67,7 @@ fn run_fused(acc: &GpuAccelerator, inputs: &Inputs, params: &RoutingParams) -> D
         state: &state,
         adaptation: &adaptation,
         outputs: &mut outputs,
-        params: params,
+        params,
     })
     .unwrap();
     let summary = outputs.read_summary().unwrap();
@@ -137,7 +137,7 @@ fn select_both(
         adaptation: &d_adaptation,
         selected_index: &mut index,
         selected_score: &mut score,
-        scale: scale,
+        scale,
     })
     .unwrap();
     let two_pass =
@@ -147,7 +147,7 @@ fn select_both(
         adaptation: &d_adaptation,
         selected_index: &mut index,
         selected_score: &mut score,
-        scale: scale,
+        scale,
     })
     .unwrap();
     let single =
@@ -339,17 +339,17 @@ fn composable_path_matches_fused_results() {
         acc.routing_softmax(RoutingSoftmaxRequest {
             scores: &scores,
             probabilities: &mut probabilities,
-            n_nodes: n_nodes,
-            n_routes: n_routes,
+            n_nodes,
+            n_routes,
             score_kind: p.score_kind,
         })
         .unwrap();
         acc.routing_top_k(RoutingTopKRequest {
             scores: &scores,
             top_k_indices: &mut top_k_indices,
-            n_nodes: n_nodes,
-            n_routes: n_routes,
-            top_k: top_k,
+            n_nodes,
+            n_routes,
+            top_k,
             score_kind: p.score_kind,
         })
         .unwrap();
@@ -357,8 +357,8 @@ fn composable_path_matches_fused_results() {
             probabilities: &probabilities,
             entropy_sum: &mut entropy_sum,
             entropy_max: &mut entropy_max,
-            n_nodes: n_nodes,
-            n_routes: n_routes,
+            n_nodes,
+            n_routes,
         })
         .unwrap();
         acc.adjusted_argmax(AdjustedSelectionRequest {
@@ -417,8 +417,8 @@ fn composable_entropy_sanitizes_nonfinite_probabilities() {
         probabilities: &probs,
         entropy_sum: &mut entropy_sum,
         entropy_max: &mut entropy_max,
-        n_nodes: n_nodes,
-        n_routes: n_routes,
+        n_nodes,
+        n_routes,
     })
     .unwrap();
 

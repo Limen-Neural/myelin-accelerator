@@ -6,7 +6,8 @@ use crate::routing::{
 use cust::launch;
 
 impl GpuAccelerator {
-    /// Row-normalize a score matrix into `probabilities` (composable path).
+    /// For logits, row-normalize scores into `probabilities`; for probabilities,
+    /// sanitize non-finite and negative values without renormalizing.
     pub fn routing_softmax(&self, request: RoutingSoftmaxRequest<'_>) -> GpuResult<()> {
         self.finish_launch(self.routing_softmax_async(request))
     }

@@ -270,6 +270,34 @@ mod stub_contract {
             outputs: &mut outputs,
             params: &params,
         })));
+        let bad_top_k = RoutingParams {
+            n_nodes: 2,
+            n_routes: 2,
+            top_k: 9,
+            score_kind: kind,
+            adaptation_scale: 0.5,
+        };
+        assert!(invalid(acc.fused_routing_select(FusedRoutingRequest {
+            scores: &scores,
+            state: &state,
+            adaptation: &state,
+            outputs: &mut outputs,
+            params: &bad_top_k,
+        })));
+        let bad_scale = RoutingParams {
+            n_nodes: 2,
+            n_routes: 2,
+            top_k: 1,
+            score_kind: kind,
+            adaptation_scale: f32::NAN,
+        };
+        assert!(invalid(acc.fused_routing_select(FusedRoutingRequest {
+            scores: &scores,
+            state: &state,
+            adaptation: &state,
+            outputs: &mut outputs,
+            params: &bad_scale,
+        })));
     }
 
     use myelin_accelerator::{
