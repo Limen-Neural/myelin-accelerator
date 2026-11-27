@@ -47,13 +47,13 @@ pub fn sample_stats(samples: &[f64]) -> SampleStats {
 
     let n = samples.len();
     let mut sorted = samples.to_vec();
-    sorted.sort_by(|a, b| a.total_cmp(b));
+    sorted.sort_by(f64::total_cmp);
 
     let total: f64 = sorted.iter().sum();
     let mean = total / n as f64;
     let median = median_of_sorted(&sorted);
     let mut absdevs: Vec<f64> = sorted.iter().map(|x| (x - median).abs()).collect();
-    absdevs.sort_by(|a, b| a.total_cmp(b));
+    absdevs.sort_by(f64::total_cmp);
     let mad = median_of_sorted(&absdevs);
     let relative_dispersion = if median.abs() > 1e-12 {
         mad / median.abs()

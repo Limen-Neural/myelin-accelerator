@@ -7,6 +7,7 @@ use crate::bench::redact::{RedactionContext, redact_and_canonicalize};
 use crate::bench::stats::{SampleStats, sample_stats};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -180,7 +181,7 @@ impl ManifestCase {
     ) -> Self {
         let stats: SampleStats = sample_stats(&samples_us);
         let mut sorted = samples_us;
-        sorted.sort_by(|a, b| a.total_cmp(b));
+        sorted.sort_by(f64::total_cmp);
         Self {
             name: name.into(),
             kernel_variant: kernel_variant.into(),
@@ -300,7 +301,7 @@ fn profile_from_fingerprint_dir(dir: &Path) -> Option<Option<String>> {
 }
 
 fn profile_from_fingerprint_file(path: &Path) -> Option<Option<String>> {
-    if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+    if path.extension().and_then(OsStr::to_str) != Some("json") {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
@@ -330,7 +331,7 @@ fn cargo_artifact_hash(executable: &Path) -> Option<String> {
         if path.extension() != expected_extension || !path.is_file() {
             continue;
         }
-        let Some(candidate_stem) = path.file_stem().and_then(|name| name.to_str()) else {
+        let Some(candidate_stem) = path.file_stem().and_then(OsStr::to_str) else {
             continue;
         };
         let Some(hash) = candidate_stem.strip_prefix(&expected_prefix) else {
