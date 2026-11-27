@@ -22,7 +22,16 @@ int myelin_launch_gif_step_weighted_f16(
     void* refractory,
     void* spikes_out,
     int n_neurons,
-    int n_inputs);
+    int n_inputs,
+    float lif_reset,
+    unsigned int lif_refractory_ticks,
+    float gif_leak,
+    float gif_drive_scale,
+    float gif_threshold_base,
+    float gif_adaptation_scale,
+    float gif_adaptation_decay,
+    float gif_reset_ratio,
+    float gif_adaptation_term);
 
 #ifdef __cplusplus
 }

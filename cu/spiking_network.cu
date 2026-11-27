@@ -104,7 +104,11 @@ void lif_step(
     const float* __restrict__  I_ext,
     unsigned int* __restrict__ refract,
     unsigned int* __restrict__ spikes_out,
-    int n_neurons)
+    int n_neurons,
+    float lif_decay,
+    float lif_threshold,
+    float lif_reset,
+    unsigned int lif_refractory_ticks)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n_neurons) return;
@@ -114,15 +118,15 @@ void lif_step(
     unsigned int spike = 0u;
 
     if (ref > 0u) {
-        v = LIF_RESET;
+        v = lif_reset;
         refract[tid] = ref - 1u;
     } else {
-        v = fmaf(LIF_DECAY, v, I_ext[tid]);
+        v = fmaf(lif_decay, v, I_ext[tid]);
 
-        if (v >= LIF_THRESHOLD) {
+        if (v >= lif_threshold) {
             spike = 1u;
-            v = LIF_RESET;
-            refract[tid] = (unsigned int)LIF_REFRACT_TICK;
+            v = lif_reset;
+            refract[tid] = lif_refractory_ticks;
         }
     }
 
@@ -154,7 +158,11 @@ void lif_step_weighted(
     unsigned int* __restrict__ refract,
     unsigned int* __restrict__ spikes_out,
     int n_neurons,
-    int n_inputs)
+    int n_inputs,
+    float lif_decay,
+    float lif_threshold,
+    float lif_reset,
+    unsigned int lif_refractory_ticks)
 {
     extern __shared__ float s_inputs[];
 
@@ -170,7 +178,7 @@ void lif_step_weighted(
     unsigned int spike = 0u;
 
     if (ref > 0u) {
-        v = LIF_RESET;
+        v = lif_reset;
         refract[tid] = ref - 1u;
     } else {
         const float* w_row = weights + (long)tid * n_inputs;
@@ -178,12 +186,12 @@ void lif_step_weighted(
         for (int j = 0; j < n_inputs; ++j)
             I = fmaf(w_row[j], s_inputs[j], I);
 
-        v = fmaf(LIF_DECAY, v, I);
+        v = fmaf(lif_decay, v, I);
 
-        if (v >= LIF_THRESHOLD) {
+        if (v >= lif_threshold) {
             spike = 1u;
-            v = LIF_RESET;
-            refract[tid] = (unsigned int)LIF_REFRACT_TICK;
+            v = lif_reset;
+            refract[tid] = lif_refractory_ticks;
         }
     }
 
@@ -224,7 +232,16 @@ void gif_step_weighted(
     unsigned int* __restrict__ refract,
     unsigned int* __restrict__ spikes_out,
     int n_neurons,
-    int n_inputs)
+    int n_inputs,
+    float lif_reset,
+    unsigned int lif_refractory_ticks,
+    float gif_leak,
+    float gif_drive_scale,
+    float gif_threshold_base,
+    float gif_adaptation_scale,
+    float gif_adaptation_decay,
+    float gif_reset_ratio,
+    float gif_adaptation_term)
 {
     extern __shared__ float s_inputs[];
 
@@ -241,26 +258,26 @@ void gif_step_weighted(
     unsigned int spike = 0u;
 
     if (ref > 0u) {
-        v = LIF_RESET;
+        v = lif_reset;
         refract[tid] = ref - 1u;
-        adaptation[tid] = a * GIF_ADAPTATION_DECAY;
+        adaptation[tid] = a * gif_adaptation_decay;
     } else {
-        a *= GIF_ADAPTATION_DECAY;
+        a *= gif_adaptation_decay;
 
         const float* w_row = weights + (long)tid * n_inputs;
         float drive = 0.0f;
         for (int j = 0; j < n_inputs; ++j)
             drive = fmaf(w_row[j], s_inputs[j], drive);
 
-        v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM
+        v = v * gif_leak + drive * gif_drive_scale - a * gif_adaptation_term
             + input_current[tid];
 
-        float threshold = GIF_THRESHOLD_BASE + a * GIF_ADAPTATION_SCALE;
+        float threshold = gif_threshold_base + a * gif_adaptation_scale;
         if (v >= threshold) {
             spike = 1u;
-            v -= threshold * GIF_RESET_RATIO;
+            v -= threshold * gif_reset_ratio;
             a += 1.0f;
-            refract[tid] = (unsigned int)LIF_REFRACT_TICK;
+            refract[tid] = lif_refractory_ticks;
         }
         adaptation[tid] = a;
     }
@@ -279,7 +296,16 @@ void gif_step_weighted_f16(
     unsigned int* __restrict__ refract,
     unsigned int* __restrict__ spikes_out,
     int n_neurons,
-    int n_inputs)
+    int n_inputs,
+    float lif_reset,
+    unsigned int lif_refractory_ticks,
+    float gif_leak,
+    float gif_drive_scale,
+    float gif_threshold_base,
+    float gif_adaptation_scale,
+    float gif_adaptation_decay,
+    float gif_reset_ratio,
+    float gif_adaptation_term)
 {
     extern __shared__ float s_inputs[];
 
@@ -296,26 +322,26 @@ void gif_step_weighted_f16(
     unsigned int spike = 0u;
 
     if (ref > 0u) {
-        v = LIF_RESET;
+        v = lif_reset;
         refract[tid] = ref - 1u;
-        adaptation[tid] = a * GIF_ADAPTATION_DECAY;
+        adaptation[tid] = a * gif_adaptation_decay;
     } else {
-        a *= GIF_ADAPTATION_DECAY;
+        a *= gif_adaptation_decay;
 
         const half* w_row = weights + (long)tid * n_inputs;
         float drive = 0.0f;
         for (int j = 0; j < n_inputs; ++j)
             drive = fmaf(__half2float(w_row[j]), s_inputs[j], drive);
 
-        v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM
+        v = v * gif_leak + drive * gif_drive_scale - a * gif_adaptation_term
             + input_current[tid];
 
-        float threshold = GIF_THRESHOLD_BASE + a * GIF_ADAPTATION_SCALE;
+        float threshold = gif_threshold_base + a * gif_adaptation_scale;
         if (v >= threshold) {
             spike = 1u;
-            v -= threshold * GIF_RESET_RATIO;
+            v -= threshold * gif_reset_ratio;
             a += 1.0f;
-            refract[tid] = (unsigned int)LIF_REFRACT_TICK;
+            refract[tid] = lif_refractory_ticks;
         }
         adaptation[tid] = a;
     }

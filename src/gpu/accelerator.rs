@@ -6,6 +6,7 @@ use crate::capability::{
     FallbackRecord, KernelAvailability, apply_failure_to_facts, evaluate_capabilities,
     sanitize_diagnostic,
 };
+use crate::gif::TemporalDynamics;
 use crate::gpu::context::{CurrentContextGuard, GpuContext};
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::kernel::KernelModule;
@@ -38,6 +39,7 @@ pub struct GpuAccelerator {
     modules: Option<KernelModule>,
     stream: Option<Stream>,
     pub(crate) temporal_state: Option<TemporalState>,
+    pub(crate) temporal_dynamics: TemporalDynamics,
     aux_partial_scores: RefCell<Option<GpuBuffer<i32>>>,
     aux_partial_walkers: RefCell<Option<GpuBuffer<i32>>>,
     pub(super) routing_scratch: RefCell<Option<RoutingScratch>>,
@@ -202,6 +204,7 @@ impl GpuAccelerator {
             modules,
             stream: Some(stream),
             temporal_state: None,
+            temporal_dynamics: TemporalDynamics::default(),
             aux_partial_scores: RefCell::new(None),
             aux_partial_walkers: RefCell::new(None),
             routing_scratch: RefCell::new(None),
@@ -217,6 +220,7 @@ impl GpuAccelerator {
             modules: None,
             stream: None,
             temporal_state: None,
+            temporal_dynamics: TemporalDynamics::default(),
             aux_partial_scores: RefCell::new(None),
             aux_partial_walkers: RefCell::new(None),
             routing_scratch: RefCell::new(None),

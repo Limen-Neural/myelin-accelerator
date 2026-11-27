@@ -4,6 +4,7 @@
 //! GPU evidence for the stable kernel wrappers added in GH #63.
 #![cfg(feature = "cuda")]
 
+use myelin_accelerator::gif::TemporalDynamics;
 use myelin_accelerator::{GpuAccelerator, GpuBuffer};
 
 fn eval_clause(assignment: &[u8], clause: &[i32], n_vars: usize) -> bool {
@@ -86,6 +87,29 @@ fn lif_rate_and_reset_public_wrappers_match_oracles() {
     }
     acc.reset_membrane(&mut membrane, -0.25).unwrap();
     assert_eq!(membrane.to_vec().unwrap(), [-0.25, -0.25]);
+
+    let custom = TemporalDynamics {
+        lif_decay: 0.5,
+        lif_threshold: 0.45,
+        lif_reset: 0.1,
+        lif_refractory_ticks: 3,
+        ..TemporalDynamics::default()
+    };
+    let mut membrane = GpuBuffer::from_slice(&[0.4f32]).unwrap();
+    let current_gpu = GpuBuffer::from_slice(&[0.3f32]).unwrap();
+    let mut refractory = GpuBuffer::from_slice(&[0u32]).unwrap();
+    let mut spikes = GpuBuffer::<u32>::alloc(1).unwrap();
+    acc.lif_step_with_dynamics(
+        &mut membrane,
+        &current_gpu,
+        &mut refractory,
+        &mut spikes,
+        custom,
+    )
+    .unwrap();
+    assert_eq!(membrane.to_vec().unwrap(), [0.1]);
+    assert_eq!(refractory.to_vec().unwrap(), [3]);
+    assert_eq!(spikes.to_vec().unwrap(), [1]);
 }
 
 #[test]

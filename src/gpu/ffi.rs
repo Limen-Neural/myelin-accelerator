@@ -31,6 +31,15 @@ unsafe extern "C" {
         spikes_out: *mut c_void,
         n_neurons: i32,
         n_inputs: i32,
+        lif_reset: f32,
+        lif_refractory_ticks: u32,
+        gif_leak: f32,
+        gif_drive_scale: f32,
+        gif_threshold_base: f32,
+        gif_adaptation_scale: f32,
+        gif_adaptation_decay: f32,
+        gif_reset_ratio: f32,
+        gif_adaptation_term: f32,
     ) -> i32;
 }
 
@@ -55,6 +64,7 @@ pub struct GifF16Launch<'a> {
     pub buffers: GifF16Buffers,
     pub n_neurons: i32,
     pub n_inputs: i32,
+    pub dynamics: crate::gif::TemporalDynamics,
 }
 
 pub fn launch_gif_step_weighted_f16(launch: GifF16Launch<'_>) -> GpuResult<()> {
@@ -67,6 +77,7 @@ pub fn launch_gif_step_weighted_f16(launch: GifF16Launch<'_>) -> GpuResult<()> {
         buffers,
         n_neurons,
         n_inputs,
+        dynamics,
     } = launch;
     let code = unsafe {
         myelin_launch_gif_step_weighted_f16(
@@ -84,6 +95,15 @@ pub fn launch_gif_step_weighted_f16(launch: GifF16Launch<'_>) -> GpuResult<()> {
             device_ptr_to_void(buffers.spikes_out),
             n_neurons,
             n_inputs,
+            dynamics.lif_reset,
+            dynamics.lif_refractory_ticks,
+            dynamics.gif_leak,
+            dynamics.gif_drive_scale,
+            dynamics.gif_threshold_base,
+            dynamics.gif_adaptation_scale,
+            dynamics.gif_adaptation_decay,
+            dynamics.gif_reset_ratio,
+            dynamics.gif_adaptation_term,
         )
     };
 

@@ -7,6 +7,7 @@ pub use crate::capability::{
 };
 use crate::capability::{apply_failure_to_facts, evaluate_capabilities};
 pub use crate::error::{GpuError, GpuResult};
+use crate::gif::TemporalDynamics;
 
 mod routing;
 
@@ -320,6 +321,30 @@ impl GpuAccelerator {
         Err(self.unavailable_error())
     }
 
+    pub fn lif_step_with_dynamics(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: &mut GpuBuffer<u32>,
+        dynamics: TemporalDynamics,
+    ) -> GpuResult<()> {
+        dynamics.validate().map_err(GpuError::invalid_input)?;
+        Err(self.unavailable_error())
+    }
+
+    pub fn lif_step_with_dynamics_async(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: &mut GpuBuffer<u32>,
+        dynamics: TemporalDynamics,
+    ) -> GpuResult<()> {
+        dynamics.validate().map_err(GpuError::invalid_input)?;
+        Err(self.unavailable_error())
+    }
+
     pub fn lif_step_weighted(
         &self,
         _: &mut GpuBuffer<f32>,
@@ -339,6 +364,32 @@ impl GpuAccelerator {
         _: &mut GpuBuffer<u32>,
         _: &mut GpuBuffer<u32>,
     ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    pub fn lif_step_weighted_with_dynamics(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: &mut GpuBuffer<u32>,
+        dynamics: TemporalDynamics,
+    ) -> GpuResult<()> {
+        dynamics.validate().map_err(GpuError::invalid_input)?;
+        Err(self.unavailable_error())
+    }
+
+    pub fn lif_step_weighted_with_dynamics_async(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: &mut GpuBuffer<u32>,
+        dynamics: TemporalDynamics,
+    ) -> GpuResult<()> {
+        dynamics.validate().map_err(GpuError::invalid_input)?;
         Err(self.unavailable_error())
     }
 
@@ -498,6 +549,25 @@ impl GpuAccelerator {
     }
 
     pub fn gif_step_weighted_tick(&mut self, _: usize) -> GpuResult<()> {
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn temporal_dynamics(&self) -> TemporalDynamics {
+        TemporalDynamics::default()
+    }
+
+    pub fn set_temporal_dynamics(&mut self, dynamics: TemporalDynamics) -> GpuResult<()> {
+        dynamics.validate().map_err(GpuError::invalid_input)?;
+        Err(GpuError::NoGpu)
+    }
+
+    pub fn ensure_temporal_state_with_dynamics(
+        &mut self,
+        _: usize,
+        _: usize,
+        dynamics: TemporalDynamics,
+    ) -> GpuResult<()> {
+        dynamics.validate().map_err(GpuError::invalid_input)?;
         Err(GpuError::NoGpu)
     }
 

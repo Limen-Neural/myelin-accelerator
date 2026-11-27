@@ -210,7 +210,11 @@ fn run_spikenaut_weighted(dev: &Device, block: u32) {
                     s.refract.as_device_ptr(),
                     s.spikes_out.as_device_ptr(),
                     n as i32,
-                    k as i32
+                    k as i32,
+                    0.85f32,
+                    1.0f32,
+                    0.0f32,
+                    2u32
                 ))
                 .unwrap_or_else(|e| panic!("launch t={t}: {e:?}"));
             }
@@ -294,7 +298,11 @@ fn synfire_lifneuron_affine_lif_matches_v0_2_0_oracle_every_timestep() {
                         i_ext.as_device_ptr(),
                         s.refract.as_device_ptr(),
                         s.spikes_out.as_device_ptr(),
-                        1i32
+                        1i32,
+                        0.85f32,
+                        1.0f32,
+                        0.0f32,
+                        2u32
                     ))
                     .unwrap_or_else(|e| panic!("launch t={t}: {e:?}"));
                 }

@@ -205,8 +205,10 @@ These are the **ergonomic** wrappers currently implemented:
 
 - GIF temporal (device kernels under `cuda`; stub fail-closed without it): `ensure_temporal_state(neuron_count, n_inputs)`, `gif_step_weighted_tick`, `reset_temporal_state`, `load_synapse_weights`, `load_synapse_weights_named`, `load_synapse_weights_f16_registered`, `synapse_signature`, `temporal_spikes_to_vec`, `temporal_membrane_to_vec`, `temporal_adaptation_to_vec`, `upload_temporal_input_spikes`, `upload_temporal_input_current`
 
-Scalar CPU oracles for the Poisson, ternary, cosine, and fixed-dynamics LIF
-wrappers live in `src/oracle.rs`.
+Scalar CPU oracles for the Poisson, ternary, cosine, and default-dynamics LIF
+wrappers live in `src/oracle.rs`. `TemporalDynamics` carries validated,
+caller-selected LIF/GIF parameters across the Rust/CUDA boundary; its defaults
+are the historical fixed constants.
 
 Advanced callers can still use `accelerator.kernels()?.get_function("…")` and
 launch with `cust`, but the stable methods above are preferred for shared
@@ -240,8 +242,10 @@ and selects at most 32 keys per query, padding remaining slots with `-1`.
 bit-exactly against `oracle::lif_step_oracle` /
 `oracle::lif_step_weighted_oracle` every timestep. It runs on pinned
 Spikenaut-shaped (16×16) and Synfire/NIR-shaped (1×1) workloads.
-They now have stable `GpuAccelerator` wrappers, but their LIF dynamics are
-still fixed (decay 0.85, threshold 1.0, reset 0.0, 2 refractory ticks). The fixtures are workload-only, not model-parity claims. See
+They now have stable `GpuAccelerator` wrappers. Their default LIF dynamics
+remain decay 0.85, threshold 1.0, reset 0.0, and 2 refractory ticks, while
+callers can override them with validated `TemporalDynamics`. The fixtures are
+workload-only, not model-parity claims. See
 [SNN_COMPATIBILITY.md](SNN_COMPATIBILITY.md). Exact external-model
 interoperability is GH #43 / LIM-1461 (v0.3.0).
 
