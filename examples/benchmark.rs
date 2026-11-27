@@ -1329,121 +1329,96 @@ fn collect_provenance_rejections(
     baseline: &LoadedBaseline,
 ) -> RunRejections {
     let mut result = RunRejections::default();
-    collect_build_profile_rejection(current, baseline, &mut result);
-    collect_hardware_identity_rejection(current, baseline, &mut result);
-    collect_cuda_environment_rejection(current, baseline, &mut result);
-    collect_power_clock_rejection(current, baseline, &mut result);
-    collect_host_identity_rejection(current, baseline, &mut result);
-    collect_feature_set_rejection(current, baseline, &mut result);
+    result.build_profile_mismatch = has_build_profile_mismatch(current, baseline);
+    result.hardware_identity_mismatch = has_hardware_identity_mismatch(current, baseline);
+    result.cuda_environment_mismatch = has_cuda_environment_mismatch(current, baseline);
+    result.power_clock_mismatch = has_power_clock_mismatch(current, baseline);
+    result.host_identity_mismatch = has_host_identity_mismatch(current, baseline);
+    result.feature_set_mismatch = has_feature_set_mismatch(current, baseline);
+
+    for (mismatch, message, reason) in [
+        (
+            result.build_profile_mismatch,
+            "[bench] Build profile mismatch: baseline and current compiler/profile settings differ",
+            ComparisonRejectionReason::BuildProfileMismatch,
+        ),
+        (
+            result.hardware_identity_mismatch,
+            "[bench] Hardware identity mismatch: baseline and current devices differ",
+            ComparisonRejectionReason::HardwareIdentityMismatch,
+        ),
+        (
+            result.cuda_environment_mismatch,
+            "[bench] CUDA environment mismatch: baseline and current driver/runtime/toolkit versions differ",
+            ComparisonRejectionReason::CudaEnvironmentMismatch,
+        ),
+        (
+            result.power_clock_mismatch,
+            "[bench] GPU control mismatch: baseline and current power/clock settings differ",
+            ComparisonRejectionReason::PowerClockMismatch,
+        ),
+        (
+            result.host_identity_mismatch,
+            "[bench] Host identity mismatch: baseline and current architecture/OS/CPU differ",
+            ComparisonRejectionReason::HostIdentityMismatch,
+        ),
+        (
+            result.feature_set_mismatch,
+            "[bench] Feature-set mismatch: baseline and current Cargo features differ",
+            ComparisonRejectionReason::FeatureSetMismatch,
+        ),
+    ] {
+        record_mismatch(&mut result, mismatch, message, reason);
+    }
     result
 }
 
-fn collect_build_profile_rejection(
-    current: &BenchmarkManifest,
-    baseline: &LoadedBaseline,
-    result: &mut RunRejections,
-) {
+fn has_build_profile_mismatch(current: &BenchmarkManifest, baseline: &LoadedBaseline) -> bool {
     let current_toolchain =
         canonicalize_toolchain(&current.toolchain).expect("toolchain provenance must canonicalize");
-    result.build_profile_mismatch = baseline
+    baseline
         .build_profile
         .as_ref()
-        .is_some_and(|profile| build_profile_mismatch(profile, &current_toolchain));
-    record_mismatch(
-        result,
-        result.build_profile_mismatch,
-        "[bench] Build profile mismatch: baseline and current compiler/profile settings differ",
-        ComparisonRejectionReason::BuildProfileMismatch,
-    );
+        .is_some_and(|profile| build_profile_mismatch(profile, &current_toolchain))
 }
 
-fn collect_hardware_identity_rejection(
-    current: &BenchmarkManifest,
-    baseline: &LoadedBaseline,
-    result: &mut RunRejections,
-) {
-    result.hardware_identity_mismatch = baseline
+fn has_hardware_identity_mismatch(current: &BenchmarkManifest, baseline: &LoadedBaseline) -> bool {
+    baseline
         .device
         .as_ref()
-        .is_some_and(|device| !same_hardware_identity(device, &current.device));
-    record_mismatch(
-        result,
-        result.hardware_identity_mismatch,
-        "[bench] Hardware identity mismatch: baseline and current devices differ",
-        ComparisonRejectionReason::HardwareIdentityMismatch,
-    );
+        .is_some_and(|device| !same_hardware_identity(device, &current.device))
 }
 
-fn collect_cuda_environment_rejection(
-    current: &BenchmarkManifest,
-    baseline: &LoadedBaseline,
-    result: &mut RunRejections,
-) {
-    result.cuda_environment_mismatch = baseline
+fn has_cuda_environment_mismatch(current: &BenchmarkManifest, baseline: &LoadedBaseline) -> bool {
+    baseline
         .device
         .as_ref()
-        .is_some_and(|device| !same_cuda_environment(device, &current.device));
-    record_mismatch(
-        result,
-        result.cuda_environment_mismatch,
-        "[bench] CUDA environment mismatch: baseline and current driver/runtime/toolkit versions differ",
-        ComparisonRejectionReason::CudaEnvironmentMismatch,
-    );
+        .is_some_and(|device| !same_cuda_environment(device, &current.device))
 }
 
-fn collect_power_clock_rejection(
-    current: &BenchmarkManifest,
-    baseline: &LoadedBaseline,
-    result: &mut RunRejections,
-) {
-    result.power_clock_mismatch = baseline
+fn has_power_clock_mismatch(current: &BenchmarkManifest, baseline: &LoadedBaseline) -> bool {
+    baseline
         .power_clock
         .as_ref()
-        .is_some_and(|controls| controls != &current.power_clock);
-    record_mismatch(
-        result,
-        result.power_clock_mismatch,
-        "[bench] GPU control mismatch: baseline and current power/clock settings differ",
-        ComparisonRejectionReason::PowerClockMismatch,
-    );
+        .is_some_and(|controls| controls != &current.power_clock)
 }
 
-fn collect_host_identity_rejection(
-    current: &BenchmarkManifest,
-    baseline: &LoadedBaseline,
-    result: &mut RunRejections,
-) {
-    result.host_identity_mismatch = baseline.host_identity.as_ref().is_some_and(|host| {
+fn has_host_identity_mismatch(current: &BenchmarkManifest, baseline: &LoadedBaseline) -> bool {
+    baseline.host_identity.as_ref().is_some_and(|host| {
         [
             host.arch != current.toolchain.host_arch,
             host.os != current.toolchain.host_os,
             host.cpu_model != current.toolchain.cpu_model,
         ]
         .contains(&true)
-    });
-    record_mismatch(
-        result,
-        result.host_identity_mismatch,
-        "[bench] Host identity mismatch: baseline and current architecture/OS/CPU differ",
-        ComparisonRejectionReason::HostIdentityMismatch,
-    );
+    })
 }
 
-fn collect_feature_set_rejection(
-    current: &BenchmarkManifest,
-    baseline: &LoadedBaseline,
-    result: &mut RunRejections,
-) {
-    result.feature_set_mismatch = baseline
+fn has_feature_set_mismatch(current: &BenchmarkManifest, baseline: &LoadedBaseline) -> bool {
+    baseline
         .features
         .as_ref()
-        .is_some_and(|features| !same_feature_set(features, &current.features));
-    record_mismatch(
-        result,
-        result.feature_set_mismatch,
-        "[bench] Feature-set mismatch: baseline and current Cargo features differ",
-        ComparisonRejectionReason::FeatureSetMismatch,
-    );
+        .is_some_and(|features| !same_feature_set(features, &current.features))
 }
 
 fn build_profile_mismatch(
