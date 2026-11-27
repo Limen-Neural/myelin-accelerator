@@ -17,9 +17,12 @@ use cust::stream::{Stream, StreamFlags};
 use std::cell::RefCell;
 use tracing::warn;
 
+pub(crate) mod cosine;
+pub(crate) mod lif;
 pub(crate) mod poisson;
 pub(crate) mod routing;
 pub(crate) mod satsolver;
+pub(crate) mod satsolver_walksat;
 pub(crate) mod stdp;
 pub(crate) mod ternary;
 
@@ -361,6 +364,51 @@ impl GpuAccelerator {
         // below completes; all accelerator work uses this same stream.
         unsafe { output.zero_prefix_on(count, stream) }?;
         self.synchronize()
+    }
+
+    pub(crate) fn shared_memory_opt_in_limit() -> GpuResult<u32> {
+        let device = cust::device::Device::get_device(0)
+            .map_err(|e| GpuError::CudaError(format!("device query: {e:?}")))?;
+        let mut value = 0i32;
+        let result = unsafe {
+            cust::sys::cuDeviceGetAttribute(
+                &mut value as *mut i32,
+                cust::sys::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN,
+                device.as_raw(),
+            )
+        };
+        if result as i32 != 0 {
+            return Err(GpuError::CudaError(format!(
+                "cuDeviceGetAttribute shared-memory opt-in limit: {result:?}"
+            )));
+        }
+        u32::try_from(value)
+            .map_err(|_| GpuError::CudaError("shared-memory opt-in limit is negative".into()))
+    }
+
+    pub(crate) fn opt_in_dynamic_shared_mem(
+        function: &cust::function::Function<'_>,
+        shared_bytes: u32,
+        kernel_name: &str,
+    ) -> GpuResult<()> {
+        let value = i32::try_from(shared_bytes).map_err(|_| {
+            GpuError::LaunchFailed(format!(
+                "{kernel_name}: shared-memory size exceeds i32 opt-in limit"
+            ))
+        })?;
+        let result = unsafe {
+            cust::sys::cuFuncSetAttribute(
+                function.to_raw(),
+                cust::sys::CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                value,
+            )
+        };
+        if result as i32 != 0 {
+            return Err(GpuError::CudaError(format!(
+                "cuFuncSetAttribute {kernel_name} shared-memory opt-in: {result:?}"
+            )));
+        }
+        Ok(())
     }
 
     fn expect_len(name: &str, actual: usize, minimum: usize) -> GpuResult<()> {

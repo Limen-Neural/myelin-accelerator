@@ -300,6 +300,199 @@ impl GpuAccelerator {
         Err(self.unavailable_error())
     }
 
+    pub fn lif_step(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: &mut GpuBuffer<u32>,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    pub fn lif_step_async(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: &mut GpuBuffer<u32>,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    pub fn lif_step_weighted(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: &mut GpuBuffer<u32>,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    pub fn lif_step_weighted_async(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: &mut GpuBuffer<u32>,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    pub fn spike_rate(&self, _: &mut GpuBuffer<f32>, _: &GpuBuffer<f32>, _: f32) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    pub fn spike_rate_async(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: f32,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    pub fn reset_membrane(&self, _: &mut GpuBuffer<f32>, _: f32) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    pub fn reset_membrane_async(&self, _: &mut GpuBuffer<f32>, _: f32) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    pub fn cosine_similarity_batched(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: usize,
+        _: usize,
+        _: usize,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    pub fn cosine_similarity_batched_async(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: usize,
+        _: usize,
+        _: usize,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn cosine_similarity_top_k(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<i32>,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn cosine_similarity_top_k_async(
+        &self,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<f32>,
+        _: &mut GpuBuffer<i32>,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn satsolver_init(
+        &self,
+        _: &mut GpuBuffer<u8>,
+        _: &mut GpuBuffer<i32>,
+        _: &GpuBuffer<i32>,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: u32,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn satsolver_init_async(
+        &self,
+        _: &mut GpuBuffer<u8>,
+        _: &mut GpuBuffer<i32>,
+        _: &GpuBuffer<i32>,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: u32,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn satsolver_step(
+        &self,
+        _: &mut GpuBuffer<u8>,
+        _: &mut GpuBuffer<i32>,
+        _: &GpuBuffer<i32>,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: u32,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn satsolver_step_async(
+        &self,
+        _: &mut GpuBuffer<u8>,
+        _: &mut GpuBuffer<i32>,
+        _: &GpuBuffer<i32>,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: u32,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    pub fn satsolver_check_solution(
+        &self,
+        _: &GpuBuffer<i32>,
+        _: &mut GpuBuffer<u8>,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
+    pub fn satsolver_check_solution_async(
+        &self,
+        _: &GpuBuffer<i32>,
+        _: &mut GpuBuffer<u8>,
+    ) -> GpuResult<()> {
+        Err(self.unavailable_error())
+    }
+
     pub fn ensure_temporal_state(&mut self, _: usize, _: usize) -> GpuResult<()> {
         Err(GpuError::NoGpu)
     }

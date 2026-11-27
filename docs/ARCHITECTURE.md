@@ -196,42 +196,52 @@ executing reduced kernels without a record.
 These are the **ergonomic** wrappers currently implemented:
 
 - Lifecycle: `new` (PreferGpu), `require_gpu` / `with_policy`, `is_ready` (context+stream), `kernels_ready`, `capabilities`, `selected_backend`, `fallback`, `kernels` (returns `ModuleLoadFailed` rather than `NoGpu` when a context exists but fatbin/PTX did not load), `synchronize`
-- SAT: `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
-- Spiking: `poisson_encode` / `_async`
+- SAT: `satsolver_init` / `_async`, `satsolver_step` / `_async`, `satsolver_check_solution` / `_async`, `satsolver_extract` / `_async`, `satsolver_aux_reduce_best` / `_async`
+- Spiking: `poisson_encode` / `_async`, `lif_step` / `_async`, `lif_step_weighted` / `_async`, `spike_rate` / `_async`, `reset_membrane` / `_async`
+- Cosine similarity: `cosine_similarity_batched` / `_async`, `cosine_similarity_top_k` / `_async`
 - Plasticity: `stdp_update` / `_async` (weight and trace kernels in stream order)
 - Ternary quant matmul: `ternary_gemv` / `_async`, `ternary_gemm` / `_async` (see [TERNARY.md](TERNARY.md))
 - Routing and selection: `routing_softmax`, `routing_top_k`, `routing_entropy_reduce`, `adjusted_argmax`, `adjusted_argmax_single_block`, `fused_routing_select`, each with `_async` (see [ROUTING.md](ROUTING.md))
 
 - GIF temporal (device kernels under `cuda`; stub fail-closed without it): `ensure_temporal_state(neuron_count, n_inputs)`, `gif_step_weighted_tick`, `reset_temporal_state`, `load_synapse_weights`, `load_synapse_weights_named`, `load_synapse_weights_f16_registered`, `synapse_signature`, `temporal_spikes_to_vec`, `temporal_membrane_to_vec`, `temporal_adaptation_to_vec`, `upload_temporal_input_spikes`, `upload_temporal_input_current`
 
-Scalar CPU oracles for the Poisson and ternary wrappers, plus
-`cosine_similarity_batched`, `lif_step`, and `lif_step_weighted` (loaded, not
-yet wrapped), live in `src/oracle.rs`.
+Scalar CPU oracles for the Poisson, ternary, cosine, and fixed-dynamics LIF
+wrappers live in `src/oracle.rs`.
 
-Additional kernels may be **loaded** in `KernelModule` and still lack a
-dedicated `GpuAccelerator` method. Advanced callers can use
-`accelerator.kernels()?.get_function("…")` and launch with `cust` while we
-grow the wrapper surface. Growing a stable method is preferred for anything
-consumers share.
+Advanced callers can still use `accelerator.kernels()?.get_function("…")` and
+launch with `cust`, but the stable methods above are preferred for shared
+consumer behavior because they encode dimension checks, launch geometry, and
+dynamic shared-memory requirements in Rust.
 
 ### Device kernels currently registered (`KernelModule::load`)
 
-| PTX module | Symbols |
-|------------|---------|
-| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `gif_step_weighted`, `gif_step_weighted_f16`, `spike_rate`, `reset_membrane`, `stdp_update_weights`, `stdp_update_traces`, `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` |
-| `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` |
-| `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass1`, `satsolver_best_reduce_pass2` |
-| `ternary_gemm` | `ternary_gemv`, `ternary_gemm` |
-| `routing_selection` | `routing_softmax`, `routing_top_k`, `adjusted_argmax_pass1`, `indexed_argmax_reduce_pass2`, `adjusted_argmax_single_block`, `fused_routing_pass1`, `fused_routing_pass2` |
+The inventory below reflects the post-GH #35 tree. It has 24 symbols in the
+original four modules (the GH #63 evidence counted 22 before the two GIF
+symbols) plus seven symbols in the newer `routing_selection` module. Required
+symbols must be present for module load. Load-optional symbols are mapped when
+present but a missing optional symbol does not fail `KernelModule::load`.
+
+| PTX module | Required symbols | Load-optional symbols | Public-wrapper status |
+|------------|------------------|-----------------------|-----------------------|
+| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `gif_step_weighted`, `gif_step_weighted_f16`, `spike_rate`, `reset_membrane`, `stdp_update_weights`, `stdp_update_traces`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` | `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1` | Poisson, fixed LIF, GIF temporal, spike-rate, reset, and STDP operations have direct wrappers. The two reduction symbols are used indirectly by `routing_entropy_reduce`. The optional bias/dv-dt symbols are experimental and have no stable wrapper. |
+| `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` | none | Both have direct wrappers. |
+| `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass2` | `satsolver_best_reduce_pass1` | Init, step, solution check, extract, and best-reduction operations have direct wrappers. Standalone pass1 is superseded by the aux-update partial producer in the public reduction path and remains diagnostic-only. |
+| `ternary_gemm` | `ternary_gemv`, `ternary_gemm` | none | Both have direct wrappers. |
+| `routing_selection` | `routing_softmax`, `routing_top_k`, `adjusted_argmax_pass1`, `indexed_argmax_reduce_pass2`, `adjusted_argmax_single_block`, `fused_routing_pass1`, `fused_routing_pass2` | none | All are used by direct or fused routing wrappers (see [ROUTING.md](ROUTING.md)). |
+
+`lif_step_weighted` declares dynamic shared memory for its input tile. Its
+wrapper computes `n_inputs * size_of::<f32>()`, rejects zero/overflowing or
+device-limit-exceeding sizes before launch, and opts in above the 48 KiB
+default when needed. `cosine_similarity_top_k` uses zero dynamic shared memory
+and selects at most 32 keys per query, padding remaining slots with `-1`.
 
 `lif_step` and `lif_step_weighted` have raw-symbol differential coverage:
 `tests/snn_fixtures_gpu.rs` compares membrane, refractory state, and spikes
 bit-exactly against `oracle::lif_step_oracle` /
 `oracle::lif_step_weighted_oracle` every timestep. It runs on pinned
 Spikenaut-shaped (16×16) and Synfire/NIR-shaped (1×1) workloads.
-They still have **no stable `GpuAccelerator` wrapper in v0.2.0**, and their
-LIF dynamics are fixed (decay 0.85, threshold 1.0, reset 0.0, 2 refractory
-ticks). The fixtures are workload-only, not model-parity claims. See
+They now have stable `GpuAccelerator` wrappers, but their LIF dynamics are
+still fixed (decay 0.85, threshold 1.0, reset 0.0, 2 refractory ticks). The fixtures are workload-only, not model-parity claims. See
 [SNN_COMPATIBILITY.md](SNN_COMPATIBILITY.md). Exact external-model
 interoperability is GH #43 / LIM-1461 (v0.3.0).
 

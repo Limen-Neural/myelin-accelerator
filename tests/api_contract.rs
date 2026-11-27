@@ -491,6 +491,78 @@ mod stub_contract {
         assert!(acc.synapse_signature().is_none());
     }
 
+    #[test]
+    fn accelerator_public_lif_cosine_and_walksat_wrappers_fail_closed() {
+        let acc = GpuAccelerator::new();
+
+        let mut membrane = GpuBuffer::<f32>::alloc(2).unwrap();
+        let input_current = GpuBuffer::<f32>::alloc(2).unwrap();
+        let weights = GpuBuffer::<f32>::alloc(4).unwrap();
+        let input_spikes = GpuBuffer::<f32>::alloc(2).unwrap();
+        let mut refractory = GpuBuffer::<u32>::alloc(2).unwrap();
+        let mut spikes_out = GpuBuffer::<u32>::alloc(2).unwrap();
+        assert!(
+            acc.lif_step(
+                &mut membrane,
+                &input_current,
+                &mut refractory,
+                &mut spikes_out
+            )
+            .is_err()
+        );
+        assert!(
+            acc.lif_step_weighted(
+                &mut membrane,
+                &weights,
+                &input_spikes,
+                &mut refractory,
+                &mut spikes_out,
+            )
+            .is_err()
+        );
+        assert!(acc.spike_rate(&mut membrane, &input_spikes, 0.95).is_err());
+        assert!(acc.reset_membrane(&mut membrane, 0.0).is_err());
+
+        let queries = GpuBuffer::<f32>::alloc(4).unwrap();
+        let keys = GpuBuffer::<f32>::alloc(4).unwrap();
+        let mut scores_matrix = GpuBuffer::<f32>::alloc(4).unwrap();
+        let mut indices = GpuBuffer::<i32>::alloc(2).unwrap();
+        assert!(
+            acc.cosine_similarity_batched(&queries, &keys, &mut scores_matrix, 2, 2, 2)
+                .is_err()
+        );
+        assert!(
+            acc.cosine_similarity_top_k(
+                &queries,
+                &keys,
+                &mut scores_matrix,
+                &mut indices,
+                2,
+                2,
+                2,
+                1,
+            )
+            .is_err()
+        );
+
+        let mut assignment = GpuBuffer::<u8>::alloc(2).unwrap();
+        let mut sat_scores = GpuBuffer::<i32>::alloc(1).unwrap();
+        let clauses = GpuBuffer::<i32>::alloc(3).unwrap();
+        let mut solved = GpuBuffer::<u8>::alloc(1).unwrap();
+        assert!(
+            acc.satsolver_init(&mut assignment, &mut sat_scores, &clauses, 1, 2, 1, 3, 7)
+                .is_err()
+        );
+        assert!(
+            acc.satsolver_step(&mut assignment, &mut sat_scores, &clauses, 1, 2, 1, 3, 8)
+                .is_err()
+        );
+        assert!(
+            acc.satsolver_check_solution(&sat_scores, &mut solved)
+                .is_err()
+        );
+    }
+
     /// The CPU stub stays fail-closed for empty Poisson requests on both entry
     /// points (GH #48), matching the CUDA fallback contract.
     #[test]
