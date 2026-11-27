@@ -56,6 +56,7 @@ const SPIKING_KERNELS: &[&str] = &[
     "poisson_encode",
     "lif_step",
     "lif_step_weighted",
+    "lif_step_weighted_per_neuron",
     "gif_step_weighted",
     "gif_step_weighted_f16",
     "spike_rate",

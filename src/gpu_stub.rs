@@ -393,6 +393,48 @@ impl GpuAccelerator {
         Err(self.unavailable_error())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn lif_step_weighted_per_neuron(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: &mut GpuBuffer<u32>,
+        lif_reset: f32,
+        _: u32,
+    ) -> GpuResult<()> {
+        if !lif_reset.is_finite() {
+            return Err(GpuError::invalid_input(
+                "lif_step_weighted_per_neuron: lif_reset must be finite",
+            ));
+        }
+        Err(self.unavailable_error())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn lif_step_weighted_per_neuron_async(
+        &self,
+        _: &mut GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &GpuBuffer<f32>,
+        _: &mut GpuBuffer<u32>,
+        _: &mut GpuBuffer<u32>,
+        lif_reset: f32,
+        _: u32,
+    ) -> GpuResult<()> {
+        if !lif_reset.is_finite() {
+            return Err(GpuError::invalid_input(
+                "lif_step_weighted_per_neuron: lif_reset must be finite",
+            ));
+        }
+        Err(self.unavailable_error())
+    }
+
     pub fn spike_rate(&self, _: &mut GpuBuffer<f32>, _: &GpuBuffer<f32>, _: f32) -> GpuResult<()> {
         Err(self.unavailable_error())
     }
