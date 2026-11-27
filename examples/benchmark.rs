@@ -1290,12 +1290,15 @@ struct RunRejections {
 
 impl RunRejections {
     fn provenance_mismatch(&self) -> bool {
-        self.build_profile_mismatch
-            || self.hardware_identity_mismatch
-            || self.cuda_environment_mismatch
-            || self.power_clock_mismatch
-            || self.host_identity_mismatch
-            || self.feature_set_mismatch
+        [
+            self.build_profile_mismatch,
+            self.hardware_identity_mismatch,
+            self.cuda_environment_mismatch,
+            self.power_clock_mismatch,
+            self.host_identity_mismatch,
+            self.feature_set_mismatch,
+        ]
+        .contains(&true)
     }
 
     fn push_global(&mut self, reason: ComparisonRejectionReason) {
@@ -1312,86 +1315,180 @@ fn collect_run_rejections(
     duplicate_baseline_names: &BTreeSet<String>,
     duplicate_current_names: &BTreeSet<String>,
 ) -> RunRejections {
+    let mut result = collect_provenance_rejections(current, baseline);
+    append_duplicate_rejections(
+        &mut result,
+        duplicate_baseline_names,
+        duplicate_current_names,
+    );
+    result
+}
+
+fn collect_provenance_rejections(
+    current: &BenchmarkManifest,
+    baseline: &LoadedBaseline,
+) -> RunRejections {
     let mut result = RunRejections::default();
+    collect_build_profile_rejection(current, baseline, &mut result);
+    collect_hardware_identity_rejection(current, baseline, &mut result);
+    collect_cuda_environment_rejection(current, baseline, &mut result);
+    collect_power_clock_rejection(current, baseline, &mut result);
+    collect_host_identity_rejection(current, baseline, &mut result);
+    collect_feature_set_rejection(current, baseline, &mut result);
+    result
+}
+
+fn collect_build_profile_rejection(
+    current: &BenchmarkManifest,
+    baseline: &LoadedBaseline,
+    result: &mut RunRejections,
+) {
     let current_toolchain =
         canonicalize_toolchain(&current.toolchain).expect("toolchain provenance must canonicalize");
+    result.build_profile_mismatch = baseline
+        .build_profile
+        .as_ref()
+        .is_some_and(|profile| build_profile_mismatch(profile, &current_toolchain));
+    record_mismatch(
+        result,
+        result.build_profile_mismatch,
+        "[bench] Build profile mismatch: baseline and current compiler/profile settings differ",
+        ComparisonRejectionReason::BuildProfileMismatch,
+    );
+}
 
-    result.build_profile_mismatch = baseline.build_profile.as_ref().is_some_and(|profile| {
-        profile.cargo_profile_fingerprint.is_none()
-            || current_toolchain.cargo_profile_fingerprint.is_none()
-            || profile.rustc != current_toolchain.rustc
-            || profile.nvcc != current_toolchain.nvcc
-            || profile.rustflags != current_toolchain.rustflags
-            || profile.target_features != current_toolchain.target_features
-            || profile.cargo_profile != current_toolchain.cargo_profile
-            || profile.cargo_profile_fingerprint != current_toolchain.cargo_profile_fingerprint
-            || profile.cargo_lto != current_toolchain.cargo_lto
-            || profile.cargo_codegen_units != current_toolchain.cargo_codegen_units
-            || profile.cargo_incremental != current_toolchain.cargo_incremental
-            || profile.panic_strategy != current_toolchain.panic_strategy
-            || profile.cuda_arch != current_toolchain.cuda_arch
-            || profile.ptx_version != current_toolchain.ptx_version
-            || profile.target_triple != current_toolchain.target_triple
-            || profile.opt_level != current_toolchain.opt_level
-            || profile.debug_assertions != current_toolchain.debug_assertions
-    });
-    if result.build_profile_mismatch {
-        eprintln!(
-            "[bench] Build profile mismatch: baseline and current compiler/profile settings differ"
-        );
-        result.push_global(ComparisonRejectionReason::BuildProfileMismatch);
-    }
-
+fn collect_hardware_identity_rejection(
+    current: &BenchmarkManifest,
+    baseline: &LoadedBaseline,
+    result: &mut RunRejections,
+) {
     result.hardware_identity_mismatch = baseline
         .device
         .as_ref()
         .is_some_and(|device| !same_hardware_identity(device, &current.device));
-    if result.hardware_identity_mismatch {
-        eprintln!("[bench] Hardware identity mismatch: baseline and current devices differ");
-        result.push_global(ComparisonRejectionReason::HardwareIdentityMismatch);
-    }
+    record_mismatch(
+        result,
+        result.hardware_identity_mismatch,
+        "[bench] Hardware identity mismatch: baseline and current devices differ",
+        ComparisonRejectionReason::HardwareIdentityMismatch,
+    );
+}
 
+fn collect_cuda_environment_rejection(
+    current: &BenchmarkManifest,
+    baseline: &LoadedBaseline,
+    result: &mut RunRejections,
+) {
     result.cuda_environment_mismatch = baseline
         .device
         .as_ref()
         .is_some_and(|device| !same_cuda_environment(device, &current.device));
-    if result.cuda_environment_mismatch {
-        eprintln!(
-            "[bench] CUDA environment mismatch: baseline and current driver/runtime/toolkit versions differ"
-        );
-        result.push_global(ComparisonRejectionReason::CudaEnvironmentMismatch);
-    }
+    record_mismatch(
+        result,
+        result.cuda_environment_mismatch,
+        "[bench] CUDA environment mismatch: baseline and current driver/runtime/toolkit versions differ",
+        ComparisonRejectionReason::CudaEnvironmentMismatch,
+    );
+}
 
+fn collect_power_clock_rejection(
+    current: &BenchmarkManifest,
+    baseline: &LoadedBaseline,
+    result: &mut RunRejections,
+) {
     result.power_clock_mismatch = baseline
         .power_clock
         .as_ref()
         .is_some_and(|controls| controls != &current.power_clock);
-    if result.power_clock_mismatch {
-        eprintln!("[bench] GPU control mismatch: baseline and current power/clock settings differ");
-        result.push_global(ComparisonRejectionReason::PowerClockMismatch);
-    }
+    record_mismatch(
+        result,
+        result.power_clock_mismatch,
+        "[bench] GPU control mismatch: baseline and current power/clock settings differ",
+        ComparisonRejectionReason::PowerClockMismatch,
+    );
+}
 
+fn collect_host_identity_rejection(
+    current: &BenchmarkManifest,
+    baseline: &LoadedBaseline,
+    result: &mut RunRejections,
+) {
     result.host_identity_mismatch = baseline.host_identity.as_ref().is_some_and(|host| {
-        host.arch != current.toolchain.host_arch
-            || host.os != current.toolchain.host_os
-            || host.cpu_model != current.toolchain.cpu_model
+        [
+            host.arch != current.toolchain.host_arch,
+            host.os != current.toolchain.host_os,
+            host.cpu_model != current.toolchain.cpu_model,
+        ]
+        .contains(&true)
     });
-    if result.host_identity_mismatch {
-        eprintln!(
-            "[bench] Host identity mismatch: baseline and current architecture/OS/CPU differ"
-        );
-        result.push_global(ComparisonRejectionReason::HostIdentityMismatch);
-    }
+    record_mismatch(
+        result,
+        result.host_identity_mismatch,
+        "[bench] Host identity mismatch: baseline and current architecture/OS/CPU differ",
+        ComparisonRejectionReason::HostIdentityMismatch,
+    );
+}
 
+fn collect_feature_set_rejection(
+    current: &BenchmarkManifest,
+    baseline: &LoadedBaseline,
+    result: &mut RunRejections,
+) {
     result.feature_set_mismatch = baseline
         .features
         .as_ref()
         .is_some_and(|features| !same_feature_set(features, &current.features));
-    if result.feature_set_mismatch {
-        eprintln!("[bench] Feature-set mismatch: baseline and current Cargo features differ");
-        result.push_global(ComparisonRejectionReason::FeatureSetMismatch);
-    }
+    record_mismatch(
+        result,
+        result.feature_set_mismatch,
+        "[bench] Feature-set mismatch: baseline and current Cargo features differ",
+        ComparisonRejectionReason::FeatureSetMismatch,
+    );
+}
 
+fn build_profile_mismatch(
+    profile: &BuildProfile,
+    current_toolchain: &myelin_accelerator::bench::ToolchainInfo,
+) -> bool {
+    [
+        profile.cargo_profile_fingerprint.is_none(),
+        current_toolchain.cargo_profile_fingerprint.is_none(),
+        profile.rustc != current_toolchain.rustc,
+        profile.nvcc != current_toolchain.nvcc,
+        profile.rustflags != current_toolchain.rustflags,
+        profile.target_features != current_toolchain.target_features,
+        profile.cargo_profile != current_toolchain.cargo_profile,
+        profile.cargo_profile_fingerprint != current_toolchain.cargo_profile_fingerprint,
+        profile.cargo_lto != current_toolchain.cargo_lto,
+        profile.cargo_codegen_units != current_toolchain.cargo_codegen_units,
+        profile.cargo_incremental != current_toolchain.cargo_incremental,
+        profile.panic_strategy != current_toolchain.panic_strategy,
+        profile.cuda_arch != current_toolchain.cuda_arch,
+        profile.ptx_version != current_toolchain.ptx_version,
+        profile.target_triple != current_toolchain.target_triple,
+        profile.opt_level != current_toolchain.opt_level,
+        profile.debug_assertions != current_toolchain.debug_assertions,
+    ]
+    .contains(&true)
+}
+
+fn record_mismatch(
+    result: &mut RunRejections,
+    mismatch: bool,
+    message: &str,
+    reason: ComparisonRejectionReason,
+) {
+    if mismatch {
+        eprintln!("{message}");
+        result.push_global(reason);
+    }
+}
+
+fn append_duplicate_rejections(
+    result: &mut RunRejections,
+    duplicate_baseline_names: &BTreeSet<String>,
+    duplicate_current_names: &BTreeSet<String>,
+) {
     for name in duplicate_baseline_names {
         result.rejections.push(ComparisonRejection {
             reason: ComparisonRejectionReason::DuplicateBaselineName,
@@ -1404,8 +1501,6 @@ fn collect_run_rejections(
             case_name: Some(name.clone()),
         });
     }
-
-    result
 }
 
 fn unmatched_baseline_names(rows: &[BaselineRow], current_cases: &[ManifestCase]) -> Vec<String> {
