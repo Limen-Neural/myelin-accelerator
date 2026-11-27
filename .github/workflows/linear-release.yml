@@ -107,7 +107,8 @@ jobs:
             -o "$artifact_dir/version.json" \
             "https://crates.io/api/v1/crates/myelin-accelerator/$CRATE_VERSION"
           curl --fail --silent --show-error --location --retry 8 --retry-delay 15 \
-            --retry-all-errors --user-agent 'myelin-accelerator-release-ci' \
+            --retry-all-errors --proto '=https' --proto-redir '=https' \
+            --user-agent 'myelin-accelerator-release-ci' \
             -o "$artifact_dir/package.crate" \
             "https://crates.io/api/v1/crates/myelin-accelerator/$CRATE_VERSION/download"
           python3 - "$artifact_dir/version.json" "$artifact_dir/package.crate" <<'PY'
