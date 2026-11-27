@@ -1186,9 +1186,67 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
             );
         }
     };
-    let rows = baseline.rows;
-    let current_cases = &current.cases;
 
+    print_comparison_header(baseline_path, config);
+
+    let duplicate_baseline_names =
+        duplicate_names(baseline.rows.iter().map(|row| row.name.as_str()));
+    let duplicate_current_names =
+        duplicate_names(current.cases.iter().map(|case| case.name.as_str()));
+    print_duplicate_case_names(&duplicate_baseline_names, &duplicate_current_names);
+
+    let run_rejections = collect_run_rejections(
+        current,
+        &baseline,
+        &duplicate_baseline_names,
+        &duplicate_current_names,
+    );
+    let run_provenance_mismatch = run_rejections.provenance_mismatch();
+    let unmatched_baseline = unmatched_baseline_names(&baseline.rows, &current.cases);
+    let unmatched_current = unmatched_current_names(&baseline.rows, &current.cases);
+
+    let mut rejections = run_rejections.rejections;
+    rejections.extend(unmatched_case_rejections(
+        &unmatched_baseline,
+        &unmatched_current,
+    ));
+
+    let (cases, case_rejections, mismatched_workloads) = compare_matching_cases(
+        &baseline.rows,
+        &current.cases,
+        &duplicate_baseline_names,
+        &duplicate_current_names,
+        run_provenance_mismatch,
+        &config.budget,
+    );
+    rejections.extend(case_rejections);
+
+    let report = comparison_report(
+        cases,
+        config.budget.clone(),
+        config.enforce_budget,
+        rejections,
+    );
+    if let Err(err) = write_comparison(&report, &config.output_prefix) {
+        eprintln!("[bench] {err}");
+        return 1;
+    }
+    if config.enforce_budget && !report.gate_passed {
+        print_enforcement_failure(
+            &report,
+            &unmatched_baseline,
+            &unmatched_current,
+            &mismatched_workloads,
+            &duplicate_baseline_names,
+            &duplicate_current_names,
+        );
+        1
+    } else {
+        0
+    }
+}
+
+fn print_comparison_header(baseline_path: &str, config: &Config) {
     println!("\n{:=>70}", "");
     println!("  Baseline comparison: {baseline_path}");
     if config.enforce_budget {
@@ -1205,21 +1263,60 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
         "Benchmark", "Base p50(µs)", "Curr p50(µs)", "Rel %", "Abs µs", "Class"
     );
     println!("{:-<110}", "");
+}
 
-    let duplicate_baseline_names = duplicate_names(rows.iter().map(|row| row.name.as_str()));
-    let duplicate_current_names =
-        duplicate_names(current_cases.iter().map(|case| case.name.as_str()));
-    for name in &duplicate_baseline_names {
+fn print_duplicate_case_names(
+    duplicate_baseline_names: &BTreeSet<String>,
+    duplicate_current_names: &BTreeSet<String>,
+) {
+    for name in duplicate_baseline_names {
         eprintln!("[bench] Duplicate baseline case name: {name}");
     }
-    for name in &duplicate_current_names {
+    for name in duplicate_current_names {
         eprintln!("[bench] Duplicate current case name: {name}");
     }
+}
 
-    let mut rejections = Vec::new();
+#[derive(Default)]
+struct RunRejections {
+    rejections: Vec<ComparisonRejection>,
+    build_profile_mismatch: bool,
+    hardware_identity_mismatch: bool,
+    cuda_environment_mismatch: bool,
+    power_clock_mismatch: bool,
+    host_identity_mismatch: bool,
+    feature_set_mismatch: bool,
+}
+
+impl RunRejections {
+    fn provenance_mismatch(&self) -> bool {
+        self.build_profile_mismatch
+            || self.hardware_identity_mismatch
+            || self.cuda_environment_mismatch
+            || self.power_clock_mismatch
+            || self.host_identity_mismatch
+            || self.feature_set_mismatch
+    }
+
+    fn push_global(&mut self, reason: ComparisonRejectionReason) {
+        self.rejections.push(ComparisonRejection {
+            reason,
+            case_name: None,
+        });
+    }
+}
+
+fn collect_run_rejections(
+    current: &BenchmarkManifest,
+    baseline: &LoadedBaseline,
+    duplicate_baseline_names: &BTreeSet<String>,
+    duplicate_current_names: &BTreeSet<String>,
+) -> RunRejections {
+    let mut result = RunRejections::default();
     let current_toolchain =
         canonicalize_toolchain(&current.toolchain).expect("toolchain provenance must canonicalize");
-    let build_profile_mismatch = baseline.build_profile.as_ref().is_some_and(|profile| {
+
+    result.build_profile_mismatch = baseline.build_profile.as_ref().is_some_and(|profile| {
         profile.cargo_profile_fingerprint.is_none()
             || current_toolchain.cargo_profile_fingerprint.is_none()
             || profile.rustc != current_toolchain.rustc
@@ -1238,128 +1335,135 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
             || profile.opt_level != current_toolchain.opt_level
             || profile.debug_assertions != current_toolchain.debug_assertions
     });
-    if build_profile_mismatch {
+    if result.build_profile_mismatch {
         eprintln!(
             "[bench] Build profile mismatch: baseline and current compiler/profile settings differ"
         );
-        rejections.push(ComparisonRejection {
-            reason: ComparisonRejectionReason::BuildProfileMismatch,
-            case_name: None,
-        });
+        result.push_global(ComparisonRejectionReason::BuildProfileMismatch);
     }
-    let hardware_identity_mismatch = baseline
+
+    result.hardware_identity_mismatch = baseline
         .device
         .as_ref()
         .is_some_and(|device| !same_hardware_identity(device, &current.device));
-    if hardware_identity_mismatch {
+    if result.hardware_identity_mismatch {
         eprintln!("[bench] Hardware identity mismatch: baseline and current devices differ");
-        rejections.push(ComparisonRejection {
-            reason: ComparisonRejectionReason::HardwareIdentityMismatch,
-            case_name: None,
-        });
+        result.push_global(ComparisonRejectionReason::HardwareIdentityMismatch);
     }
-    let cuda_environment_mismatch = baseline
+
+    result.cuda_environment_mismatch = baseline
         .device
         .as_ref()
         .is_some_and(|device| !same_cuda_environment(device, &current.device));
-    if cuda_environment_mismatch {
+    if result.cuda_environment_mismatch {
         eprintln!(
             "[bench] CUDA environment mismatch: baseline and current driver/runtime/toolkit versions differ"
         );
-        rejections.push(ComparisonRejection {
-            reason: ComparisonRejectionReason::CudaEnvironmentMismatch,
-            case_name: None,
-        });
+        result.push_global(ComparisonRejectionReason::CudaEnvironmentMismatch);
     }
-    let power_clock_mismatch = baseline
+
+    result.power_clock_mismatch = baseline
         .power_clock
         .as_ref()
         .is_some_and(|controls| controls != &current.power_clock);
-    if power_clock_mismatch {
+    if result.power_clock_mismatch {
         eprintln!("[bench] GPU control mismatch: baseline and current power/clock settings differ");
-        rejections.push(ComparisonRejection {
-            reason: ComparisonRejectionReason::PowerClockMismatch,
-            case_name: None,
-        });
+        result.push_global(ComparisonRejectionReason::PowerClockMismatch);
     }
-    let host_identity_mismatch = baseline.host_identity.as_ref().is_some_and(|host| {
+
+    result.host_identity_mismatch = baseline.host_identity.as_ref().is_some_and(|host| {
         host.arch != current.toolchain.host_arch
             || host.os != current.toolchain.host_os
             || host.cpu_model != current.toolchain.cpu_model
     });
-    if host_identity_mismatch {
+    if result.host_identity_mismatch {
         eprintln!(
             "[bench] Host identity mismatch: baseline and current architecture/OS/CPU differ"
         );
-        rejections.push(ComparisonRejection {
-            reason: ComparisonRejectionReason::HostIdentityMismatch,
-            case_name: None,
-        });
+        result.push_global(ComparisonRejectionReason::HostIdentityMismatch);
     }
-    let feature_set_mismatch = baseline
+
+    result.feature_set_mismatch = baseline
         .features
         .as_ref()
         .is_some_and(|features| !same_feature_set(features, &current.features));
-    if feature_set_mismatch {
+    if result.feature_set_mismatch {
         eprintln!("[bench] Feature-set mismatch: baseline and current Cargo features differ");
-        rejections.push(ComparisonRejection {
-            reason: ComparisonRejectionReason::FeatureSetMismatch,
-            case_name: None,
-        });
+        result.push_global(ComparisonRejectionReason::FeatureSetMismatch);
     }
-    for name in &duplicate_baseline_names {
-        rejections.push(ComparisonRejection {
+
+    for name in duplicate_baseline_names {
+        result.rejections.push(ComparisonRejection {
             reason: ComparisonRejectionReason::DuplicateBaselineName,
             case_name: Some(name.clone()),
         });
     }
-    for name in &duplicate_current_names {
-        rejections.push(ComparisonRejection {
+    for name in duplicate_current_names {
+        result.rejections.push(ComparisonRejection {
             reason: ComparisonRejectionReason::DuplicateCurrentName,
             case_name: Some(name.clone()),
         });
     }
 
-    let unmatched_baseline: Vec<&str> = rows
-        .iter()
+    result
+}
+
+fn unmatched_baseline_names(rows: &[BaselineRow], current_cases: &[ManifestCase]) -> Vec<String> {
+    rows.iter()
         .filter(|base| !current_cases.iter().any(|case| case.name == base.name))
-        .map(|base| base.name.as_str())
-        .collect();
-    for name in &unmatched_baseline {
+        .map(|base| base.name.clone())
+        .collect()
+}
+
+fn unmatched_current_names(rows: &[BaselineRow], current_cases: &[ManifestCase]) -> Vec<String> {
+    current_cases
+        .iter()
+        .filter(|case| !rows.iter().any(|base| base.name == case.name))
+        .map(|case| case.name.clone())
+        .collect()
+}
+
+fn unmatched_case_rejections(
+    unmatched_baseline: &[String],
+    unmatched_current: &[String],
+) -> Vec<ComparisonRejection> {
+    let mut rejections = Vec::new();
+    for name in unmatched_baseline {
         eprintln!("[bench] Baseline case missing from current run: {name}");
         rejections.push(ComparisonRejection {
             reason: ComparisonRejectionReason::MissingCurrentCase,
-            case_name: Some((*name).to_string()),
+            case_name: Some(name.clone()),
         });
     }
-    let unmatched_current: Vec<&str> = current_cases
-        .iter()
-        .filter(|case| !rows.iter().any(|base| base.name == case.name))
-        .map(|case| case.name.as_str())
-        .collect();
-    for name in &unmatched_current {
+    for name in unmatched_current {
         eprintln!("[bench] Current case missing from baseline: {name}");
         rejections.push(ComparisonRejection {
             reason: ComparisonRejectionReason::MissingBaselineCase,
-            case_name: Some((*name).to_string()),
+            case_name: Some(name.clone()),
         });
     }
+    rejections
+}
 
-    let mut cases: Vec<ComparisonCase> = Vec::new();
+fn compare_matching_cases(
+    rows: &[BaselineRow],
+    current_cases: &[ManifestCase],
+    duplicate_baseline_names: &BTreeSet<String>,
+    duplicate_current_names: &BTreeSet<String>,
+    run_provenance_mismatch: bool,
+    budget: &RegressionBudget,
+) -> (Vec<ComparisonCase>, Vec<ComparisonRejection>, Vec<String>) {
+    let mut cases = Vec::new();
+    let mut rejections = Vec::new();
     let mut mismatched_workloads = Vec::new();
-    let run_provenance_mismatch = build_profile_mismatch
-        || hardware_identity_mismatch
-        || cuda_environment_mismatch
-        || power_clock_mismatch
-        || host_identity_mismatch
-        || feature_set_mismatch;
+
     for curr in current_cases {
         if duplicate_baseline_names.contains(&curr.name)
             || duplicate_current_names.contains(&curr.name)
         {
             continue;
         }
-        let Some(base) = rows.iter().find(|r| r.name == curr.name) else {
+        let Some(base) = rows.iter().find(|row| row.name == curr.name) else {
             continue;
         };
         if run_provenance_mismatch {
@@ -1370,7 +1474,7 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
                 "[bench] Warmup mismatch for {}: baseline and current warmup counts differ",
                 curr.name
             );
-            mismatched_workloads.push(curr.name.as_str());
+            mismatched_workloads.push(curr.name.clone());
             rejections.push(ComparisonRejection {
                 reason: ComparisonRejectionReason::WarmupMismatch,
                 case_name: Some(curr.name.clone()),
@@ -1382,7 +1486,7 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
                 "[bench] Workload metadata mismatch for {}: baseline and current kernel variant/input dimensions/seed differ",
                 curr.name
             );
-            mismatched_workloads.push(curr.name.as_str());
+            mismatched_workloads.push(curr.name.clone());
             rejections.push(ComparisonRejection {
                 reason: ComparisonRejectionReason::WorkloadMetadataMismatch,
                 case_name: Some(curr.name.clone()),
@@ -1393,67 +1497,65 @@ fn compare_with_baseline(current: &BenchmarkManifest, config: &Config) -> i32 {
             &curr.name,
             base.source(),
             SampleSource::Samples(&curr.samples_us),
-            &config.budget,
+            budget,
         );
-        let rel_pct = row
-            .relative_delta
-            .map(|delta| format!("{:+.1}%", delta * 100.0))
-            .unwrap_or_else(|| "n/a".to_string());
-        println!(
-            "{:<40} {:>12.2} {:>12.2} {:>10} {:>10.2} {:>22}",
-            row.name,
-            row.baseline_median_us,
-            row.current_median_us,
-            rel_pct,
-            row.absolute_delta_us,
-            class_label(row.class),
-        );
+        print_comparison_row(&row);
         cases.push(row);
     }
 
-    let report = comparison_report(
-        cases,
-        config.budget.clone(),
-        config.enforce_budget,
-        rejections,
+    (cases, rejections, mismatched_workloads)
+}
+
+fn print_comparison_row(row: &ComparisonCase) {
+    let rel_pct = row
+        .relative_delta
+        .map(|delta| format!("{:+.1}%", delta * 100.0))
+        .unwrap_or_else(|| "n/a".to_string());
+    println!(
+        "{:<40} {:>12.2} {:>12.2} {:>10} {:>10.2} {:>22}",
+        row.name,
+        row.baseline_median_us,
+        row.current_median_us,
+        rel_pct,
+        row.absolute_delta_us,
+        class_label(row.class),
     );
-    if let Err(err) = write_comparison(&report, &config.output_prefix) {
-        eprintln!("[bench] {err}");
-        return 1;
+}
+
+fn print_enforcement_failure(
+    report: &myelin_accelerator::bench::ComparisonReport,
+    unmatched_baseline: &[String],
+    unmatched_current: &[String],
+    mismatched_workloads: &[String],
+    duplicate_baseline_names: &BTreeSet<String>,
+    duplicate_current_names: &BTreeSet<String>,
+) {
+    if !unmatched_baseline.is_empty() {
+        eprintln!(
+            "[bench] {} baseline case(s) missing from current run (enforcement enabled).",
+            unmatched_baseline.len()
+        );
     }
-    if config.enforce_budget && !report.gate_passed {
-        if !unmatched_baseline.is_empty() {
-            eprintln!(
-                "[bench] {} baseline case(s) missing from current run (enforcement enabled).",
-                unmatched_baseline.len()
-            );
-        }
-        if !unmatched_current.is_empty() {
-            eprintln!(
-                "[bench] {} current case(s) missing from baseline (enforcement enabled).",
-                unmatched_current.len()
-            );
-        }
-        if report.has_failure() {
-            eprintln!(
-                "[bench] Regression or insufficient-sample case rejected (enforcement enabled)."
-            );
-        }
-        if !mismatched_workloads.is_empty() {
-            eprintln!(
-                "[bench] {} workload metadata mismatch(es) rejected (enforcement enabled).",
-                mismatched_workloads.len()
-            );
-        }
-        if report.cases.is_empty() {
-            eprintln!("[bench] No comparable benchmark cases were produced (enforcement enabled).");
-        }
-        if !duplicate_baseline_names.is_empty() || !duplicate_current_names.is_empty() {
-            eprintln!("[bench] Duplicate case names are ambiguous (enforcement enabled).");
-        }
-        1
-    } else {
-        0
+    if !unmatched_current.is_empty() {
+        eprintln!(
+            "[bench] {} current case(s) missing from baseline (enforcement enabled).",
+            unmatched_current.len()
+        );
+    }
+    if report.has_failure() {
+        eprintln!("[bench] Regression or insufficient-sample case rejected (enforcement enabled).");
+    }
+    if !mismatched_workloads.is_empty() {
+        eprintln!(
+            "[bench] {} workload metadata mismatch(es) rejected (enforcement enabled).",
+            mismatched_workloads.len()
+        );
+    }
+    if report.cases.is_empty() {
+        eprintln!("[bench] No comparable benchmark cases were produced (enforcement enabled).");
+    }
+    if !duplicate_baseline_names.is_empty() || !duplicate_current_names.is_empty() {
+        eprintln!("[bench] Duplicate case names are ambiguous (enforcement enabled).");
     }
 }
 
@@ -1845,6 +1947,37 @@ fn print_results(results: &[BenchmarkResult]) {
         );
     }
     println!();
+}
+
+/// Simple timestamp without chrono dependency.
+fn chrono_now() -> String {
+    // Use system time to produce an ISO-8601-ish timestamp.
+    let dur = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = dur.as_secs();
+    // Simple conversion: days since epoch -> Y-M-D (ignores leap seconds)
+    let days = secs / 86400;
+    let (y, m, d) = days_to_ymd(days as i64 + 719468);
+    let time_of_day = secs % 86400;
+    let h = time_of_day / 3600;
+    let min = (time_of_day % 3600) / 60;
+    let s = time_of_day % 60;
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{s:02}Z")
+}
+
+fn days_to_ymd(g: i64) -> (i64, u32, u32) {
+    let mut y = (10000 * g + 14780) / 3652425;
+    let mut doy = g - (365 * y + y / 4 - y / 100 + y / 400);
+    if doy < 0 {
+        y -= 1;
+        doy = g - (365 * y + y / 4 - y / 100 + y / 400);
+    }
+    let mi = (100 * doy + 52) / 3060;
+    let month = (mi + 2) % 12 + 1;
+    let year = y + (mi + 2) / 12;
+    let day = doy - (mi * 306 + 5) / 10 + 1;
+    (year, month as u32, day as u32)
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -3244,35 +3377,4 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(dir);
     }
-}
-
-/// Simple timestamp without chrono dependency.
-fn chrono_now() -> String {
-    // Use system time to produce an ISO-8601-ish timestamp.
-    let dur = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
-    // Simple conversion: days since epoch -> Y-M-D (ignores leap seconds)
-    let days = secs / 86400;
-    let (y, m, d) = days_to_ymd(days as i64 + 719468);
-    let time_of_day = secs % 86400;
-    let h = time_of_day / 3600;
-    let min = (time_of_day % 3600) / 60;
-    let s = time_of_day % 60;
-    format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{s:02}Z")
-}
-
-fn days_to_ymd(g: i64) -> (i64, u32, u32) {
-    let mut y = (10000 * g + 14780) / 3652425;
-    let mut doy = g - (365 * y + y / 4 - y / 100 + y / 400);
-    if doy < 0 {
-        y -= 1;
-        doy = g - (365 * y + y / 4 - y / 100 + y / 400);
-    }
-    let mi = (100 * doy + 52) / 3060;
-    let month = (mi + 2) % 12 + 1;
-    let year = y + (mi + 2) / 12;
-    let day = doy - (mi * 306 + 5) / 10 + 1;
-    (year, month as u32, day as u32)
 }
