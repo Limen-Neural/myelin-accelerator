@@ -238,7 +238,7 @@ present but a missing optional symbol does not fail `KernelModule::load`.
 | `routing_selection` | `routing_softmax`, `routing_top_k`, `adjusted_argmax_pass1`, `indexed_argmax_reduce_pass2`, `adjusted_argmax_single_block`, `fused_routing_pass1`, `fused_routing_pass2` | none | All are used by direct or fused routing wrappers (see [ROUTING.md](ROUTING.md)). |
 
 `lif_step_weighted` declares dynamic shared memory for its input tile. Its
-wrapper computes `n_inputs * size_of::<f32>()`, rejects zero/overflowing or
+wrapper computes `n_inputs * size_of::<f32>()`, rejects overflowing or
 device-limit-exceeding sizes before launch, and opts in above the 48 KiB
 default when needed. `cosine_similarity_top_k` uses zero dynamic shared memory
 and selects at most 32 keys per query, padding remaining slots with `-1`.

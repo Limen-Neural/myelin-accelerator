@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::GpuAccelerator;
-use crate::capability::sanitize_diagnostic;
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::memory::GpuBuffer;
 use cust::launch;
@@ -10,169 +9,90 @@ use cust::launch;
 const SATSOLVER_BLOCK_SIZE: u32 = 256;
 const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
 
+// The two kernels share the same launch ABI and validation.
+macro_rules! walksat_operation {
+    ($(#[$sync_doc:meta])* $sync:ident; $(#[$async_doc:meta])* $enqueue:ident) => {
+        $(#[$sync_doc])*
+        #[allow(clippy::too_many_arguments)]
+        pub fn $sync(
+            &self,
+            assignment: &mut GpuBuffer<u8>,
+            scores: &mut GpuBuffer<i32>,
+            clauses: &GpuBuffer<i32>,
+            n_walkers: i32,
+            n_vars: i32,
+            n_clauses: i32,
+            clause_len: i32,
+            seed: u32,
+        ) -> GpuResult<()> {
+            self.$enqueue(assignment, scores, clauses, n_walkers, n_vars, n_clauses, clause_len, seed)?;
+            self.synchronize()
+        }
+
+        $(#[$async_doc])*
+        #[allow(clippy::too_many_arguments)]
+        pub fn $enqueue(
+            &self,
+            assignment: &mut GpuBuffer<u8>,
+            scores: &mut GpuBuffer<i32>,
+            clauses: &GpuBuffer<i32>,
+            n_walkers: i32,
+            n_vars: i32,
+            n_clauses: i32,
+            clause_len: i32,
+            seed: u32,
+        ) -> GpuResult<()> {
+            let kernel = stringify!($sync);
+            validate_walksat_args(
+                kernel, assignment.len(), scores.len(), clauses.len(),
+                n_walkers, n_vars, n_clauses, clause_len,
+            )?;
+            let func = self.kernels()?.get_function(kernel)?;
+            let stream = self.ready_stream()?;
+            let grid = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
+
+            // SAFETY: both entries use the pointer and scalar types below in
+            // this order. The validated buffers cover the requested matrices.
+            // The grid covers every walker, and each kernel guards its tail.
+            // The caller keeps the buffers alive until synchronization.
+            unsafe {
+                launch!(func<<<grid, SATSOLVER_BLOCK_SIZE, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
+                    assignment.as_device_ptr(), scores.as_device_ptr(), clauses.as_device_ptr(),
+                    n_walkers, n_vars, n_clauses, clause_len, seed,
+                ))
+                .map_err(|e| Self::launch_error(kernel, e))?;
+            }
+            Ok(())
+        }
+    };
+}
+
 impl GpuAccelerator {
-    /// Initialise WalkSAT walker assignments and their initial unsatisfied-clause counts.
-    ///
-    /// `assignment` is row-major `n_walkers × n_vars`, `scores` has one element
-    /// per walker, and `clauses` is row-major `n_clauses × clause_len`.
-    /// Encode each literal as `(zero_based_var_index << 1) | negated`, with
-    /// `negated` set to 1 for a negated literal (not a signed DIMACS literal).
-    /// Synchronizes before returning.
-    #[allow(clippy::too_many_arguments)]
-    // @codescene(disable:"Excess Number of Function Arguments")
-    pub fn satsolver_init(
-        &self,
-        assignment: &mut GpuBuffer<u8>,
-        scores: &mut GpuBuffer<i32>,
-        clauses: &GpuBuffer<i32>,
-        n_walkers: i32,
-        n_vars: i32,
-        n_clauses: i32,
-        clause_len: i32,
-        seed: u32,
-    ) -> GpuResult<()> {
-        let launch_result = self.satsolver_init_async(
-            assignment, scores, clauses, n_walkers, n_vars, n_clauses, clause_len, seed,
-        );
-        let sync_result = self.synchronize();
-        launch_result?;
-        sync_result
-    }
+    walksat_operation!(
+        /// Initialise WalkSAT walker assignments and their initial unsatisfied-clause counts.
+        ///
+        /// `assignment` is row-major `n_walkers × n_vars`, `scores` has one element
+        /// per walker, and `clauses` is row-major `n_clauses × clause_len`.
+        /// Encode each literal as `(zero_based_var_index << 1) | negated`, with
+        /// `negated` set to 1 for a negated literal (not a signed DIMACS literal).
+        /// Synchronizes before returning.
+        satsolver_init;
 
-    /// Enqueue [`Self::satsolver_init`]; synchronize before reading or reusing the buffers.
-    #[allow(clippy::too_many_arguments)]
-    // @codescene(disable:"Excess Number of Function Arguments")
-    pub fn satsolver_init_async(
-        &self,
-        assignment: &mut GpuBuffer<u8>,
-        scores: &mut GpuBuffer<i32>,
-        clauses: &GpuBuffer<i32>,
-        n_walkers: i32,
-        n_vars: i32,
-        n_clauses: i32,
-        clause_len: i32,
-        seed: u32,
-    ) -> GpuResult<()> {
-        validate_walksat_args(
-            "satsolver_init",
-            assignment.len(),
-            scores.len(),
-            clauses.len(),
-            n_walkers,
-            n_vars,
-            n_clauses,
-            clause_len,
-        )?;
+        /// Enqueue [`Self::satsolver_init`]; synchronize before reading or reusing buffers.
+        satsolver_init_async
+    );
 
-        let func = self.kernels()?.get_function("satsolver_init")?;
-        let stream = self.ready_stream()?;
-        let grid = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
+    walksat_operation!(
+        /// Run one WalkSAT iteration for every walker.
+        ///
+        /// Dimensions and buffer layout match [`Self::satsolver_init`]. `seed` is
+        /// the per-step seed; callers that need independent steps should combine it
+        /// with their step counter. Synchronizes before returning.
+        satsolver_step;
 
-        // SAFETY: the CUDA entry is `(u8* assignment, i32* scores,
-        // const i32* clauses, int n_walkers, int n_vars, int n_clauses,
-        // int clause_len, unsigned int seed)`. Types and ordering match.
-        // Buffer lengths cover the validated walker assignment, score, and
-        // clause matrices. Grid coverage includes every walker and the kernel
-        // guards `walker >= n_walkers`. Buffers remain alive until synchronization.
-        unsafe {
-            launch!(func<<<grid, SATSOLVER_BLOCK_SIZE, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
-                assignment.as_device_ptr(),
-                scores.as_device_ptr(),
-                clauses.as_device_ptr(),
-                n_walkers,
-                n_vars,
-                n_clauses,
-                clause_len,
-                seed,
-            ))
-            .map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "satsolver_init launch: {e:?}"
-                )))
-            })?;
-        }
-        Ok(())
-    }
-
-    /// Run one WalkSAT iteration for every walker.
-    ///
-    /// Dimensions and buffer layout match [`Self::satsolver_init`]. `seed` is
-    /// the per-step seed; callers that need independent steps should combine it
-    /// with their step counter. Synchronizes before returning.
-    #[allow(clippy::too_many_arguments)]
-    // @codescene(disable:"Excess Number of Function Arguments")
-    pub fn satsolver_step(
-        &self,
-        assignment: &mut GpuBuffer<u8>,
-        scores: &mut GpuBuffer<i32>,
-        clauses: &GpuBuffer<i32>,
-        n_walkers: i32,
-        n_vars: i32,
-        n_clauses: i32,
-        clause_len: i32,
-        seed: u32,
-    ) -> GpuResult<()> {
-        let launch_result = self.satsolver_step_async(
-            assignment, scores, clauses, n_walkers, n_vars, n_clauses, clause_len, seed,
-        );
-        let sync_result = self.synchronize();
-        launch_result?;
-        sync_result
-    }
-
-    /// Enqueue [`Self::satsolver_step`]; synchronize before reading or reusing the buffers.
-    #[allow(clippy::too_many_arguments)]
-    // @codescene(disable:"Excess Number of Function Arguments")
-    pub fn satsolver_step_async(
-        &self,
-        assignment: &mut GpuBuffer<u8>,
-        scores: &mut GpuBuffer<i32>,
-        clauses: &GpuBuffer<i32>,
-        n_walkers: i32,
-        n_vars: i32,
-        n_clauses: i32,
-        clause_len: i32,
-        seed: u32,
-    ) -> GpuResult<()> {
-        validate_walksat_args(
-            "satsolver_step",
-            assignment.len(),
-            scores.len(),
-            clauses.len(),
-            n_walkers,
-            n_vars,
-            n_clauses,
-            clause_len,
-        )?;
-
-        let func = self.kernels()?.get_function("satsolver_step")?;
-        let stream = self.ready_stream()?;
-        let grid = Self::ceil_div_u32(n_walkers as u32, SATSOLVER_BLOCK_SIZE);
-
-        // SAFETY: the CUDA entry is `(u8* assignment, i32* scores,
-        // const i32* clauses, int n_walkers, int n_vars, int n_clauses,
-        // int clause_len, unsigned int seed)`. Types, dimensions, grid
-        // coverage, buffer bounds, and lifetimes are the same as validated for
-        // `satsolver_init` above.
-        unsafe {
-            launch!(func<<<grid, SATSOLVER_BLOCK_SIZE, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
-                assignment.as_device_ptr(),
-                scores.as_device_ptr(),
-                clauses.as_device_ptr(),
-                n_walkers,
-                n_vars,
-                n_clauses,
-                clause_len,
-                seed,
-            ))
-            .map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "satsolver_step launch: {e:?}"
-                )))
-            })?;
-        }
-        Ok(())
-    }
+        /// Enqueue [`Self::satsolver_step`]; synchronize before reading or reusing buffers.
+        satsolver_step_async
+    );
 
     /// Mark walkers whose score is zero as solved.
     ///
@@ -226,11 +146,7 @@ impl GpuAccelerator {
                 solved.as_device_ptr(),
                 n_walkers,
             ))
-            .map_err(|e| {
-                GpuError::LaunchFailed(sanitize_diagnostic(&format!(
-                    "satsolver_check_solution launch: {e:?}"
-                )))
-            })?;
+            .map_err(|e| Self::launch_error("satsolver_check_solution", e))?;
         }
         Ok(())
     }
