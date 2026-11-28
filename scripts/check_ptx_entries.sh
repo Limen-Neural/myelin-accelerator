@@ -12,7 +12,7 @@ status=0
 while IFS= read -r line; do
     case "$line" in
         ''|'#'*) continue ;;
-        ?*:?*) ;;
+        ?*:*[![:space:]]*) ;;
         *)
             echo "::error::Malformed PTX entry manifest line${label:+ ($label)}: $line"
             status=1
