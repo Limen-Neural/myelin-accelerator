@@ -26,15 +26,14 @@ impl GpuAccelerator {
         n_keys: usize,
         dim: usize,
     ) -> GpuResult<()> {
-        let launch_result =
-            self.cosine_similarity_batched_async(queries, keys, out, n_queries, n_keys, dim);
-        let sync_result = self.synchronize();
-        launch_result?;
-        sync_result
+        self.cosine_similarity_batched_async(queries, keys, out, n_queries, n_keys, dim)?;
+        self.synchronize()
     }
 
     /// Enqueue [`Self::cosine_similarity_batched`]; synchronize before reading
-    /// or reusing the buffers.
+    /// or reusing the buffers. If enqueueing a chunk fails, this method
+    /// attempts to synchronize previously queued chunks before returning the
+    /// launch error. Discard the output on error: it may be partially written.
     pub fn cosine_similarity_batched_async(
         &self,
         queries: &GpuBuffer<f32>,
@@ -72,7 +71,7 @@ impl GpuAccelerator {
             // writes a disjoint output range. The key matrix is unchanged.
             // Launch uses one 32-thread block per pair and a legal grid Y.
             // Buffers remain alive until synchronization.
-            unsafe {
+            let launch_result = unsafe {
                 let chunk_queries = queries.as_device_ptr().add(query_start * dim);
                 let chunk_out = out.as_device_ptr().add(query_start * n_keys);
                 launch!(func<<<(dims.n_keys_u32, chunk_len as u32, 1), COSINE_BATCHED_BLOCK_SIZE, 0, stream>>>(
@@ -83,7 +82,13 @@ impl GpuAccelerator {
                     dims.n_keys_i32,
                     dims.dim_i32,
                 ))
-                .map_err(|e| Self::launch_error("cosine_similarity_batched", e))?;
+            };
+            if let Err(error) = launch_result {
+                // A later launch can fail after an earlier one was queued.
+                // Drain that work before returning when the stream is usable,
+                // and preserve the original launch diagnostic.
+                let _ = stream.synchronize();
+                return Err(Self::launch_error("cosine_similarity_batched", error));
             }
         }
         Ok(())
