@@ -25,13 +25,10 @@
 //! | `lif_step` | [`lif_step_oracle`] | exact membrane bits / `u32` state |
 //! | `lif_step_weighted` | [`lif_step_weighted_oracle`] | exact membrane bits / `u32` state |
 //!
-//! `cosine_similarity_batched` is loaded in `KernelModule` but has no
-//! `GpuAccelerator` launch wrapper yet; CPU tests still run in CI.
-//! `lif_step` / `lif_step_weighted` are likewise raw registered symbols with no
-//! `GpuAccelerator` wrapper in v0.2.0; their GPU differential tests launch the
-//! raw symbols (`tests/snn_fixtures_gpu.rs`, see `docs/SNN_COMPATIBILITY.md`).
-//! The remaining rows have public wrappers and GPU differential tests
-//! (capability gated with `#[ignore]`).
+//! `cosine_similarity_batched`, `lif_step`, and `lif_step_weighted` have
+//! public `GpuAccelerator` wrappers. Their raw-symbol GPU differential tests
+//! remain useful ABI coverage (`tests/snn_fixtures_gpu.rs`, see
+//! `docs/SNN_COMPATIBILITY.md`); wrapper-level coverage is additive.
 
 #![allow(clippy::needless_range_loop)]
 

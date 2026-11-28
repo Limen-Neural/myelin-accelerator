@@ -62,11 +62,14 @@ const SPIKING_KERNELS: &[&str] = &[
     "reset_membrane",
     "stdp_update_weights",
     "stdp_update_traces",
-    "neuro_bias_logits",
-    "membrane_dv_dt_reduce_pass1",
     "routing_entropy_reduce_pass1",
     "latent_reduce_pass2",
 ];
+
+// Experimental reduction/bias symbols remain launchable when present, but a
+// missing symbol does not invalidate the whole module while their public
+// design is deferred to the fused-routing lane (GH #14).
+const SPIKING_LOAD_OPTIONAL: &[&str] = &["neuro_bias_logits", "membrane_dv_dt_reduce_pass1"];
 
 const VECTOR_SIMILARITY_KERNELS: &[&str] =
     &["cosine_similarity_batched", "cosine_similarity_top_k"];
@@ -77,11 +80,17 @@ const SATSOLVER_KERNELS: &[&str] = &[
     "satsolver_aux_update",
     "satsolver_check_solution",
     "satsolver_extract",
-    "satsolver_best_reduce_pass1",
     "satsolver_best_reduce_pass2",
 ];
 
+// `satsolver_aux_update` is the block-partial producer used by the public
+// reduction wrapper. The standalone pass1 symbol stays available to diagnostic
+// raw callers when compiled in, but is not required for module usability.
+const SATSOLVER_LOAD_OPTIONAL: &[&str] = &["satsolver_best_reduce_pass1"];
+
 const TERNARY_GEMM_KERNELS: &[&str] = &["ternary_gemv", "ternary_gemm"];
+
+const NO_LOAD_OPTIONAL: &[&str] = &[];
 
 const ROUTING_SELECTION_KERNELS: &[&str] = &[
     "routing_softmax",
@@ -98,6 +107,7 @@ struct ModuleSpec {
     ptx: &'static str,
     name: &'static str,
     funcs: &'static [&'static str],
+    optional_funcs: &'static [&'static str],
 }
 
 const MODULE_SPECS: &[ModuleSpec] = &[
@@ -106,30 +116,35 @@ const MODULE_SPECS: &[ModuleSpec] = &[
         ptx: SPIKING_NETWORK_PTX,
         name: "spiking_network",
         funcs: SPIKING_KERNELS,
+        optional_funcs: SPIKING_LOAD_OPTIONAL,
     },
     ModuleSpec {
         fatbin: Some(VECTOR_SIMILARITY_FATBIN),
         ptx: VECTOR_SIMILARITY_PTX,
         name: "vector_similarity",
         funcs: VECTOR_SIMILARITY_KERNELS,
+        optional_funcs: NO_LOAD_OPTIONAL,
     },
     ModuleSpec {
         fatbin: Some(SATSOLVER_FATBIN),
         ptx: SATSOLVER_PTX,
         name: "satsolver",
         funcs: SATSOLVER_KERNELS,
+        optional_funcs: SATSOLVER_LOAD_OPTIONAL,
     },
     ModuleSpec {
         fatbin: Some(TERNARY_GEMM_FATBIN),
         ptx: TERNARY_GEMM_PTX,
         name: "ternary_gemm",
         funcs: TERNARY_GEMM_KERNELS,
+        optional_funcs: NO_LOAD_OPTIONAL,
     },
     ModuleSpec {
         fatbin: None,
         ptx: ROUTING_SELECTION_PTX,
         name: "routing_selection",
         funcs: ROUTING_SELECTION_KERNELS,
+        optional_funcs: NO_LOAD_OPTIONAL,
     },
 ];
 
@@ -192,6 +207,15 @@ impl KernelModule {
                 .get_function(func_name)
                 .map_err(|error| function_lookup_error(func_name, error))?;
             func_map.insert(func_name.to_string(), spec.name.to_string());
+        }
+        for &func_name in spec.optional_funcs {
+            match module.get_function(func_name) {
+                Ok(_) => {
+                    func_map.insert(func_name.to_string(), spec.name.to_string());
+                }
+                Err(CudaError::NotFound) => {}
+                Err(error) => return Err(function_lookup_error(func_name, error)),
+            }
         }
         modules.insert(spec.name.to_string(), module);
         Ok(())

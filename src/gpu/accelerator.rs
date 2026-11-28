@@ -17,9 +17,12 @@ use cust::stream::{Stream, StreamFlags};
 use std::cell::RefCell;
 use tracing::warn;
 
+pub(crate) mod cosine;
+pub(crate) mod lif;
 pub(crate) mod poisson;
 pub(crate) mod routing;
 pub(crate) mod satsolver;
+pub(crate) mod satsolver_walksat;
 pub(crate) mod stdp;
 pub(crate) mod ternary;
 
@@ -363,6 +366,51 @@ impl GpuAccelerator {
         self.synchronize()
     }
 
+    pub(crate) fn shared_memory_opt_in_limit() -> GpuResult<u32> {
+        let device = cust::device::Device::get_device(0)
+            .map_err(|e| GpuError::CudaError(format!("device query: {e:?}")))?;
+        let mut value = 0i32;
+        let result = unsafe {
+            cust::sys::cuDeviceGetAttribute(
+                &mut value as *mut i32,
+                cust::sys::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN,
+                device.as_raw(),
+            )
+        };
+        if result as i32 != 0 {
+            return Err(GpuError::CudaError(format!(
+                "cuDeviceGetAttribute shared-memory opt-in limit: {result:?}"
+            )));
+        }
+        u32::try_from(value)
+            .map_err(|_| GpuError::CudaError("shared-memory opt-in limit is negative".into()))
+    }
+
+    pub(crate) fn opt_in_dynamic_shared_mem(
+        function: &cust::function::Function<'_>,
+        shared_bytes: u32,
+        kernel_name: &str,
+    ) -> GpuResult<()> {
+        let value = i32::try_from(shared_bytes).map_err(|_| {
+            GpuError::LaunchFailed(format!(
+                "{kernel_name}: shared-memory size exceeds i32 opt-in limit"
+            ))
+        })?;
+        let result = unsafe {
+            cust::sys::cuFuncSetAttribute(
+                function.to_raw(),
+                cust::sys::CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                value,
+            )
+        };
+        if result as i32 != 0 {
+            return Err(GpuError::CudaError(format!(
+                "cuFuncSetAttribute {kernel_name} shared-memory opt-in: {result:?}"
+            )));
+        }
+        Ok(())
+    }
+
     fn expect_len(name: &str, actual: usize, minimum: usize) -> GpuResult<()> {
         if actual < minimum {
             return Err(GpuError::invalid_input(format!(
@@ -541,6 +589,81 @@ mod tests {
         assert!(report.device_available);
         assert!(report.gpu_usable());
         assert_eq!(report.selected_backend, Backend::Cuda);
+    }
+
+    #[test]
+    fn empty_weighted_lif_preserves_cpu_fallback_reason() {
+        let reason = FallbackReason::DriverRuntimeFailure;
+        let report = capability_report_for_failure(
+            CapabilityFacts {
+                cuda_built: true,
+                runtime_available: false,
+                device_available: false,
+                compute_capability: None,
+                kernels: KernelAvailability::compiled_unverified(),
+            },
+            reason,
+            "no device for fallback probe",
+        );
+        let acc = GpuAccelerator::cpu_fallback(report);
+        // Empty allocations in cust do not require a CUDA context.
+        let no_weights = GpuBuffer::<f32>::alloc(0).unwrap();
+        let no_inputs = GpuBuffer::<f32>::alloc(0).unwrap();
+        let mut membrane = GpuBuffer::<f32>::alloc(0).unwrap();
+        let mut refractory = GpuBuffer::<u32>::alloc(0).unwrap();
+        let mut spikes_out = GpuBuffer::<u32>::alloc(0).unwrap();
+        let error = acc
+            .lif_step_weighted_async(
+                &mut membrane,
+                &no_weights,
+                &no_inputs,
+                &mut refractory,
+                &mut spikes_out,
+            )
+            .unwrap_err();
+        assert!(matches!(error, GpuError::Unavailable { reason: actual, .. } if actual == reason));
+    }
+
+    #[test]
+    #[ignore] // requires an sm_120 GPU and compatible driver
+    fn weighted_lif_public_wrapper_checks_dynamic_shared_memory_boundary() {
+        let acc = GpuAccelerator::require_gpu().unwrap();
+        let limit = GpuAccelerator::shared_memory_opt_in_limit().unwrap() as usize;
+        let f32_bytes = std::mem::size_of::<f32>();
+        let opt_in_inputs = (48 * 1024) / f32_bytes + 1;
+        assert!(opt_in_inputs * f32_bytes <= limit);
+
+        let mut membrane = GpuBuffer::from_slice(&[0.0f32]).unwrap();
+        let mut weights_host = vec![0.0f32; opt_in_inputs];
+        weights_host[opt_in_inputs - 1] = 0.25;
+        let weights = GpuBuffer::from_slice(&weights_host).unwrap();
+        let input = GpuBuffer::from_slice(&vec![1.0f32; opt_in_inputs]).unwrap();
+        let mut refractory = GpuBuffer::<u32>::alloc(1).unwrap();
+        let mut spikes = GpuBuffer::<u32>::alloc(1).unwrap();
+        acc.lif_step_weighted(
+            &mut membrane,
+            &weights,
+            &input,
+            &mut refractory,
+            &mut spikes,
+        )
+        .unwrap();
+        assert_eq!(membrane.to_vec().unwrap(), [0.25]);
+
+        let oversized = GpuBuffer::<f32>::alloc(limit / f32_bytes + 1).unwrap();
+        let error = acc
+            .lif_step_weighted_async(
+                &mut membrane,
+                &oversized,
+                &oversized,
+                &mut refractory,
+                &mut spikes,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, GpuError::InvalidInput(message) if message.contains("exceeds device opt-in limit"))
+        );
+        assert_eq!(membrane.to_vec().unwrap(), [0.25]);
     }
 
     /// An empty Poisson request on a CPU-fallback accelerator stays
