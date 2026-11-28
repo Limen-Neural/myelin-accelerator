@@ -60,8 +60,10 @@ class ArchiveBoundaryTests(unittest.TestCase):
                 inspect_archive(archive)
 
     def test_rejects_untracked_file_even_under_an_included_directory(self):
+        archive_paths = set(REQUIRED_PATHS) | {"src/ignored.rs"}
+        tracked_paths = set(REQUIRED_PATHS)
         with self.assertRaisesRegex(ValueError, "src/ignored.rs"):
-            check_tracked_inventory(set(REQUIRED_PATHS) | {"src/ignored.rs"}, set(REQUIRED_PATHS))
+            check_tracked_inventory(archive_paths, tracked_paths)
 
     def test_allows_cargo_generated_metadata(self):
         check_tracked_inventory(
