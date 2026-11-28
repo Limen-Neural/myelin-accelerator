@@ -628,6 +628,48 @@ mod tests {
         assert!(matches!(error, GpuError::Unavailable { reason: actual, .. } if actual == reason));
     }
 
+    #[test]
+    #[ignore] // requires an sm_120 GPU and compatible driver
+    fn weighted_lif_public_wrapper_checks_dynamic_shared_memory_boundary() {
+        let acc = GpuAccelerator::require_gpu().unwrap();
+        let limit = GpuAccelerator::shared_memory_opt_in_limit().unwrap() as usize;
+        let f32_bytes = std::mem::size_of::<f32>();
+        let opt_in_inputs = (48 * 1024) / f32_bytes + 1;
+        assert!(opt_in_inputs * f32_bytes <= limit);
+
+        let mut membrane = GpuBuffer::from_slice(&[0.0f32]).unwrap();
+        let mut weights_host = vec![0.0f32; opt_in_inputs];
+        weights_host[opt_in_inputs - 1] = 0.25;
+        let weights = GpuBuffer::from_slice(&weights_host).unwrap();
+        let input = GpuBuffer::from_slice(&vec![1.0f32; opt_in_inputs]).unwrap();
+        let mut refractory = GpuBuffer::<u32>::alloc(1).unwrap();
+        let mut spikes = GpuBuffer::<u32>::alloc(1).unwrap();
+        acc.lif_step_weighted(
+            &mut membrane,
+            &weights,
+            &input,
+            &mut refractory,
+            &mut spikes,
+        )
+        .unwrap();
+        assert_eq!(membrane.to_vec().unwrap(), [0.25]);
+
+        let oversized = GpuBuffer::<f32>::alloc(limit / f32_bytes + 1).unwrap();
+        let error = acc
+            .lif_step_weighted_async(
+                &mut membrane,
+                &oversized,
+                &oversized,
+                &mut refractory,
+                &mut spikes,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, GpuError::InvalidInput(message) if message.contains("exceeds device opt-in limit"))
+        );
+        assert_eq!(membrane.to_vec().unwrap(), [0.25]);
+    }
+
     /// An empty Poisson request on a CPU-fallback accelerator stays
     /// fail-closed on both entry points (GH #48): the async no-op requires
     /// readiness, and the sync wrapper propagates the same `Unavailable`

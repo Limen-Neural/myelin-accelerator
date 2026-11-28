@@ -137,7 +137,16 @@ fn cosine_public_wrappers_agree_on_scores_and_indices() {
         2,
     )
     .unwrap();
-    assert_eq!(batched.to_vec().unwrap(), selected.to_vec().unwrap());
+    let expected =
+        myelin_accelerator::oracle::cosine_similarity_batched_oracle(&queries, &keys, 2, 3, 3);
+    for result in [batched.to_vec().unwrap(), selected.to_vec().unwrap()] {
+        for (i, (&got, want)) in result.iter().zip(expected.iter().copied()).enumerate() {
+            assert!(
+                (got - want).abs() < 1.0e-5,
+                "score {i}: got {got}, expected {want}"
+            );
+        }
+    }
     assert_eq!(indices.to_vec().unwrap(), [0, 2, 1, 2]);
 }
 
@@ -164,8 +173,9 @@ fn cosine_batched_spans_cuda_grid_y_limit() {
     let queries = GpuBuffer::from_slice(&host_queries).unwrap();
     let keys = GpuBuffer::from_slice(&[1.0f32, 0.0, 0.0, 1.0]).unwrap();
     let mut out = GpuBuffer::from_slice(&vec![3.0f32; n_queries * 2 + 1]).unwrap();
-    acc.cosine_similarity_batched(&queries, &keys, &mut out, n_queries, 2, 2)
+    acc.cosine_similarity_batched_async(&queries, &keys, &mut out, n_queries, 2, 2)
         .unwrap();
+    acc.synchronize().unwrap();
 
     let scores = out.to_vec().unwrap();
     let last = (n_queries - 1) * 2;
