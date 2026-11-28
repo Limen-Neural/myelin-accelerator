@@ -30,6 +30,7 @@ printf '%s\n' \
   'tests/kernel_hazards_gpu.rs' \
   'tests/oracle.rs' \
   'tests/oracle_gpu.rs' \
+  'tests/public_kernel_wrappers_gpu.rs' \
   'tests/ptx_entry_manifest.rs' \
   'tests/routing_gpu.rs' \
   'tests/snn_fixtures.rs' \

@@ -109,6 +109,11 @@ impl GpuAccelerator {
         let n_inputs_i32 = kernel_dimension("lif_step_weighted", "n_inputs", n_inputs)?;
         let weight_elements = matrix_elements("lif_step_weighted weights", n_neurons, n_inputs)?;
         Self::expect_len("weights", weights.len(), weight_elements)?;
+        self.require_ready()?;
+        if n_neurons == 0 {
+            return Ok(());
+        }
+
         let shared_bytes = lif_weighted_shared_bytes(n_inputs)?;
         let shared_limit = Self::shared_memory_opt_in_limit()?;
         if shared_bytes > shared_limit {
@@ -116,11 +121,6 @@ impl GpuAccelerator {
                 "lif_step_weighted: dynamic shared-memory size {shared_bytes} exceeds device opt-in limit {shared_limit}; reduce n_inputs"
             )));
         }
-        if n_neurons == 0 {
-            self.require_ready()?;
-            return Ok(());
-        }
-
         let func = self.kernels()?.get_function("lif_step_weighted")?;
         if shared_bytes > DEFAULT_DYNAMIC_SHARED_MEM_BYTES {
             Self::opt_in_dynamic_shared_mem(&func, shared_bytes, "lif_step_weighted")?;

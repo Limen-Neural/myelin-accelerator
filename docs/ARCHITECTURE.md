@@ -285,7 +285,8 @@ are selected; remaining index slots are `-1`. `top_k <= 0` returns without
 writing either output. No launch ABI or output layout changed in GH #47.
 Use one-dimensional blocks of 32–1024 threads in multiples of 32, zero
 dynamic shared memory, batched grid `(n_keys, n_queries)`, and top-k grid
-`(n_queries)`. Both remain raw symbols without a `GpuAccelerator` wrapper.
+`(n_queries)`. The `GpuAccelerator` batched wrapper splits queries into
+launches of at most 65,535 rows to respect the CUDA grid Y limit.
 
 Both kernels compute each pair with the same **dimension-dependent FMA
 accumulation order**, followed by the shared normalization helper: a scalar

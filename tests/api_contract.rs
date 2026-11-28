@@ -558,7 +558,7 @@ mod stub_contract {
                 .is_err()
         );
         assert!(
-            acc.satsolver_check_solution(&sat_scores, &mut solved)
+            acc.satsolver_check_solution(&sat_scores, &mut solved, 1)
                 .is_err()
         );
     }

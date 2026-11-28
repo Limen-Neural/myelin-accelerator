@@ -591,6 +591,39 @@ mod tests {
         assert_eq!(report.selected_backend, Backend::Cuda);
     }
 
+    #[test]
+    fn empty_weighted_lif_preserves_cpu_fallback_reason() {
+        let reason = FallbackReason::DriverRuntimeFailure;
+        let report = capability_report_for_failure(
+            CapabilityFacts {
+                cuda_built: true,
+                runtime_available: false,
+                device_available: false,
+                compute_capability: None,
+                kernels: KernelAvailability::compiled_unverified(),
+            },
+            reason,
+            "no device for fallback probe",
+        );
+        let acc = GpuAccelerator::cpu_fallback(report);
+        // Empty allocations in cust do not require a CUDA context.
+        let no_weights = GpuBuffer::<f32>::alloc(0).unwrap();
+        let no_inputs = GpuBuffer::<f32>::alloc(0).unwrap();
+        let mut membrane = GpuBuffer::<f32>::alloc(0).unwrap();
+        let mut refractory = GpuBuffer::<u32>::alloc(0).unwrap();
+        let mut spikes_out = GpuBuffer::<u32>::alloc(0).unwrap();
+        let error = acc
+            .lif_step_weighted_async(
+                &mut membrane,
+                &no_weights,
+                &no_inputs,
+                &mut refractory,
+                &mut spikes_out,
+            )
+            .unwrap_err();
+        assert!(matches!(error, GpuError::Unavailable { reason: actual, .. } if actual == reason));
+    }
+
     /// An empty Poisson request on a CPU-fallback accelerator stays
     /// fail-closed on both entry points (GH #48): the async no-op requires
     /// readiness, and the sync wrapper propagates the same `Unavailable`

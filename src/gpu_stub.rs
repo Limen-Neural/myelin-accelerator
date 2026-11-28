@@ -481,6 +481,7 @@ impl GpuAccelerator {
         &self,
         _: &GpuBuffer<i32>,
         _: &mut GpuBuffer<u8>,
+        _: i32,
     ) -> GpuResult<()> {
         Err(self.unavailable_error())
     }
@@ -489,6 +490,7 @@ impl GpuAccelerator {
         &self,
         _: &GpuBuffer<i32>,
         _: &mut GpuBuffer<u8>,
+        _: i32,
     ) -> GpuResult<()> {
         Err(self.unavailable_error())
     }

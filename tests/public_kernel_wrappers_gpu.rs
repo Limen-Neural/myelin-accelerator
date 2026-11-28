@@ -4,7 +4,7 @@
 //! GPU evidence for the stable kernel wrappers added in GH #63.
 #![cfg(feature = "cuda")]
 
-use myelin_accelerator::{GpuAccelerator, GpuBuffer};
+use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
 
 fn eval_clause(assignment: &[u8], clause: &[i32], n_vars: usize) -> bool {
     clause.iter().any(|&lit| {
@@ -119,13 +119,53 @@ fn cosine_public_wrappers_agree_on_scores_and_indices() {
 
 #[test]
 #[ignore] // requires GPU + driver >= 570
+fn cosine_top_k_zero_needs_no_outputs() {
+    let acc = GpuAccelerator::require_gpu().unwrap();
+    let queries = GpuBuffer::from_slice(&[1.0f32, 0.0]).unwrap();
+    let keys = GpuBuffer::from_slice(&[1.0f32, 0.0, 0.0, 1.0]).unwrap();
+    let mut similarities = GpuBuffer::<f32>::alloc(0).unwrap();
+    let mut indices = GpuBuffer::<i32>::alloc(0).unwrap();
+
+    acc.cosine_similarity_top_k(&queries, &keys, &mut similarities, &mut indices, 1, 2, 2, 0)
+        .unwrap();
+}
+
+#[test]
+#[ignore] // requires GPU + driver >= 570
+fn cosine_batched_spans_cuda_grid_y_limit() {
+    let acc = GpuAccelerator::require_gpu().unwrap();
+    let n_queries = 65_536;
+    let mut host_queries = [1.0f32, 0.0].repeat(n_queries);
+    host_queries[(n_queries - 1) * 2..].copy_from_slice(&[0.0, -1.0]);
+    let queries = GpuBuffer::from_slice(&host_queries).unwrap();
+    let keys = GpuBuffer::from_slice(&[1.0f32, 0.0, 0.0, 1.0]).unwrap();
+    let mut out = GpuBuffer::from_slice(&vec![3.0f32; n_queries * 2 + 1]).unwrap();
+    acc.cosine_similarity_batched(&queries, &keys, &mut out, n_queries, 2, 2)
+        .unwrap();
+
+    let scores = out.to_vec().unwrap();
+    let last = (n_queries - 1) * 2;
+    assert!(
+        scores[..last]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .all(|s| s[0] > 0.99 && s[1] == 0.0)
+    );
+    assert_eq!(scores[last], 0.0);
+    assert!(scores[last + 1] < -0.99);
+    assert_eq!(scores[last + 2], 3.0);
+}
+
+#[test]
+#[ignore] // requires GPU + driver >= 570
 fn walksat_public_wrappers_produce_valid_states() {
     let acc = GpuAccelerator::require_gpu().unwrap();
     let (walkers, vars, width) = (4usize, 3usize, 2usize);
     let clauses_host = [0i32, 2, 1, 4, 3, 5];
     let clause_count = clauses_host.len() / width;
     let mut assignment = GpuBuffer::<u8>::alloc(walkers * vars).unwrap();
-    let mut scores = GpuBuffer::<i32>::alloc(walkers).unwrap();
+    let mut scores = GpuBuffer::<i32>::alloc(walkers + 1).unwrap();
     let clauses = GpuBuffer::from_slice(&clauses_host).unwrap();
 
     acc.satsolver_init(
@@ -142,7 +182,7 @@ fn walksat_public_wrappers_produce_valid_states() {
     let mut assignment_host = assignment.to_vec().unwrap();
     assert!(assignment_host.iter().all(|v| *v <= 1));
     assert_eq!(
-        scores.to_vec().unwrap(),
+        &scores.to_vec().unwrap()[..walkers],
         unsat_scores(&assignment_host, &clauses_host, walkers, vars, width)
     );
 
@@ -161,12 +201,27 @@ fn walksat_public_wrappers_produce_valid_states() {
     assert!(assignment_host.iter().all(|v| *v <= 1));
     let scores_host = scores.to_vec().unwrap();
     assert_eq!(
-        scores_host,
+        &scores_host[..walkers],
         unsat_scores(&assignment_host, &clauses_host, walkers, vars, width)
     );
 
-    let mut solved = GpuBuffer::<u8>::alloc(walkers).unwrap();
-    acc.satsolver_check_solution(&scores, &mut solved).unwrap();
-    let expected: Vec<u8> = scores_host.iter().map(|s| u8::from(*s == 0)).collect();
-    assert_eq!(solved.to_vec().unwrap(), expected);
+    const SENTINEL: u8 = 2;
+    let mut solved = GpuBuffer::from_slice(&vec![SENTINEL; walkers + 2]).unwrap();
+    assert_eq!(scores_host[walkers], 0, "spare score is not a solution");
+    acc.satsolver_check_solution(&scores, &mut solved, 0)
+        .unwrap();
+    assert_eq!(solved.to_vec().unwrap(), vec![SENTINEL; walkers + 2]);
+    acc.satsolver_check_solution(&scores, &mut solved, walkers as i32)
+        .unwrap();
+    let expected: Vec<u8> = scores_host[..walkers]
+        .iter()
+        .map(|s| u8::from(*s == 0))
+        .collect();
+    let solved_host = solved.to_vec().unwrap();
+    assert_eq!(&solved_host[..walkers], expected);
+    assert_eq!(&solved_host[walkers..], &[SENTINEL; 2]);
+    assert!(matches!(
+        acc.satsolver_check_solution_async(&scores, &mut solved, (walkers + 2) as i32),
+        Err(GpuError::InvalidInput(_))
+    ));
 }
