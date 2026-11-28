@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::GpuAccelerator;
+use crate::gif::TemporalDynamics;
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::memory::GpuBuffer;
 use cust::launch;
@@ -10,7 +11,7 @@ const LIF_BLOCK_SIZE: u32 = 256;
 const DEFAULT_DYNAMIC_SHARED_MEM_BYTES: u32 = 48 * 1024;
 
 impl GpuAccelerator {
-    /// One fixed-dynamics LIF tick with pre-summed external current.
+    /// One LIF tick with the default dynamics with pre-summed external current.
     ///
     /// `membrane.len()` is the neuron count. `input_current`, `refractory`,
     /// and `spikes_out` must each contain at least that many elements.
@@ -22,7 +23,27 @@ impl GpuAccelerator {
         refractory: &mut GpuBuffer<u32>,
         spikes_out: &mut GpuBuffer<u32>,
     ) -> GpuResult<()> {
-        let launch_result = self.lif_step_async(membrane, input_current, refractory, spikes_out);
+        // Synchronize even when enqueueing fails, and preserve the enqueue error.
+        self.lif_step_async(membrane, input_current, refractory, spikes_out)
+            .and(self.synchronize())
+    }
+
+    /// One LIF tick with caller-selected validated dynamics.
+    pub fn lif_step_with_dynamics(
+        &self,
+        membrane: &mut GpuBuffer<f32>,
+        input_current: &GpuBuffer<f32>,
+        refractory: &mut GpuBuffer<u32>,
+        spikes_out: &mut GpuBuffer<u32>,
+        dynamics: TemporalDynamics,
+    ) -> GpuResult<()> {
+        let launch_result = self.lif_step_with_dynamics_async(
+            membrane,
+            input_current,
+            refractory,
+            spikes_out,
+            dynamics,
+        );
         let sync_result = self.synchronize();
         launch_result?;
         sync_result
@@ -36,6 +57,26 @@ impl GpuAccelerator {
         refractory: &mut GpuBuffer<u32>,
         spikes_out: &mut GpuBuffer<u32>,
     ) -> GpuResult<()> {
+        self.lif_step_with_dynamics_async(
+            membrane,
+            input_current,
+            refractory,
+            spikes_out,
+            TemporalDynamics::default(),
+        )
+    }
+
+    /// Enqueue [`Self::lif_step_with_dynamics`]; synchronize before reading or
+    /// reusing the buffers.
+    pub fn lif_step_with_dynamics_async(
+        &self,
+        membrane: &mut GpuBuffer<f32>,
+        input_current: &GpuBuffer<f32>,
+        refractory: &mut GpuBuffer<u32>,
+        spikes_out: &mut GpuBuffer<u32>,
+        dynamics: TemporalDynamics,
+    ) -> GpuResult<()> {
+        dynamics.validate().map_err(GpuError::invalid_input)?;
         let n_neurons = membrane.len();
         Self::expect_len("input_current", input_current.len(), n_neurons)?;
         Self::expect_len("refractory", refractory.len(), n_neurons)?;
@@ -51,7 +92,8 @@ impl GpuAccelerator {
         let grid = Self::ceil_div_u32(n_neurons as u32, LIF_BLOCK_SIZE);
 
         // SAFETY: the CUDA entry is `(float* membrane, const float* I_ext,
-        // unsigned int* refract, unsigned int* spikes_out, int n_neurons)`.
+        // unsigned int* refract, unsigned int* spikes_out, int n_neurons,
+        // float decay, float threshold, float reset, unsigned int refractory_ticks)`.
         // Types and ordering match. All arrays contain at least `n_neurons`
         // elements, `n_neurons` fits i32, and the grid covers every neuron.
         // The kernel guards `tid >= n_neurons`. Buffers remain alive until
@@ -63,13 +105,17 @@ impl GpuAccelerator {
                 refractory.as_device_ptr(),
                 spikes_out.as_device_ptr(),
                 n_neurons_i32,
+                dynamics.lif_decay,
+                dynamics.lif_threshold,
+                dynamics.lif_reset,
+                dynamics.lif_refractory_ticks,
             ))
             .map_err(|e| Self::launch_error("lif_step", e))?;
         }
         Ok(())
     }
 
-    /// One fixed-dynamics LIF tick with a row-major synaptic weight matrix.
+    /// One LIF tick with the default dynamics with a row-major synaptic weight matrix.
     ///
     /// `membrane.len()` is the neuron count and `input_spikes.len()` is the
     /// input width. `weights` must contain at least `neurons × inputs`
@@ -84,8 +130,29 @@ impl GpuAccelerator {
         refractory: &mut GpuBuffer<u32>,
         spikes_out: &mut GpuBuffer<u32>,
     ) -> GpuResult<()> {
-        let launch_result =
-            self.lif_step_weighted_async(membrane, weights, input_spikes, refractory, spikes_out);
+        // Like lif_step, always synchronize after the enqueue attempt.
+        self.lif_step_weighted_async(membrane, weights, input_spikes, refractory, spikes_out)
+            .and(self.synchronize())
+    }
+
+    /// One weighted LIF tick with caller-selected validated dynamics.
+    pub fn lif_step_weighted_with_dynamics(
+        &self,
+        membrane: &mut GpuBuffer<f32>,
+        weights: &GpuBuffer<f32>,
+        input_spikes: &GpuBuffer<f32>,
+        refractory: &mut GpuBuffer<u32>,
+        spikes_out: &mut GpuBuffer<u32>,
+        dynamics: TemporalDynamics,
+    ) -> GpuResult<()> {
+        let launch_result = self.lif_step_weighted_with_dynamics_async(
+            membrane,
+            weights,
+            input_spikes,
+            refractory,
+            spikes_out,
+            dynamics,
+        );
         let sync_result = self.synchronize();
         launch_result?;
         sync_result
@@ -101,6 +168,28 @@ impl GpuAccelerator {
         refractory: &mut GpuBuffer<u32>,
         spikes_out: &mut GpuBuffer<u32>,
     ) -> GpuResult<()> {
+        self.lif_step_weighted_with_dynamics_async(
+            membrane,
+            weights,
+            input_spikes,
+            refractory,
+            spikes_out,
+            TemporalDynamics::default(),
+        )
+    }
+
+    /// Enqueue [`Self::lif_step_weighted_with_dynamics`]; synchronize before
+    /// reading or reusing the buffers.
+    pub fn lif_step_weighted_with_dynamics_async(
+        &self,
+        membrane: &mut GpuBuffer<f32>,
+        weights: &GpuBuffer<f32>,
+        input_spikes: &GpuBuffer<f32>,
+        refractory: &mut GpuBuffer<u32>,
+        spikes_out: &mut GpuBuffer<u32>,
+        dynamics: TemporalDynamics,
+    ) -> GpuResult<()> {
+        dynamics.validate().map_err(GpuError::invalid_input)?;
         let n_neurons = membrane.len();
         let n_inputs = input_spikes.len();
         Self::expect_len("refractory", refractory.len(), n_neurons)?;
@@ -130,8 +219,9 @@ impl GpuAccelerator {
 
         // SAFETY: the CUDA entry is `(float* membrane, const float* weights,
         // const float* input_spikes, unsigned int* refract,
-        // unsigned int* spikes_out, int n_neurons, int n_inputs)`. Types and
-        // ordering match. `weights` contains at least `n_neurons * n_inputs`
+        // unsigned int* spikes_out, int n_neurons, int n_inputs, float decay,
+        // float threshold, float reset, unsigned int refractory_ticks)`.
+        // Types and ordering match. `weights` contains at least `n_neurons * n_inputs`
         // elements and all state arrays contain at least `n_neurons` elements.
         // `shared_bytes` is exactly `n_inputs * size_of::<f32>()`, nonzero
         // whenever `n_inputs` is nonzero, within the device opt-in limit, and
@@ -147,6 +237,10 @@ impl GpuAccelerator {
                 spikes_out.as_device_ptr(),
                 n_neurons_i32,
                 n_inputs_i32,
+                dynamics.lif_decay,
+                dynamics.lif_threshold,
+                dynamics.lif_reset,
+                dynamics.lif_refractory_ticks,
             ))
             .map_err(|e| Self::launch_error("lif_step_weighted", e))?;
         }

@@ -1,7 +1,7 @@
 // Copyright 2026 Raul Montoya Cardenas
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::gif::{GIF_BLOCK_SIZE, gif_grid};
+use crate::gif::{GIF_BLOCK_SIZE, TemporalDynamics, gif_grid};
 use crate::gpu::accelerator::{GpuAccelerator, LaunchShape};
 use crate::gpu::error::{GpuError, GpuResult};
 use crate::gpu::ffi;
@@ -62,6 +62,36 @@ impl GpuAccelerator {
             self.temporal_state = Some(Self::build_temporal_state(neuron_count, n_inputs)?);
         }
 
+        Ok(())
+    }
+
+    /// Return the configured dynamics for resident GIF ticks.
+    ///
+    /// Configurable LIF methods take their own dynamics per call.
+    pub fn temporal_dynamics(&self) -> TemporalDynamics {
+        self.temporal_dynamics
+    }
+
+    /// Validate and install dynamics for subsequent temporal launches.
+    ///
+    /// The configuration is retained across temporal-state reallocation and is
+    /// applied to both f32 and f16 GIF ticks.
+    pub fn set_temporal_dynamics(&mut self, dynamics: TemporalDynamics) -> GpuResult<()> {
+        dynamics.validate().map_err(GpuError::invalid_input)?;
+        self.temporal_dynamics = dynamics;
+        Ok(())
+    }
+
+    /// Initialise or resize resident temporal state and atomically select its dynamics.
+    pub fn ensure_temporal_state_with_dynamics(
+        &mut self,
+        neuron_count: usize,
+        n_inputs: usize,
+        dynamics: TemporalDynamics,
+    ) -> GpuResult<()> {
+        dynamics.validate().map_err(GpuError::invalid_input)?;
+        self.ensure_temporal_state(neuron_count, n_inputs)?;
+        self.temporal_dynamics = dynamics;
         Ok(())
     }
 
@@ -277,7 +307,16 @@ impl GpuAccelerator {
                 state.refractory.as_device_ptr(),
                 state.spikes_out.as_device_ptr(),
                 neuron_count as i32,
-                n_inputs as i32
+                n_inputs as i32,
+                self.temporal_dynamics.lif_reset,
+                self.temporal_dynamics.lif_refractory_ticks,
+                self.temporal_dynamics.gif_leak,
+                self.temporal_dynamics.gif_drive_scale,
+                self.temporal_dynamics.gif_threshold_base,
+                self.temporal_dynamics.gif_adaptation_scale,
+                self.temporal_dynamics.gif_adaptation_decay,
+                self.temporal_dynamics.gif_reset_ratio,
+                self.temporal_dynamics.gif_adaptation_term,
             ))
             .map_err(|e| {
                 Self::ptx_launch_error(
@@ -325,6 +364,7 @@ impl GpuAccelerator {
             },
             n_neurons: neuron_count as i32,
             n_inputs: n_inputs as i32,
+            dynamics: self.temporal_dynamics,
         })?;
         Ok(())
     }

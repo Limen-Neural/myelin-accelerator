@@ -4,6 +4,7 @@
 //! GPU evidence for the stable kernel wrappers added in GH #63.
 #![cfg(feature = "cuda")]
 
+use myelin_accelerator::gif::TemporalDynamics;
 use myelin_accelerator::{GpuAccelerator, GpuBuffer, GpuError};
 
 fn eval_clause(assignment: &[u8], clause: &[i32], n_vars: usize) -> bool {
@@ -86,6 +87,51 @@ fn lif_rate_and_reset_public_wrappers_match_oracles() {
     }
     acc.reset_membrane(&mut membrane, -0.25).unwrap();
     assert_eq!(membrane.to_vec().unwrap(), [-0.25, -0.25]);
+
+    let custom = TemporalDynamics {
+        lif_decay: 0.5,
+        lif_threshold: 0.45,
+        lif_reset: 0.1,
+        lif_refractory_ticks: 3,
+        ..TemporalDynamics::default()
+    };
+    let mut membrane = GpuBuffer::from_slice(&[0.4f32]).unwrap();
+    let current_gpu = GpuBuffer::from_slice(&[0.3f32]).unwrap();
+    let mut refractory = GpuBuffer::from_slice(&[0u32]).unwrap();
+    let mut spikes = GpuBuffer::<u32>::alloc(1).unwrap();
+    acc.lif_step_with_dynamics(
+        &mut membrane,
+        &current_gpu,
+        &mut refractory,
+        &mut spikes,
+        custom,
+    )
+    .unwrap();
+    assert_eq!(membrane.to_vec().unwrap(), [0.1]);
+    assert_eq!(refractory.to_vec().unwrap(), [3]);
+    assert_eq!(spikes.to_vec().unwrap(), [1]);
+}
+
+#[test]
+#[ignore] // requires GPU + driver >= 570
+fn default_sync_lif_wrappers_report_invalid_inputs_without_writes() {
+    let acc = GpuAccelerator::require_gpu().unwrap();
+    let input = GpuBuffer::from_slice(&[0.7f32]).unwrap();
+    let mut membrane = GpuBuffer::from_slice(&[0.3f32, 0.4]).unwrap();
+    let mut refractory = GpuBuffer::from_slice(&[1u32, 3]).unwrap();
+    let mut spikes = GpuBuffer::from_slice(&[0u32, 1]).unwrap();
+
+    assert!(matches!(
+        acc.lif_step(&mut membrane, &input, &mut refractory, &mut spikes),
+        Err(GpuError::InvalidInput(message)) if message.starts_with("input_current too small:")
+    ));
+    assert!(matches!(
+        acc.lif_step_weighted(&mut membrane, &input, &input, &mut refractory, &mut spikes),
+        Err(GpuError::InvalidInput(message)) if message.starts_with("weights too small:")
+    ));
+    assert_eq!(membrane.to_vec().unwrap(), [0.3, 0.4]);
+    assert_eq!(refractory.to_vec().unwrap(), [1, 3]);
+    assert_eq!(spikes.to_vec().unwrap(), [0, 1]);
 }
 
 #[test]

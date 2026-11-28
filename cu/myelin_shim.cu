@@ -19,7 +19,16 @@ extern "C" int myelin_launch_gif_step_weighted_f16(
     void* refractory,
     void* spikes_out,
     int n_neurons,
-    int n_inputs)
+    int n_inputs,
+    float lif_reset,
+    unsigned int lif_refractory_ticks,
+    float gif_leak,
+    float gif_drive_scale,
+    float gif_threshold_base,
+    float gif_adaptation_scale,
+    float gif_adaptation_decay,
+    float gif_reset_ratio,
+    float gif_adaptation_term)
 {
     cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);
     float* membrane_ptr = reinterpret_cast<float*>(membrane);
@@ -49,7 +58,16 @@ extern "C" int myelin_launch_gif_step_weighted_f16(
         refractory_ptr,
         spikes_out_ptr,
         n_neurons,
-        n_inputs);
+        n_inputs,
+        lif_reset,
+        lif_refractory_ticks,
+        gif_leak,
+        gif_drive_scale,
+        gif_threshold_base,
+        gif_adaptation_scale,
+        gif_adaptation_decay,
+        gif_reset_ratio,
+        gif_adaptation_term);
 
     return static_cast<int>(cudaGetLastError());
 }

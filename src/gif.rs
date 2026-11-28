@@ -27,6 +27,84 @@ pub const LIF_REFRACT_TICK: u32 = 2;
 /// Threads per GIF block (matches the CUDA launch).
 pub const GIF_BLOCK_SIZE: u32 = 256;
 
+/// Validated neuron dynamics shared by LIF and GIF GPU kernels.
+///
+/// The defaults are the historical fixed constants. Leak/decay/reset-ratio
+/// fields must lie in `[0, 1]`; all scalar fields must be finite. Thresholds,
+/// reset voltage, synaptic-drive scale, and adaptation couplings may otherwise
+/// be negative or positive so callers can model inhibitory or unconventional
+/// dynamics deliberately.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TemporalDynamics {
+    pub lif_decay: f32,
+    pub lif_threshold: f32,
+    pub lif_reset: f32,
+    pub lif_refractory_ticks: u32,
+    pub gif_leak: f32,
+    pub gif_drive_scale: f32,
+    pub gif_threshold_base: f32,
+    pub gif_adaptation_scale: f32,
+    pub gif_adaptation_decay: f32,
+    pub gif_reset_ratio: f32,
+    pub gif_adaptation_term: f32,
+}
+
+impl Default for TemporalDynamics {
+    fn default() -> Self {
+        Self {
+            lif_decay: 0.85,
+            lif_threshold: 1.0,
+            lif_reset: LIF_RESET,
+            lif_refractory_ticks: LIF_REFRACT_TICK,
+            gif_leak: GIF_LEAK,
+            gif_drive_scale: GIF_DRIVE_SCALE,
+            gif_threshold_base: GIF_THRESHOLD_BASE,
+            gif_adaptation_scale: GIF_ADAPTATION_SCALE,
+            gif_adaptation_decay: GIF_ADAPTATION_DECAY,
+            gif_reset_ratio: GIF_RESET_RATIO,
+            gif_adaptation_term: GIF_ADAPTATION_TERM,
+        }
+    }
+}
+
+impl TemporalDynamics {
+    /// Validate values before they cross the Rust/CUDA boundary.
+    pub fn validate(self) -> Result<(), String> {
+        let finite = [
+            ("lif_decay", self.lif_decay),
+            ("lif_threshold", self.lif_threshold),
+            ("lif_reset", self.lif_reset),
+            ("gif_leak", self.gif_leak),
+            ("gif_drive_scale", self.gif_drive_scale),
+            ("gif_threshold_base", self.gif_threshold_base),
+            ("gif_adaptation_scale", self.gif_adaptation_scale),
+            ("gif_adaptation_decay", self.gif_adaptation_decay),
+            ("gif_reset_ratio", self.gif_reset_ratio),
+            ("gif_adaptation_term", self.gif_adaptation_term),
+        ];
+        for (name, value) in finite {
+            if !value.is_finite() {
+                return Err(format!(
+                    "temporal dynamics field {name} must be finite, got {value}"
+                ));
+            }
+        }
+        for (name, value) in [
+            ("lif_decay", self.lif_decay),
+            ("gif_leak", self.gif_leak),
+            ("gif_adaptation_decay", self.gif_adaptation_decay),
+            ("gif_reset_ratio", self.gif_reset_ratio),
+        ] {
+            if !(0.0..=1.0).contains(&value) {
+                return Err(format!(
+                    "temporal dynamics field {name} must be in [0, 1], got {value}"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Grid.x for GIF launches. Rejects empty counts and counts that would wrap
 /// `u32` when divided into blocks.
 pub fn gif_grid(neuron_count: usize) -> Result<u32, String> {
@@ -63,6 +141,16 @@ pub struct GifStepInputs<'a> {
 /// `n_neurons` and `n_inputs` are derived from the buffer lengths. All buffers
 /// are length-checked; panics only on programmer error in tests.
 pub fn gif_step_weighted(neurons: &mut GifNeuronState<'_>, inputs: &GifStepInputs<'_>) {
+    gif_step_weighted_with_dynamics(neurons, inputs, &TemporalDynamics::default());
+}
+
+/// Host GIF step with caller-selected dynamics, matching the CUDA contract.
+pub fn gif_step_weighted_with_dynamics(
+    neurons: &mut GifNeuronState<'_>,
+    inputs: &GifStepInputs<'_>,
+    dynamics: &TemporalDynamics,
+) {
+    dynamics.validate().expect("invalid temporal dynamics");
     let n_neurons = neurons.membrane.len();
     let n_inputs = inputs.input_spikes.len();
     assert_eq!(neurons.adaptation.len(), n_neurons);
@@ -78,24 +166,25 @@ pub fn gif_step_weighted(neurons: &mut GifNeuronState<'_>, inputs: &GifStepInput
         let r = neurons.refractory[tid];
 
         if r > 0 {
-            v = LIF_RESET;
+            v = dynamics.lif_reset;
             neurons.refractory[tid] = r - 1;
-            neurons.adaptation[tid] = a * GIF_ADAPTATION_DECAY;
+            neurons.adaptation[tid] = a * dynamics.gif_adaptation_decay;
         } else {
-            a *= GIF_ADAPTATION_DECAY;
+            a *= dynamics.gif_adaptation_decay;
             let row = &inputs.weights[tid * n_inputs..tid * n_inputs + n_inputs];
             let mut drive = 0.0f32;
             for (weight, spike) in row.iter().zip(inputs.input_spikes.iter()) {
                 drive = weight.mul_add(*spike, drive);
             }
-            v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM
+            v = v * dynamics.gif_leak + drive * dynamics.gif_drive_scale
+                - a * dynamics.gif_adaptation_term
                 + inputs.input_current[tid];
-            let threshold = GIF_THRESHOLD_BASE + a * GIF_ADAPTATION_SCALE;
+            let threshold = dynamics.gif_threshold_base + a * dynamics.gif_adaptation_scale;
             if v >= threshold {
                 spike = 1;
-                v -= threshold * GIF_RESET_RATIO;
+                v -= threshold * dynamics.gif_reset_ratio;
                 a += 1.0;
-                neurons.refractory[tid] = LIF_REFRACT_TICK;
+                neurons.refractory[tid] = dynamics.lif_refractory_ticks;
             }
             neurons.adaptation[tid] = a;
         }
@@ -188,6 +277,64 @@ mod tests {
         let expected = 0.0 * GIF_LEAK + 0.5;
         assert!((membrane[0] - expected).abs() < 1e-6);
         assert_eq!(spikes[0], 0);
+    }
+
+    #[test]
+    fn temporal_dynamics_validation_rejects_nonfinite_and_out_of_range() {
+        let valid = TemporalDynamics::default();
+        assert!(valid.validate().is_ok());
+        for (field, value) in [("lif_decay", f32::NAN), ("lif_threshold", f32::INFINITY)] {
+            let mut bad = valid;
+            match field {
+                "lif_decay" => bad.lif_decay = value,
+                _ => bad.lif_threshold = value,
+            }
+            assert!(bad.validate().unwrap_err().contains(field));
+        }
+        let mut bad = valid;
+        bad.gif_adaptation_decay = 1.01;
+        assert!(bad.validate().unwrap_err().contains("gif_adaptation_decay"));
+        let mut bad = valid;
+        bad.gif_reset_ratio = -0.01;
+        assert!(bad.validate().unwrap_err().contains("gif_reset_ratio"));
+    }
+
+    #[test]
+    fn gif_custom_dynamics_change_result() {
+        let custom = TemporalDynamics {
+            gif_leak: 0.5,
+            gif_drive_scale: 0.5,
+            gif_threshold_base: 0.9,
+            ..TemporalDynamics::default()
+        };
+        let run = |dynamics: &TemporalDynamics| {
+            let mut membrane = vec![0.8f32];
+            let mut adaptation = vec![0.0f32];
+            let weights = vec![1.0f32];
+            let input = vec![1.0f32];
+            let mut refract = vec![0u32];
+            let mut spikes = vec![0u32];
+            gif_step_weighted_with_dynamics(
+                &mut GifNeuronState {
+                    membrane: &mut membrane,
+                    adaptation: &mut adaptation,
+                    refractory: &mut refract,
+                    spikes_out: &mut spikes,
+                },
+                &GifStepInputs {
+                    weights: &weights,
+                    input_spikes: &input,
+                    input_current: &[0.0],
+                },
+                dynamics,
+            );
+            (membrane[0], spikes[0])
+        };
+        assert_ne!(
+            run(&TemporalDynamics::default()),
+            run(&custom),
+            "caller-selected dynamics must affect the host reference"
+        );
     }
 
     #[test]

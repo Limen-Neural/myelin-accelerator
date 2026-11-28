@@ -26,8 +26,8 @@ Per neuron, per tick (`cu/spiking_network.cu`, mirrored by
    `[n_neurons × n_inputs]` matrix.
 3. If `v >= 1.0`: spike, `v = 0`, `refract = 2`.
 
-Decay 0.85, threshold 1.0, reset 0.0, and 2 refractory ticks are compile-time
-constants. Neither kernel has a stable `GpuAccelerator` wrapper in v0.2.0;
+Decay 0.85, threshold 1.0, reset 0.0, and 2 refractory ticks are the default
+`TemporalDynamics` values used by these pinned ABI tests. Neither kernel has a stable `GpuAccelerator` wrapper in v0.2.0;
 tests launch the registered raw symbols.
 
 ## Compatibility matrix

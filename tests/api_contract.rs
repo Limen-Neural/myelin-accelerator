@@ -641,6 +641,32 @@ mod stub_contract {
         assert_eq!(solved.to_vec().unwrap(), [2]);
     }
 
+    #[test]
+    fn temporal_configuration_does_not_require_gpu_but_state_setup_does() {
+        use myelin_accelerator::gif::TemporalDynamics;
+
+        let mut acc = GpuAccelerator::new();
+        let active = TemporalDynamics {
+            gif_threshold_base: 0.4,
+            ..TemporalDynamics::default()
+        };
+        acc.set_temporal_dynamics(active).unwrap();
+        assert_eq!(acc.temporal_dynamics(), active);
+
+        assert!(
+            acc.set_temporal_dynamics(TemporalDynamics {
+                gif_threshold_base: f32::NAN,
+                ..active
+            })
+            .is_err()
+        );
+        assert!(
+            acc.ensure_temporal_state_with_dynamics(1, 1, TemporalDynamics::default())
+                .is_err()
+        );
+        assert_eq!(acc.temporal_dynamics(), active);
+    }
+
     /// The CPU stub stays fail-closed for empty Poisson requests on both entry
     /// points (GH #48), matching the CUDA fallback contract.
     #[test]
