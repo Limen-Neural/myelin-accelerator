@@ -247,6 +247,123 @@ impl GpuAccelerator {
         Ok(())
     }
 
+    /// One weighted analog-current LIF tick with per-neuron decay and
+    /// threshold vectors plus scalar reset/refractory behavior.
+    ///
+    /// `membrane.len()` is the neuron count and `input_spikes.len()` is the
+    /// input width. Despite the historical buffer name, input values may be
+    /// continuous analog currents. `decay` and `threshold` must contain one
+    /// finite value per neuron. Synchronizes before returning.
+    #[allow(clippy::too_many_arguments)]
+    pub fn lif_step_weighted_per_neuron(
+        &self,
+        membrane: &mut GpuBuffer<f32>,
+        weights: &GpuBuffer<f32>,
+        input_spikes: &GpuBuffer<f32>,
+        decay: &GpuBuffer<f32>,
+        threshold: &GpuBuffer<f32>,
+        refractory: &mut GpuBuffer<u32>,
+        spikes_out: &mut GpuBuffer<u32>,
+        lif_reset: f32,
+        lif_refractory_ticks: u32,
+    ) -> GpuResult<()> {
+        let launch_result = self.lif_step_weighted_per_neuron_async(
+            membrane,
+            weights,
+            input_spikes,
+            decay,
+            threshold,
+            refractory,
+            spikes_out,
+            lif_reset,
+            lif_refractory_ticks,
+        );
+        let sync_result = self.synchronize();
+        launch_result?;
+        sync_result
+    }
+
+    /// Enqueue [`Self::lif_step_weighted_per_neuron`]; synchronize before
+    /// reading or reusing the buffers.
+    #[allow(clippy::too_many_arguments)]
+    pub fn lif_step_weighted_per_neuron_async(
+        &self,
+        membrane: &mut GpuBuffer<f32>,
+        weights: &GpuBuffer<f32>,
+        input_spikes: &GpuBuffer<f32>,
+        decay: &GpuBuffer<f32>,
+        threshold: &GpuBuffer<f32>,
+        refractory: &mut GpuBuffer<u32>,
+        spikes_out: &mut GpuBuffer<u32>,
+        lif_reset: f32,
+        lif_refractory_ticks: u32,
+    ) -> GpuResult<()> {
+        if !lif_reset.is_finite() {
+            return Err(GpuError::invalid_input(
+                "lif_step_weighted_per_neuron: lif_reset must be finite",
+            ));
+        }
+        let n_neurons = membrane.len();
+        let n_inputs = input_spikes.len();
+        for (name, len) in [
+            ("decay", decay.len()),
+            ("threshold", threshold.len()),
+            ("refractory", refractory.len()),
+            ("spikes_out", spikes_out.len()),
+        ] {
+            Self::expect_len(name, len, n_neurons)?;
+        }
+        let n_neurons_i32 =
+            kernel_dimension("lif_step_weighted_per_neuron", "n_neurons", n_neurons)?;
+        let n_inputs_i32 = kernel_dimension("lif_step_weighted_per_neuron", "n_inputs", n_inputs)?;
+        let weight_elements =
+            matrix_elements("lif_step_weighted_per_neuron weights", n_neurons, n_inputs)?;
+        Self::expect_len("weights", weights.len(), weight_elements)?;
+        self.require_ready()?;
+        if n_neurons == 0 {
+            return Ok(());
+        }
+
+        let shared_bytes = lif_weighted_shared_bytes(n_inputs)?;
+        let shared_limit = Self::shared_memory_opt_in_limit()?;
+        if shared_bytes > shared_limit {
+            return Err(GpuError::invalid_input(format!(
+                "lif_step_weighted_per_neuron: dynamic shared-memory size {shared_bytes} exceeds device opt-in limit {shared_limit}; reduce n_inputs"
+            )));
+        }
+        let func = self
+            .kernels()?
+            .get_function("lif_step_weighted_per_neuron")?;
+        if shared_bytes > DEFAULT_DYNAMIC_SHARED_MEM_BYTES {
+            Self::opt_in_dynamic_shared_mem(&func, shared_bytes, "lif_step_weighted_per_neuron")?;
+        }
+        let stream = self.ready_stream()?;
+        let grid = Self::ceil_div_u32(n_neurons as u32, LIF_BLOCK_SIZE);
+
+        // SAFETY: pointer/scalar ordering matches the CUDA entry. Weight,
+        // input, state, decay, and threshold lengths were checked above;
+        // shared memory exactly covers the input tile, with device opt-in
+        // performed when required. The grid covers every neuron and buffers
+        // remain alive until synchronization as documented above.
+        unsafe {
+            launch!(func<<<grid, LIF_BLOCK_SIZE, shared_bytes, stream>>>(
+                membrane.as_device_ptr(),
+                weights.as_device_ptr(),
+                input_spikes.as_device_ptr(),
+                decay.as_device_ptr(),
+                threshold.as_device_ptr(),
+                refractory.as_device_ptr(),
+                spikes_out.as_device_ptr(),
+                n_neurons_i32,
+                n_inputs_i32,
+                lif_reset,
+                lif_refractory_ticks,
+            ))
+            .map_err(|e| Self::launch_error("lif_step_weighted_per_neuron", e))?;
+        }
+        Ok(())
+    }
+
     /// Update an exponential spike-rate estimate in place.
     ///
     /// `rates.len()` is the neuron count and `spikes` must contain at least

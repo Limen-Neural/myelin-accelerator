@@ -231,17 +231,17 @@ present but a missing optional symbol does not fail `KernelModule::load`.
 
 | PTX module | Required symbols | Load-optional symbols | Public-wrapper status |
 |------------|------------------|-----------------------|-----------------------|
-| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `gif_step_weighted`, `gif_step_weighted_f16`, `spike_rate`, `reset_membrane`, `stdp_update_weights`, `stdp_update_traces`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` | `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1` | Poisson, fixed LIF, GIF temporal, spike-rate, reset, and STDP operations have direct wrappers. The two reduction symbols are used indirectly by `routing_entropy_reduce`. The optional bias/dv-dt symbols are experimental and have no stable wrapper. |
+| `spiking_network` | `poisson_encode`, `lif_step`, `lif_step_weighted`, `lif_step_weighted_per_neuron`, `gif_step_weighted`, `gif_step_weighted_f16`, `spike_rate`, `reset_membrane`, `stdp_update_weights`, `stdp_update_traces`, `routing_entropy_reduce_pass1`, `latent_reduce_pass2` | `neuro_bias_logits`, `membrane_dv_dt_reduce_pass1` | Poisson, fixed LIF, GIF temporal, spike-rate, reset, and STDP operations have direct wrappers. The two reduction symbols are used indirectly by `routing_entropy_reduce`. The optional bias/dv-dt symbols are experimental and have no stable wrapper. |
 | `vector_similarity` | `cosine_similarity_batched`, `cosine_similarity_top_k` | none | Both have direct wrappers. |
 | `satsolver` | `satsolver_init`, `satsolver_step`, `satsolver_aux_update`, `satsolver_check_solution`, `satsolver_extract`, `satsolver_best_reduce_pass2` | `satsolver_best_reduce_pass1` | Init, step, solution check, extract, and best-reduction operations have direct wrappers. Standalone pass1 is superseded by the aux-update partial producer in the public reduction path and remains diagnostic-only. |
 | `ternary_gemm` | `ternary_gemv`, `ternary_gemm` | none | Both have direct wrappers. |
 | `routing_selection` | `routing_softmax`, `routing_top_k`, `adjusted_argmax_pass1`, `indexed_argmax_reduce_pass2`, `adjusted_argmax_single_block`, `fused_routing_pass1`, `fused_routing_pass2` | none | All are used by direct or fused routing wrappers (see [ROUTING.md](ROUTING.md)). |
 
-`lif_step_weighted` declares dynamic shared memory for its input tile. Its
-wrapper computes `n_inputs * size_of::<f32>()`, rejects overflowing or
-device-limit-exceeding sizes before launch, and opts in above the 48 KiB
-default when needed. `cosine_similarity_top_k` uses zero dynamic shared memory
-and selects at most 32 keys per query, padding remaining slots with `-1`.
+`lif_step_weighted` and `lif_step_weighted_per_neuron` declare dynamic shared
+memory for their input tiles. Each wrapper computes `n_inputs * size_of::<f32>()`,
+rejects overflowing or device-limit-exceeding sizes before launch, and opts in
+above the 48 KiB default when needed. `cosine_similarity_top_k` uses zero dynamic
+shared memory and selects at most 32 keys per query, padding slots with `-1`.
 
 `lif_step` and `lif_step_weighted` have raw-symbol differential coverage:
 `tests/snn_fixtures_gpu.rs` compares membrane, refractory state, and spikes

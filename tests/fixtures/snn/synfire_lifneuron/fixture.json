@@ -31,6 +31,12 @@
     "inspected": "2026-09-29",
     "raw_artifact_checked_in": false
   },
+  "interoperability_trace": {
+    "file": "lif_norse.csv",
+    "upstream_path": "paper/01_lif/lif_norse.csv",
+    "sha256": "300d80dc21d67137740722caefb6d9a2f267331bfe682051ed99ac41a9cd0448",
+    "rows": 1000
+  },
   "graph": {
     "nir_version": "0.1.1",
     "topology": "Input(1) -> Affine(1) -> LIF(1) -> Output(1)",

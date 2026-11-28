@@ -8,8 +8,8 @@ source models' own dynamics. See `docs/SNN_COMPATIBILITY.md`.
 
 | Directory | Source | Checked-in content |
 |-----------|--------|--------------------|
-| `spikenaut/` | `rmems/Spikenaut-SNN` @ `6965e12a` (HF `da93893d`) | `parameters_weights.mem` byte-for-byte + `fixture.json` |
-| `synfire_lifneuron/` | Synfire `pabogdan/lifneuron:1.0.0` (= NIR `paper/01_lif/lif_norse.nir` @ `da0551da`) | `fixture.json` with derived scalars only; raw `model.nir` is **not** checked in |
+| `spikenaut/` | `rmems/Spikenaut-SNN` @ `6965e12a` (HF `da93893d`) | hidden/threshold/decay/output `.mem` files byte-for-byte + `fixture.json` |
+| `synfire_lifneuron/` | Synfire `pabogdan/lifneuron:1.0.0` (= NIR `paper/01_lif/lif_norse.nir` @ `da0551da`) | `fixture.json` with derived scalars plus pinned BSD-3-Clause `lif_norse.csv`; raw `model.nir` is **not** checked in |
 
 Every checksum, revision, orientation and parameter in the `fixture.json`
 files was measured from the pinned artifacts. Re-check with:
@@ -29,8 +29,13 @@ values.
   Copyright (c) 2026 Raul Montoya Cardenas, dual-licensed MIT OR Apache-2.0
   (the same terms as this crate; see `LICENSE-MIT` / `LICENSE-APACHE` in the
   upstream repository).
+- `synfire_lifneuron/lif_norse.csv` — the pinned NIR team's output trace,
+  redistributed under the BSD 3-Clause license in
+  [LICENSE-NIR.txt](synfire_lifneuron/LICENSE-NIR.txt).
 - `synfire_lifneuron/fixture.json` — scalar parameters and the `d0` stimulus
   derived from the NIR project's `paper/01_lif` example (BSD-3-Clause, NIR
   Team), published on Synfire as `pabogdan/lifneuron:1.0.0` (BSD-3-Clause).
   Cite: Pedersen et al., *Neuromorphic Intermediate Representation*,
   Nature Communications (2024), doi:10.1038/s41467-024-52259-9.
+
+Exact v0.3.0 interoperability semantics and tolerances are documented in `docs/SNN_INTEROPERABILITY.md`.

@@ -200,6 +200,64 @@ void lif_step_weighted(
 }
 
 // ════════════════════════════════════════════════════════════════════
+//  lif_step_weighted_per_neuron
+//
+//  Weighted analog-current LIF update with per-neuron decay and threshold
+//  vectors. This is the reusable form needed by external model fixtures whose
+//  parameters are not homogeneous. Input values are continuous currents; the
+//  name `input_spikes` is retained only for layout consistency with
+//  `lif_step_weighted`.
+// ════════════════════════════════════════════════════════════════════
+extern "C" __global__
+void lif_step_weighted_per_neuron(
+    float* __restrict__        membrane,
+    const float* __restrict__  weights,
+    const float* __restrict__  input_spikes,
+    const float* __restrict__  decay,
+    const float* __restrict__  threshold,
+    unsigned int* __restrict__ refract,
+    unsigned int* __restrict__ spikes_out,
+    int n_neurons,
+    int n_inputs,
+    float lif_reset,
+    unsigned int lif_refractory_ticks)
+{
+    extern __shared__ float s_inputs[];
+
+    for (int i = threadIdx.x; i < n_inputs; i += blockDim.x)
+        s_inputs[i] = input_spikes[i];
+    __syncthreads();
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_neurons) return;
+
+    unsigned int ref = refract[tid];
+    float v = membrane[tid];
+    unsigned int spike = 0u;
+
+    if (ref > 0u) {
+        v = lif_reset;
+        refract[tid] = ref - 1u;
+    } else {
+        const float* w_row = weights + (long)tid * n_inputs;
+        float I = 0.0f;
+        for (int j = 0; j < n_inputs; ++j)
+            I = fmaf(w_row[j], s_inputs[j], I);
+
+        v = fmaf(decay[tid], v, I);
+
+        if (v >= threshold[tid]) {
+            spike = 1u;
+            v = lif_reset;
+            refract[tid] = lif_refractory_ticks;
+        }
+    }
+
+    membrane[tid]   = v;
+    spikes_out[tid] = spike;
+}
+
+// ════════════════════════════════════════════════════════════════════
 //  gif_step_weighted
 //
 //  GIF (Generalized Integrate-and-Fire) neuron update with synaptic weights,

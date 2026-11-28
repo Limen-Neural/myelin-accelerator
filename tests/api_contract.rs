@@ -667,6 +667,56 @@ mod stub_contract {
         assert_eq!(acc.temporal_dynamics(), active);
     }
 
+    #[test]
+    fn per_neuron_weighted_lif_stub_validates_reset_and_leaves_state_unchanged() {
+        let acc = GpuAccelerator::new();
+        let weights = GpuBuffer::from_slice(&[0.25f32, -0.5]).unwrap();
+        let input = GpuBuffer::from_slice(&[0.4f32]).unwrap();
+        let decay = GpuBuffer::from_slice(&[0.7f32, 0.8]).unwrap();
+        let threshold = GpuBuffer::from_slice(&[0.9f32, 1.0]).unwrap();
+        let mut membrane = GpuBuffer::from_slice(&[0.1f32, 0.2]).unwrap();
+        let mut refractory = GpuBuffer::from_slice(&[2u32, 1]).unwrap();
+        let mut spikes = GpuBuffer::from_slice(&[1u32, 0]).unwrap();
+
+        for step in [
+            GpuAccelerator::lif_step_weighted_per_neuron,
+            GpuAccelerator::lif_step_weighted_per_neuron_async,
+        ] {
+            for reset in [0.0f32, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let result = step(
+                    &acc,
+                    &mut membrane,
+                    &weights,
+                    &input,
+                    &decay,
+                    &threshold,
+                    &mut refractory,
+                    &mut spikes,
+                    reset,
+                    2,
+                );
+                if reset.is_finite() {
+                    assert!(matches!(
+                        result,
+                        Err(GpuError::Unavailable {
+                            reason: FallbackReason::CudaFeatureNotBuilt,
+                            ..
+                        })
+                    ));
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(GpuError::InvalidInput(msg))
+                            if msg == "lif_step_weighted_per_neuron: lif_reset must be finite"
+                    ));
+                }
+                assert_eq!(membrane.to_vec().unwrap(), [0.1, 0.2]);
+                assert_eq!(refractory.to_vec().unwrap(), [2, 1]);
+                assert_eq!(spikes.to_vec().unwrap(), [1, 0]);
+            }
+        }
+    }
+
     /// The CPU stub stays fail-closed for empty Poisson requests on both entry
     /// points (GH #48), matching the CUDA fallback contract.
     #[test]

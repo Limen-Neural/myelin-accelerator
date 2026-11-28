@@ -7,5 +7,6 @@ target/** linguist-generated=true
 
 # Pinned SNN fixtures are checksum-verified byte-for-byte; never convert EOLs
 tests/fixtures/snn/**/*.mem -text
+tests/fixtures/snn/synfire_lifneuron/lif_norse.csv -text
 # Ensure Rust is properly detected
 *.rs linguist-language=Rust
