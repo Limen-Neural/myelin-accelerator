@@ -65,7 +65,9 @@ impl GpuAccelerator {
         Ok(())
     }
 
-    /// Return the dynamics used for subsequent temporal and configurable LIF launches.
+    /// Return the configured dynamics for resident GIF ticks.
+    ///
+    /// Configurable LIF methods take their own dynamics per call.
     pub fn temporal_dynamics(&self) -> TemporalDynamics {
         self.temporal_dynamics
     }
@@ -87,8 +89,10 @@ impl GpuAccelerator {
         n_inputs: usize,
         dynamics: TemporalDynamics,
     ) -> GpuResult<()> {
-        self.set_temporal_dynamics(dynamics)?;
-        self.ensure_temporal_state(neuron_count, n_inputs)
+        dynamics.validate().map_err(GpuError::invalid_input)?;
+        self.ensure_temporal_state(neuron_count, n_inputs)?;
+        self.temporal_dynamics = dynamics;
+        Ok(())
     }
 
     fn checked_temporal_state(&self, neuron_count: usize) -> GpuResult<&TemporalState> {

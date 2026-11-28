@@ -135,6 +135,7 @@ impl_stub_zero_prefix!(u32, 0);
 
 pub struct GpuAccelerator {
     capabilities: CapabilityReport,
+    temporal_dynamics: TemporalDynamics,
 }
 
 impl GpuAccelerator {
@@ -157,7 +158,10 @@ impl GpuAccelerator {
         apply_failure_to_facts(&mut facts, FallbackReason::CudaFeatureNotBuilt);
         let capabilities = evaluate_capabilities(&facts);
         match policy {
-            ExecutionPolicy::PreferGpu => Ok(Self { capabilities }),
+            ExecutionPolicy::PreferGpu => Ok(Self {
+                capabilities,
+                temporal_dynamics: TemporalDynamics::default(),
+            }),
             ExecutionPolicy::RequireGpu => {
                 let fb = capabilities.fallback.clone().unwrap_or_else(|| {
                     FallbackRecord::cpu(
@@ -532,6 +536,7 @@ impl GpuAccelerator {
         &self,
         _: &GpuBuffer<i32>,
         _: &mut GpuBuffer<u8>,
+        _: i32,
     ) -> GpuResult<()> {
         Err(self.unavailable_error())
     }
@@ -540,6 +545,7 @@ impl GpuAccelerator {
         &self,
         _: &GpuBuffer<i32>,
         _: &mut GpuBuffer<u8>,
+        _: i32,
     ) -> GpuResult<()> {
         Err(self.unavailable_error())
     }
@@ -552,13 +558,18 @@ impl GpuAccelerator {
         Err(GpuError::NoGpu)
     }
 
+    /// Return the configured dynamics for resident GIF ticks.
+    ///
+    /// Storing the configuration does not make GPU execution available.
     pub fn temporal_dynamics(&self) -> TemporalDynamics {
-        TemporalDynamics::default()
+        self.temporal_dynamics
     }
 
+    /// Validate and store the configuration, matching a CUDA-build fallback.
     pub fn set_temporal_dynamics(&mut self, dynamics: TemporalDynamics) -> GpuResult<()> {
         dynamics.validate().map_err(GpuError::invalid_input)?;
-        Err(GpuError::NoGpu)
+        self.temporal_dynamics = dynamics;
+        Ok(())
     }
 
     pub fn ensure_temporal_state_with_dynamics(

@@ -104,6 +104,15 @@ fn gif_step_weighted_tick_matches_custom_host_dynamics() {
     acc.ensure_temporal_state_with_dynamics(n_neurons, n_inputs, dynamics)
         .expect("configured temporal state");
     assert_eq!(acc.temporal_dynamics(), dynamics);
+    let rejected = TemporalDynamics {
+        gif_threshold_base: 0.7,
+        ..dynamics
+    };
+    assert!(
+        acc.ensure_temporal_state_with_dynamics(0, n_inputs, rejected)
+            .is_err()
+    );
+    assert_eq!(acc.temporal_dynamics(), dynamics);
 
     let weights: Vec<f32> = (0..n_neurons * n_inputs)
         .map(|i| if i % 9 == 0 { 0.75 } else { 0.05 })

@@ -96,7 +96,8 @@ impl GpuAccelerator {
         let grid = Self::ceil_div_u32(n_neurons as u32, LIF_BLOCK_SIZE);
 
         // SAFETY: the CUDA entry is `(float* membrane, const float* I_ext,
-        // unsigned int* refract, unsigned int* spikes_out, int n_neurons)`.
+        // unsigned int* refract, unsigned int* spikes_out, int n_neurons,
+        // float decay, float threshold, float reset, unsigned int refractory_ticks)`.
         // Types and ordering match. All arrays contain at least `n_neurons`
         // elements, `n_neurons` fits i32, and the grid covers every neuron.
         // The kernel guards `tid >= n_neurons`. Buffers remain alive until
@@ -206,6 +207,11 @@ impl GpuAccelerator {
         let n_inputs_i32 = kernel_dimension("lif_step_weighted", "n_inputs", n_inputs)?;
         let weight_elements = matrix_elements("lif_step_weighted weights", n_neurons, n_inputs)?;
         Self::expect_len("weights", weights.len(), weight_elements)?;
+        self.require_ready()?;
+        if n_neurons == 0 {
+            return Ok(());
+        }
+
         let shared_bytes = lif_weighted_shared_bytes(n_inputs)?;
         let shared_limit = Self::shared_memory_opt_in_limit()?;
         if shared_bytes > shared_limit {
@@ -213,11 +219,6 @@ impl GpuAccelerator {
                 "lif_step_weighted: dynamic shared-memory size {shared_bytes} exceeds device opt-in limit {shared_limit}; reduce n_inputs"
             )));
         }
-        if n_neurons == 0 {
-            self.require_ready()?;
-            return Ok(());
-        }
-
         let func = self.kernels()?.get_function("lif_step_weighted")?;
         if shared_bytes > DEFAULT_DYNAMIC_SHARED_MEM_BYTES {
             Self::opt_in_dynamic_shared_mem(&func, shared_bytes, "lif_step_weighted")?;
@@ -227,8 +228,9 @@ impl GpuAccelerator {
 
         // SAFETY: the CUDA entry is `(float* membrane, const float* weights,
         // const float* input_spikes, unsigned int* refract,
-        // unsigned int* spikes_out, int n_neurons, int n_inputs)`. Types and
-        // ordering match. `weights` contains at least `n_neurons * n_inputs`
+        // unsigned int* spikes_out, int n_neurons, int n_inputs, float decay,
+        // float threshold, float reset, unsigned int refractory_ticks)`.
+        // Types and ordering match. `weights` contains at least `n_neurons * n_inputs`
         // elements and all state arrays contain at least `n_neurons` elements.
         // `shared_bytes` is exactly `n_inputs * size_of::<f32>()`, nonzero
         // whenever `n_inputs` is nonzero, within the device opt-in limit, and
