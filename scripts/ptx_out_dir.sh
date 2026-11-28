@@ -24,7 +24,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 # stderr stays visible: with json-render-diagnostics, human-readable
 # diagnostics go to stderr while JSON goes to stdout.
-if [ "$release" -eq 1 ]; then
+if [[ "$release" -eq 1 ]]; then
     cargo build --locked --features cuda --release --message-format=json-render-diagnostics > "$work/cargo.json"
 else
     cargo build --locked --features cuda --message-format=json-render-diagnostics > "$work/cargo.json"
