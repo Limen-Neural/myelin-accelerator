@@ -400,22 +400,27 @@ impl GpuAccelerator {
     #[allow(clippy::too_many_arguments)]
     pub fn lif_step_weighted_per_neuron(
         &self,
-        _: &mut GpuBuffer<f32>,
-        _: &GpuBuffer<f32>,
-        _: &GpuBuffer<f32>,
-        _: &GpuBuffer<f32>,
-        _: &GpuBuffer<f32>,
-        _: &mut GpuBuffer<u32>,
-        _: &mut GpuBuffer<u32>,
+        membrane: &mut GpuBuffer<f32>,
+        weights: &GpuBuffer<f32>,
+        input_spikes: &GpuBuffer<f32>,
+        decay: &GpuBuffer<f32>,
+        threshold: &GpuBuffer<f32>,
+        refractory: &mut GpuBuffer<u32>,
+        spikes_out: &mut GpuBuffer<u32>,
         lif_reset: f32,
-        _: u32,
+        lif_refractory_ticks: u32,
     ) -> GpuResult<()> {
-        if !lif_reset.is_finite() {
-            return Err(GpuError::invalid_input(
-                "lif_step_weighted_per_neuron: lif_reset must be finite",
-            ));
-        }
-        Err(self.unavailable_error())
+        self.lif_step_weighted_per_neuron_async(
+            membrane,
+            weights,
+            input_spikes,
+            decay,
+            threshold,
+            refractory,
+            spikes_out,
+            lif_reset,
+            lif_refractory_ticks,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
