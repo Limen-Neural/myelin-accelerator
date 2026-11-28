@@ -14,8 +14,10 @@ impl GpuAccelerator {
     /// Initialise WalkSAT walker assignments and their initial unsatisfied-clause counts.
     ///
     /// `assignment` is row-major `n_walkers × n_vars`, `scores` has one element
-    /// per walker, and `clauses` is row-major `n_clauses × clause_len` using the
-    /// kernel's signed literal encoding. Synchronizes before returning.
+    /// per walker, and `clauses` is row-major `n_clauses × clause_len`.
+    /// Encode each literal as `(zero_based_var_index << 1) | negated`, with
+    /// `negated` set to 1 for a negated literal (not a signed DIMACS literal).
+    /// Synchronizes before returning.
     #[allow(clippy::too_many_arguments)]
     // @codescene(disable:"Excess Number of Function Arguments")
     pub fn satsolver_init(
@@ -174,14 +176,17 @@ impl GpuAccelerator {
 
     /// Mark walkers whose score is zero as solved.
     ///
-    /// `scores.len()` is the walker count and `solved` must contain at least
-    /// that many bytes. Synchronizes before returning.
+    /// Pass the same active `n_walkers` used for init/step, independently of
+    /// buffer capacity. Both buffers must have at least `n_walkers` elements.
+    /// The output tail is untouched, including when `n_walkers` is zero.
+    /// Synchronizes before returning.
     pub fn satsolver_check_solution(
         &self,
         scores: &GpuBuffer<i32>,
         solved: &mut GpuBuffer<u8>,
+        n_walkers: i32,
     ) -> GpuResult<()> {
-        let launch_result = self.satsolver_check_solution_async(scores, solved);
+        let launch_result = self.satsolver_check_solution_async(scores, solved, n_walkers);
         let sync_result = self.synchronize();
         launch_result?;
         sync_result
@@ -193,14 +198,15 @@ impl GpuAccelerator {
         &self,
         scores: &GpuBuffer<i32>,
         solved: &mut GpuBuffer<u8>,
+        n_walkers: i32,
     ) -> GpuResult<()> {
-        let n_walkers = scores.len();
-        Self::expect_len("solved", solved.len(), n_walkers)?;
-        let n_walkers_i32 = i32::try_from(n_walkers).map_err(|_| {
-            GpuError::invalid_input(format!(
-                "satsolver_check_solution: n_walkers {n_walkers} exceeds i32::MAX kernel limit"
-            ))
-        })?;
+        if n_walkers < 0 {
+            return Err(GpuError::invalid_input(format!(
+                "satsolver_check_solution: n_walkers must be >= 0, got {n_walkers}"
+            )));
+        }
+        Self::expect_len("scores", scores.len(), n_walkers as usize)?;
+        Self::expect_len("solved", solved.len(), n_walkers as usize)?;
         if n_walkers == 0 {
             self.require_ready()?;
             return Ok(());
@@ -218,7 +224,7 @@ impl GpuAccelerator {
             launch!(func<<<grid, SATSOLVER_BLOCK_SIZE, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
                 scores.as_device_ptr(),
                 solved.as_device_ptr(),
-                n_walkers_i32,
+                n_walkers,
             ))
             .map_err(|e| {
                 GpuError::LaunchFailed(sanitize_diagnostic(&format!(

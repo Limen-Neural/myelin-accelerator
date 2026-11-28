@@ -29,6 +29,9 @@ values.
   Copyright (c) 2026 Raul Montoya Cardenas, dual-licensed MIT OR Apache-2.0
   (the same terms as this crate; see `LICENSE-MIT` / `LICENSE-APACHE` in the
   upstream repository).
+- `synfire_lifneuron/lif_norse.csv` — the pinned NIR team's output trace,
+  redistributed under the BSD 3-Clause license in
+  [LICENSE-NIR.txt](synfire_lifneuron/LICENSE-NIR.txt).
 - `synfire_lifneuron/fixture.json` — scalar parameters and the `d0` stimulus
   derived from the NIR project's `paper/01_lif` example (BSD-3-Clause, NIR
   Team), published on Synfire as `pabogdan/lifneuron:1.0.0` (BSD-3-Clause).

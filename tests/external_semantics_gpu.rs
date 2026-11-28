@@ -27,13 +27,25 @@ fn decode_q88_file(text: &str) -> Vec<f32> {
 fn synfire_rows() -> Vec<(f32, f32, f32)> {
     SYNFIRE_CSV
         .lines()
-        .map(|line| {
-            let mut fields = line.split(',').map(|x| x.parse::<f32>().unwrap());
-            (
-                fields.next().unwrap(),
-                fields.next().unwrap(),
-                fields.next().unwrap(),
-            )
+        .enumerate()
+        .map(|(row, line)| {
+            let mut fields = line.split(',');
+            let mut read = |field| {
+                fields
+                    .next()
+                    .unwrap_or_else(|| panic!("lif_norse.csv row {}: missing {field}", row + 1))
+                    .parse::<f32>()
+                    .unwrap_or_else(|err| {
+                        panic!("lif_norse.csv row {}: invalid {field}: {err}", row + 1)
+                    })
+            };
+            let values = (read("input"), read("membrane"), read("spike"));
+            assert!(
+                fields.next().is_none(),
+                "lif_norse.csv row {}: extra field",
+                row + 1
+            );
+            values
         })
         .collect()
 }
@@ -242,4 +254,31 @@ fn spikenaut_bank_exact_hidden_and_readout_semantics_public_api() {
             reference.output[o]
         );
     }
+}
+
+#[test]
+#[ignore] // requires GPU + driver >= 570
+fn weighted_per_neuron_lif_uses_distinct_decay_values() {
+    let acc = GpuAccelerator::require_gpu().unwrap();
+    let mut membrane = GpuBuffer::from_slice(&[0.5f32, 0.5]).unwrap();
+    let weights = GpuBuffer::<f32>::alloc(2).unwrap();
+    let input = GpuBuffer::<f32>::alloc(1).unwrap();
+    let decay = GpuBuffer::from_slice(&[0.25f32, 0.75]).unwrap();
+    let threshold = GpuBuffer::from_slice(&[1.0f32, 1.0]).unwrap();
+    let mut refractory = GpuBuffer::<u32>::alloc(2).unwrap();
+    let mut spikes = GpuBuffer::<u32>::alloc(2).unwrap();
+    acc.lif_step_weighted_per_neuron(
+        &mut membrane,
+        &weights,
+        &input,
+        &decay,
+        &threshold,
+        &mut refractory,
+        &mut spikes,
+        0.0,
+        0,
+    )
+    .unwrap();
+    assert_eq!(membrane.to_vec().unwrap(), [0.125, 0.375]);
+    assert_eq!(spikes.to_vec().unwrap(), [0, 0]);
 }

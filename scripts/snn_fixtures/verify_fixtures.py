@@ -93,6 +93,11 @@ def verify_spikenaut_offline() -> tuple[dict, bytes]:
     check(sum(codes) == w["raw_code_sum"], "spikenaut: raw Q8.8 code sum")
     check(sum(1 for c in codes if c) == w["nonzero_count"], "spikenaut: nonzero count")
     check(min(codes) == w["min_code"] and max(codes) == w["max_code"], "spikenaut: code range")
+    for entry in card["interoperability_parameters"]:
+        name = entry["file"]
+        data = (SPIKENAUT / name).read_bytes()
+        check(sha256(data) == entry["sha256"], f"spikenaut: checked-in {name} sha256")
+        check(len(decode_q88(data.decode("ascii"))) == entry["word_count"], f"spikenaut: {name} word count")
     return card, raw
 
 
@@ -103,6 +108,10 @@ def verify_synfire_offline() -> dict:
         check(f32_bits(g[key]) == g[f"{key}_f32_bits"], f"synfire: {key} decimal matches recorded f32 bits")
     d0 = card["stimuli"][0]["d0"]
     check(len(d0) == card["stimuli"][0]["steps"] == 100 and set(d0) <= {0, 1}, "synfire: d0 shape")
+    trace = card["interoperability_trace"]
+    raw_trace = (SYNFIRE / trace["file"]).read_bytes()
+    check(sha256(raw_trace) == trace["sha256"], "synfire: checked-in lif_norse.csv sha256")
+    check(len(raw_trace.splitlines()) == trace["rows"], "synfire: lif_norse.csv row count")
     return card
 
 
@@ -120,6 +129,12 @@ def verify_spikenaut_network(card: dict, raw: bytes) -> None:
         remote = fetch(url)
         check(sha256(remote) == src["sha256"], f"spikenaut: {label} sha256 at pinned revision")
         check(remote == raw, f"spikenaut: {label} bytes identical to checked-in fixture")
+
+    base = gh.rsplit("/", 1)[0]
+    for entry in card["interoperability_parameters"]:
+        name = entry["file"]
+        remote = fetch(f"{base}/{name}")
+        check(remote == (SPIKENAUT / name).read_bytes(), f"spikenaut: GitHub {name} bytes match")
 
     model_url = (
         f"https://raw.githubusercontent.com/rmems/Spikenaut-SNN/{src['commit']}/"
@@ -166,6 +181,9 @@ def _verify_synfire_upstream(card: dict) -> None:
     base = f"https://raw.githubusercontent.com/neuromorphs/NIR/{src['upstream_commit']}"
     upstream = fetch(f"{base}/{src['upstream_path']}")
     check(sha256(upstream) == src["upstream_sha256"], "synfire: upstream NIR lif_norse.nir sha256")
+    trace = card["interoperability_trace"]
+    upstream_trace = fetch(f"{base}/{trace['upstream_path']}")
+    check(upstream_trace == (SYNFIRE / trace["file"]).read_bytes(), "synfire: upstream lif_norse.csv bytes match")
 
     stim = card["stimuli"][0]
     m = re.search(r"commit ([0-9a-f]{40}), sha256 ([0-9a-f]{64})", stim["source"])

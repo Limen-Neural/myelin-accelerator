@@ -20,7 +20,7 @@ toward this interoperability result.
   `model.nir` SHA-256 `0dd9143ef624892d4a6461f474d93653a337b3490a62e23ec9ec5d18fde9b7b6`.
 - Independent output oracle: NIR `paper/01_lif/lif_norse.csv` at the same
   commit, checked in as `tests/fixtures/snn/synfire_lifneuron/lif_norse.csv`
-  with SHA-256 `0db9c161fec943cbba7e128dfbcf5d15cfd11dd2d9c29851f1b855d80cf8e19d`.
+  with SHA-256 `300d80dc21d67137740722caefb6d9a2f267331bfe682051ed99ac41a9cd0448`.
 - Graph/input: `Input(1) -> Affine(1) -> LIF(1) -> Output(1)`, affine weight
   1.0 and bias 0.0. The input is the paper's binary `d0` after its documented
   10x zero-upsampling, 1000 ticks at `dt = 1e-4` s.

@@ -25,11 +25,13 @@ printf '%s\n' \
   'tests/api_contract.rs' \
   'tests/capability_probe.rs' \
   'tests/cosine_gpu.rs' \
+  'tests/external_semantics_gpu.rs' \
   'tests/gpu_buffer.rs' \
   'tests/gpu_lifecycle.rs' \
   'tests/kernel_hazards_gpu.rs' \
   'tests/oracle.rs' \
   'tests/oracle_gpu.rs' \
+  'tests/public_kernel_wrappers_gpu.rs' \
   'tests/ptx_entry_manifest.rs' \
   'tests/routing_gpu.rs' \
   'tests/snn_fixtures.rs' \
@@ -41,6 +43,12 @@ printf '%s\n' \
   'tests/fixtures/snn/spikenaut/fixture.json' \
   'tests/fixtures/snn/spikenaut/parameters_weights.mem' \
   'docs/ARCHITECTURE.md' \
+  'tests/fixtures/snn/spikenaut/parameters.mem' \
+  'tests/fixtures/snn/spikenaut/parameters_decay.mem' \
+  'tests/fixtures/snn/spikenaut/parameters_output_weights.mem' \
+  'tests/fixtures/snn/synfire_lifneuron/lif_norse.csv' \
+  'tests/fixtures/snn/synfire_lifneuron/LICENSE-NIR.txt' \
+  'docs/SNN_INTEROPERABILITY.md' \
   'docs/ROUTING.md' \
   'scripts/check-package-boundary.sh' \
   'scripts/snn_fixtures/verify_fixtures.py' \

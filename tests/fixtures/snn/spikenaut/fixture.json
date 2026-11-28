@@ -17,6 +17,11 @@
     "copyright": "Copyright (c) 2026 Raul Montoya Cardenas",
     "inspected": "2026-09-29"
   },
+  "interoperability_parameters": [
+    {"file": "parameters.mem", "sha256": "2aff910820757f7015f7097dae0aa00f631fc49d2a5df912b35ba92e309f7a70", "word_count": 16},
+    {"file": "parameters_decay.mem", "sha256": "bbb575d31ebd5e0386037c3421d17212b3645522f4e64d02272bb5d6abc0610d", "word_count": 16},
+    {"file": "parameters_output_weights.mem", "sha256": "6577e1c5958cb04d0e064a23a8356f54d73739378ed7fdd925a367627014cf72", "word_count": 48}
+  ],
   "weights": {
     "file": "parameters_weights.mem",
     "encoding": "one signed two's-complement Q8.8 word per line, 4 hex digits, value = code / 256",
