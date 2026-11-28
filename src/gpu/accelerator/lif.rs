@@ -23,13 +23,9 @@ impl GpuAccelerator {
         refractory: &mut GpuBuffer<u32>,
         spikes_out: &mut GpuBuffer<u32>,
     ) -> GpuResult<()> {
-        self.lif_step_with_dynamics(
-            membrane,
-            input_current,
-            refractory,
-            spikes_out,
-            TemporalDynamics::default(),
-        )
+        // Synchronize even when enqueueing fails, and preserve the enqueue error.
+        self.lif_step_async(membrane, input_current, refractory, spikes_out)
+            .and(self.synchronize())
     }
 
     /// One LIF tick with caller-selected validated dynamics.
@@ -134,14 +130,9 @@ impl GpuAccelerator {
         refractory: &mut GpuBuffer<u32>,
         spikes_out: &mut GpuBuffer<u32>,
     ) -> GpuResult<()> {
-        self.lif_step_weighted_with_dynamics(
-            membrane,
-            weights,
-            input_spikes,
-            refractory,
-            spikes_out,
-            TemporalDynamics::default(),
-        )
+        // Like lif_step, always synchronize after the enqueue attempt.
+        self.lif_step_weighted_async(membrane, weights, input_spikes, refractory, spikes_out)
+            .and(self.synchronize())
     }
 
     /// One weighted LIF tick with caller-selected validated dynamics.
