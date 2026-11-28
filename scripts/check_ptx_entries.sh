@@ -12,10 +12,16 @@ status=0
 while IFS= read -r line; do
     case "$line" in
         ''|'#'*) continue ;;
+        ?*:*[![:space:]]*) ;;
+        *)
+            echo "::error::Malformed PTX entry manifest line${label:+ ($label)}: $line"
+            status=1
+            continue
+            ;;
     esac
     file="${line%%:*}"
     kernels="${line#*:}"
-    if [ ! -f "$ptx_dir/$file" ]; then
+    if [[ ! -f "$ptx_dir/$file" ]]; then
         echo "::error::Missing PTX file${label:+ ($label)}: $file"
         status=1
         continue
